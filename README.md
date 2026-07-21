@@ -1,7 +1,8 @@
 # teaPot — Florent Code League
 
 Teamlink -> [Florent Code League](https://game.code.florent.vc/team/12fdece5-48c9-4913-9533-6d95b73e22ab).
-Tutorials: https://game.code.florent.vc/tutorials/
+
+Tutorials -> https://game.code.florent.vc/tutorials/
 
 ## Setup
 
