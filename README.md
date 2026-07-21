@@ -1,6 +1,6 @@
 # teaPot — Florent Code League
 
-Team bot code and notes for [Florent Code League](https://league.florent.vc/).
+Tutorial -> [Florent Code League](https://game.code.florent.vc/tutorials/movement-sensing/01-welcome).
 
 ## Setup
 
