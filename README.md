@@ -1,6 +1,7 @@
 # teaPot — Florent Code League
 
-Tutorial -> [Florent Code League](https://game.code.florent.vc/tutorials/movement-sensing/01-welcome).
+Teamlink -> [Florent Code League](https://game.code.florent.vc/team/12fdece5-48c9-4913-9533-6d95b73e22ab).
+Tutorials: https://game.code.florent.vc/tutorials/
 
 ## Setup
 
@@ -25,8 +26,6 @@ source .venv/bin/activate
 fcode run starter starter
 fcode watch replay.replay26   # replay name may differ
 ```
-
-Tutorials: https://game.code.florent.vc/tutorials/
 
 ## Notes
 
