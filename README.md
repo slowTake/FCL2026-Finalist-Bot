@@ -31,5 +31,4 @@ fcode watch replay.replay26   # replay name may differ
 ## Notes
 
 - Do not commit `.venv/` — each person creates their own.
-- Do not commit login tokens or secrets.
-- Once deps stabilize, share them with `pip freeze > requirements.txt` and install via `pip install -r requirements.txt`.
+- 
