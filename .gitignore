@@ -4,3 +4,4 @@ __pycache__/
 *.replay*
 .fcode/
 local_bots/
+docs/superpowers/
