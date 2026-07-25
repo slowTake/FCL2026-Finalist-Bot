@@ -90,7 +90,7 @@ Writes are buffered (visible next round). Pack positions with +1 offset so 0 mea
 
 1. `fcode run magnum_grokus starter` completes 1000 rounds with no GameErrors from grokus
 2. Nonzero mined titanium on every gauntlet map
-3. Gauntlet score improves from 7/15 baseline
+3. Gauntlet score improves from 7/15 baseline (v1.3 peaks ~10/15 on seed 1; high variance)
 
 ## Deferred design (v2)
 

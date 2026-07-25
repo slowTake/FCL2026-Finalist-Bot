@@ -7,9 +7,17 @@ Belts only while routing; strict chain verification; no vision gaps.
 from __future__ import annotations
 
 import random
+import sys
 from collections import deque
+from pathlib import Path
 
 from fcode import Controller, Direction, EntityType, Environment, Position
+
+_ROOT = Path(__file__).resolve().parents[2]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from florent_lib import l_path_step
 
 DIRECTIONS = [d for d in Direction if d != Direction.CENTRE]
 CARDINALS = [Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST]
@@ -53,28 +61,6 @@ def nearest_cardinal(d: Direction) -> Direction:
 
 def in_bounds(ct: Controller, pos: Position) -> bool:
     return 0 <= pos.x < ct.get_map_width() and 0 <= pos.y < ct.get_map_height()
-
-
-def l_path_step(pos: Position, core: Position, y_first: bool = False) -> Direction:
-    """Next cardinal step toward core. Default: larger delta first."""
-    dx = core.x - pos.x
-    dy = core.y - pos.y
-
-    def step_x() -> Direction | None:
-        if dx == 0:
-            return None
-        return Direction.EAST if dx > 0 else Direction.WEST
-
-    def step_y() -> Direction | None:
-        if dy == 0:
-            return None
-        return Direction.SOUTH if dy > 0 else Direction.NORTH
-
-    if y_first:
-        return step_y() or step_x() or Direction.CENTRE
-    if abs(dx) >= abs(dy):
-        return step_x() or step_y() or Direction.CENTRE
-    return step_y() or step_x() or Direction.CENTRE
 
 
 def splitter_outputs(facing: Direction) -> list[Direction]:

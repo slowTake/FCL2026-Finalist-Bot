@@ -9,6 +9,8 @@ Florent Code League bot — v1 economy loop:
 
 Design: `docs/superpowers/specs/2026-07-22-magnum-grokus-design.md`
 
+Uses `l_path_step` from [`florent_lib.py`](../../florent_lib.py). League upload zips only `main.py` — vendor that function into `main.py` before submitting if needed.
+
 ## Replay analysis
 
 ```bash
