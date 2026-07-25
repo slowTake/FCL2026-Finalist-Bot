@@ -48,19 +48,43 @@ jobs:
           fi
 
       - name: Run bot gauntlet
+        id: gauntlet
         if: steps.bots.outputs.skip != 'true'
         run: |
           failed=0
+          results=()
           while IFS= read -r bot; do
             [ -z "$bot" ] && continue
             echo "::group::Gauntlet: $bot"
-            if ! python scripts/bot_gauntlet.py --bot "$bot"; then
+            output=$(python scripts/bot_gauntlet.py --bot "$bot" 2>&1 | tee /dev/stderr)
+            exit_code=${PIPESTATUS[0]}
+            score=$(echo "$output" | grep '^Score:' | awk '{print $2}')
+            if [ "$exit_code" -eq 0 ]; then
+              results+=("$bot: $score wins")
+            else
+              results+=("$bot: $score wins (failed)")
               failed=1
             fi
             echo "::endgroup::"
           done <<< "${{ steps.bots.outputs.bots }}"
 
+          {
+            echo "results<<EOF"
+            printf '%s\n' "${results[@]}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
           if [ "$failed" -ne 0 ]; then
-            echo "One or more bots failed the gauntlet."
+            echo "::error::One or more bots failed the gauntlet. Check the job summary for per-map results."
             exit 1
           fi
+
+      - name: Gauntlet result
+        if: steps.bots.outputs.skip != 'true'
+        run: |
+          echo "## Gauntlet results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            echo "- **$line**" >> "$GITHUB_STEP_SUMMARY"
+          done <<< "${{ steps.gauntlet.outputs.results }}"

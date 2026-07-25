@@ -45,6 +45,24 @@ def write_summary(lines: list[str]) -> None:
         f.write("\n".join(lines) + "\n")
 
 
+def write_github_output(wins: int, total: int, passed: bool, bot_name: str) -> None:
+    output_path = os.environ.get("GITHUB_OUTPUT")
+    if output_path:
+        with open(output_path, "a", encoding="utf-8") as f:
+            f.write(f"wins={wins}\n")
+            f.write(f"total={total}\n")
+            f.write(f"score={wins}/{total}\n")
+            f.write(f"passed={'true' if passed else 'false'}\n")
+            f.write(f"bot={bot_name}\n")
+
+    level = "notice" if passed else "error"
+    verdict = "PASS" if passed else "FAIL"
+    print(
+        f"::{level} title=Bot Gauntlet ({bot_name})::"
+        f"Won {wins}/{total} maps — {verdict}"
+    )
+
+
 def run_gauntlet(bot_name: str, map_names: list[str] | None) -> int:
     config, project_root = find_config()
     bots_dir = (project_root / config.bots_dir).resolve()
@@ -115,6 +133,7 @@ def run_gauntlet(bot_name: str, map_names: list[str] | None) -> int:
     for map_name, label, condition, turns in rows:
         summary_lines.append(f"| {map_name} | {label} | {condition} | {turns} |")
     write_summary(summary_lines)
+    write_github_output(wins, total, passed, bot_name)
 
     return 0 if passed else 1
 
