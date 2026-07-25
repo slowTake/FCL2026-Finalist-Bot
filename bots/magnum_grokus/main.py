@@ -1,7 +1,7 @@
-"""Magnum Grokus v1.2 — disciplined logistics.
+"""Magnum Grokus v1.3 — disciplined logistics.
 
 One harvester chain at a time; one builder owns the active route.
-Belts only while routing; wait on gaps until continuity is restored.
+Belts only while routing; strict chain verification; no vision gaps.
 """
 
 from __future__ import annotations
@@ -21,6 +21,8 @@ SLOT_ORE_LOCATION = 3
 SLOT_CHAIN_OK = 4
 SLOT_ACTIVE_HARVESTER = 5
 SLOT_ROUTE_OWNER = 6
+SLOT_CHAIN_STALL = 7
+STALL_TIMEOUT = 30
 
 MAX_BUILDERS = 5
 
@@ -125,6 +127,15 @@ class Player:
         self._read_core_pos(ct)
         self._sync_team_state(ct)
 
+        is_owner = self._is_route_owner(ct)
+        if is_owner and self.routing and ct.read_store(SLOT_CHAIN_OK) == 0:
+            ct.write_store(SLOT_CHAIN_STALL, ct.read_store(SLOT_CHAIN_STALL) + 1)
+            if ct.read_store(SLOT_CHAIN_STALL) >= STALL_TIMEOUT:
+                ct.write_store(SLOT_ROUTE_OWNER, 0)
+                ct.write_store(SLOT_ACTIVE_HARVESTER, 0)
+                ct.write_store(SLOT_CHAIN_STALL, 0)
+                self._finish_routing_local()
+
         if self.last_pos == pos:
             self.stuck += 1
         else:
@@ -140,10 +151,12 @@ class Player:
                         if self.harvester_pos is not None:
                             self._try_first_conveyor(ct, self.harvester_pos)
                         self._try_ensure_core_splitter(ct)
+                        self._try_finish_routing(ct)
             elif self.routing and is_owner:
                 if self.harvester_pos is not None:
                     self._try_first_conveyor(ct, self.harvester_pos)
                 self._try_ensure_core_splitter(ct)
+                self._try_finish_routing(ct)
             if ct.get_action_cooldown() == 0:
                 self._try_heal(ct)
 
@@ -156,6 +169,8 @@ class Player:
     def _can_build_harvester_team(self, ct: Controller) -> bool:
         if ct.read_store(SLOT_CHAIN_OK) != 0:
             return True
+        if unpack_pos(ct.read_store(SLOT_ACTIVE_HARVESTER)) is not None:
+            return False
         return ct.read_store(SLOT_ROUTE_OWNER) == 0
 
     def _sync_team_state(self, ct: Controller) -> None:
@@ -172,14 +187,42 @@ class Player:
         elif owner != my_id:
             self.routing = False
 
+        if owner == 0 and chain_ok == 0:
+            self._try_reclaim_route(ct)
+
+    def _try_reclaim_route(self, ct: Controller) -> None:
+        if ct.read_store(SLOT_ROUTE_OWNER) != 0:
+            return
+        active = unpack_pos(ct.read_store(SLOT_ACTIVE_HARVESTER))
+        if active is None or ct.read_store(SLOT_CHAIN_OK) != 0:
+            return
+        if not ct.is_in_vision(active):
+            return
+        my_id = ct.get_id()
+        my_team = ct.get_team()
+        for eid in ct.get_nearby_units():
+            if eid == my_id:
+                continue
+            if ct.get_entity_type(eid) != EntityType.BUILDER_BOT:
+                continue
+            if ct.get_team(eid) != my_team:
+                continue
+            if eid < my_id:
+                return
+        ct.write_store(SLOT_ROUTE_OWNER, my_id)
+        ct.write_store(SLOT_CHAIN_STALL, 0)
+        self.harvester_pos = active
+        self.routing = True
+
     def _read_core_pos(self, ct: Controller) -> None:
         if self.core_pos is not None:
             return
         if ct.get_current_round() > 1:
             x = ct.read_store(SLOT_CORE_X)
             y = ct.read_store(SLOT_CORE_Y)
-            self.core_pos = Position(x, y)
-            return
+            if x > 0 or y > 0:
+                self.core_pos = Position(x, y)
+                return
         for tile in ct.get_nearby_tiles():
             bid = ct.get_tile_building_id(tile)
             if bid is not None and ct.get_entity_type(bid) == EntityType.CORE:
@@ -196,13 +239,13 @@ class Player:
         ct.write_store(SLOT_CHAIN_OK, 1)
         ct.write_store(SLOT_ACTIVE_HARVESTER, 0)
         ct.write_store(SLOT_ROUTE_OWNER, 0)
+        ct.write_store(SLOT_CHAIN_STALL, 0)
         self._finish_routing_local()
 
     def _try_finish_routing(self, ct: Controller) -> bool:
         harvester = unpack_pos(ct.read_store(SLOT_ACTIVE_HARVESTER))
         if harvester is None:
-            self._mark_chain_complete(ct)
-            return True
+            return False
         if self._chain_reaches_core(ct, harvester):
             self._mark_chain_complete(ct)
             return True
@@ -261,7 +304,8 @@ class Player:
                         if ct.get_direction(bid) == toward:
                             return True
                     elif et == EntityType.CONVEYOR:
-                        return True
+                        if pos.add(ct.get_direction(bid)) in core_tiles:
+                            return True
 
             bid = ct.get_tile_building_id(pos)
             if bid is None:
@@ -326,6 +370,7 @@ class Player:
             ct.write_store(SLOT_ACTIVE_HARVESTER, pack_pos(build_pos))
             ct.write_store(SLOT_ROUTE_OWNER, ct.get_id())
             ct.write_store(SLOT_CHAIN_OK, 0)
+            ct.write_store(SLOT_CHAIN_STALL, 0)
             self.harvester_pos = build_pos
             self.route_step = None
             self._try_first_conveyor(ct, build_pos)
@@ -374,12 +419,13 @@ class Player:
         """True when the next routing tile is built or does not need a new belt."""
         if not in_bounds(ct, tile_pos):
             return False
-        if not ct.is_in_vision(tile_pos):
-            return True
-
         bid = ct.get_tile_building_id(tile_pos)
         if bid is not None:
-            return True
+            et = ct.get_entity_type(bid)
+            return et in (EntityType.CONVEYOR, EntityType.SPLITTER)
+
+        if not ct.is_in_vision(tile_pos):
+            return False
         if not ct.is_tile_empty(tile_pos):
             return True
 
@@ -450,6 +496,27 @@ class Player:
                 return True
         return False
 
+
+    def _maybe_lay_explore_belt(self, ct: Controller, tile_pos: Position) -> None:
+        if self.core_pos is None or not in_bounds(ct, tile_pos):
+            return
+        if ct.read_store(SLOT_ROUTE_OWNER) != 0:
+            return
+        if (
+            ct.read_store(SLOT_HARVESTER_COUNT) > 0
+            and ct.read_store(SLOT_CHAIN_OK) == 0
+        ):
+            return
+        if not ct.is_in_vision(tile_pos) or not ct.is_tile_empty(tile_pos):
+            return
+        if ct.get_global_resources() < ct.get_conveyor_cost():
+            return
+        if tile_pos == self.core_pos:
+            return
+        facing = nearest_cardinal(tile_pos.direction_to(self.core_pos))
+        if ct.can_build_conveyor(tile_pos, facing):
+            ct.build_conveyor(tile_pos, facing)
+
     def _move_toward_target(self, ct: Controller) -> None:
         if ct.get_move_cooldown() != 0:
             return
@@ -461,18 +528,8 @@ class Player:
                 self.l_path_y_first = not self.l_path_y_first
                 self.stuck = 0
             step = l_path_step(pos, self.core_pos, self.l_path_y_first)
-            candidates: list[Direction] = []
-            if step != Direction.CENTRE:
-                candidates.append(step)
-            for d in CARDINALS:
-                if d not in candidates:
-                    candidates.append(d)
-            candidates.sort(
-                key=lambda d: pos.add(d).distance_squared(self.core_pos)
-            )
-            for d in candidates:
-                if self._try_move(ct, d, routing=True):
-                    return
+            if step != Direction.CENTRE and self._try_move(ct, step, routing=True):
+                return
             return
 
         if self.target is None or pos == self.target or self.stuck >= 3:
@@ -507,6 +564,8 @@ class Player:
         if routing:
             if not self._route_tile_ready(ct, next_pos, d):
                 return False
+        else:
+            self._maybe_lay_explore_belt(ct, next_pos)
 
         if ct.can_move(d):
             ct.move(d)
