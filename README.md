@@ -28,6 +28,20 @@ fcode run starter starter
 fcode watch replay.replay26   # replay name may differ
 ```
 
+## CI bot test
+
+When your bot is ready, commit it under `bots/<your-bot>/main.py` and open a PR.
+
+CI will automatically run your bot against `starter` on all 15 maps. The check passes only on **15/15 wins**.
+
+Run the same test locally before pushing:
+
+```bash
+source .venv/bin/activate
+pip install -r requirements-ci.txt
+python scripts/bot_gauntlet.py --bot <your-bot>
+```
+
 ## Notes
 
 - Do not commit `.venv/` — each person creates their own.

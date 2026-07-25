@@ -1,0 +1,66 @@
+name: Bot Gauntlet
+
+on:
+  pull_request:
+    paths:
+      - 'bots/**'
+      - 'scripts/bot_gauntlet.py'
+      - '.github/workflows/bot-gauntlet.yml'
+
+jobs:
+  gauntlet:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements-ci.txt
+
+      - name: Detect changed bots
+        id: bots
+        run: |
+          mapfile -t changed < <(
+            git diff --name-only "origin/${{ github.base_ref }}"...HEAD -- 'bots/*' \
+              | awk -F/ 'NF >= 2 && $2 != "starter" { print $2 }' \
+              | sort -u
+          )
+
+          if [ "${#changed[@]}" -eq 0 ]; then
+            echo "No non-starter bot changes detected; skipping gauntlet."
+            echo "bots=" >> "$GITHUB_OUTPUT"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            printf 'Changed bots: %s\n' "${changed[*]}"
+            {
+              echo "bots<<EOF"
+              printf '%s\n' "${changed[@]}"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run bot gauntlet
+        if: steps.bots.outputs.skip != 'true'
+        run: |
+          failed=0
+          while IFS= read -r bot; do
+            [ -z "$bot" ] && continue
+            echo "::group::Gauntlet: $bot"
+            if ! python scripts/bot_gauntlet.py --bot "$bot"; then
+              failed=1
+            fi
+            echo "::endgroup::"
+          done <<< "${{ steps.bots.outputs.bots }}"
+
+          if [ "$failed" -ne 0 ]; then
+            echo "One or more bots failed the gauntlet."
+            exit 1
+          fi
