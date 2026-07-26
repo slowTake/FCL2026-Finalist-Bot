@@ -1,7 +1,7 @@
 # Magnum Grokus — Bot Design
 
 Date: 2026-07-22 (v1 simplified 2026-07-25, v1.1 L-path 2026-07-25)  
-Status: v1.2 — chain gating, one builder per route, wait-on-gap  
+Status: v1.3 — strict CHAIN_OK, no vision gaps, stall recovery  
 Location: `bots/magnum_grokus/`
 
 ## Goal (v1)
@@ -38,7 +38,8 @@ Run: `fcode run magnum_grokus starter`
 | 4 | CHAIN_OK | 1 when active harvester chain verified to core |
 | 5 | ACTIVE_HARVESTER | packed pos of harvester being routed |
 | 6 | ROUTE_OWNER | entity id of builder owning the active route |
-| 7–15 | reserved | future coordination (roles, etc.) |
+| 7 | CHAIN_STALL | rounds route owner stuck routing with CHAIN_OK=0 |
+| 8–15 | reserved | future coordination |
 
 Writes are buffered (visible next round). Pack positions with +1 offset so 0 means empty.
 
@@ -57,8 +58,17 @@ Writes are buffered (visible next round). Pack positions with +1 offset so 0 mea
 
 **Action phase:**
 1. Build harvester on adjacent ore only when `CHAIN_OK` or no active route → set owner, `CHAIN_OK=0`, first hop, `routing=True`
-2. If route owner and routing: repair first hop, place core splitter only when chain trace passes
+2. If route owner and routing: repair first hop, place core splitter only when BFS trace from harvester reaches core-facing intake
 3. Heal
+
+**CHAIN_OK rules (v1.3):**
+- BFS from harvester-adjacent belts must reach a core-adjacent tile where a splitter faces core or a conveyor outputs into the core footprint
+- Never set CHAIN_OK without an active harvester in store
+- Never move onto an empty tile outside vision while routing
+
+**Stall recovery:**
+- Route owner increments CHAIN_STALL each round while routing with CHAIN_OK=0
+- At 30 rounds: clear ROUTE_OWNER; lowest-ID nearby builder reclaims and repairs
 
 **Team rules:**
 - Only `ROUTE_OWNER` routes and lays belts; other builders explore only
@@ -66,10 +76,10 @@ Writes are buffered (visible next round). Pack positions with +1 offset so 0 mea
 - Routing move: wait on empty next tile until belt/splitter is placed (no skipping gaps)
 
 **Move phase:**
-- Explore: walk toward ore / shared ore / random target — no belt laying
-- Route home (`routing=True`): L-path cardinal steps (larger delta first; flip axis if stuck)
+- Explore: walk toward ore / shared ore / random target; optional toward-core belts when no active chain (`ROUTE_OWNER==0` and not mid-chain)
+- Route home (`routing=True`): L-path step only (no sideways bounce); flip axis if stuck ≥3 rounds
 - Lay belts/splitters only while routing; facing = travel direction along path
-- Corner tiles: conveyor or splitter facing the next leg (`leg_after` from L-path)
+- Corner tiles: conveyor along travel direction; splitter only when back aligns with incoming at true 90° turns
 - Splitter facing core on core-adjacent tiles (last mile)
 
 ### Gunner
@@ -80,7 +90,7 @@ Writes are buffered (visible next round). Pack positions with +1 offset so 0 mea
 
 1. `fcode run magnum_grokus starter` completes 1000 rounds with no GameErrors from grokus
 2. Nonzero mined titanium on every gauntlet map
-3. Gauntlet score improves from 7/15 baseline
+3. Gauntlet score improves from 7/15 baseline (v1.3 peaks ~10/15 on seed 1; high variance)
 
 ## Deferred design (v2)
 

@@ -94,11 +94,17 @@ Gunners fire along facing; friendlies block the ray — don’t park Builders in
 
 ### Ammo (critical starter gap)
 
-Unsupplied Gunners never fire. In **fcode 2.2**, use conveyor feed only — `convert_ammo` was removed from the API (outdated in older tutorials):
+Unsupplied Gunners never fire. In **fcode 2.2**, ammo comes **only via conveyor feed** — `convert_ammo` was removed from the API (outdated in older tutorials).
 
-- **Conveyor feed** (current model): route stacks from a Splitter side into the Gunner from a non-facing side; Gunner holds one stack and spends 2 per shot.
+### Ammo feed (fcode 2.2)
 
-Practical ladder rule: **keep a small ammo buffer once ≥1 Gunner exists; ramp conversion/feed when enemies are visible; starve ammo while you still need Harvesters.**
+- Route titanium stacks into a Gunner or Sentinel from **any side except the facing direction** (a Splitter side port works well).
+- A turret holds **at most one stack** and only accepts input when **completely empty**.
+- **Gunner:** 2 Ti per shot, reload 1.
+- **Sentinel:** 10 Ti per shot, reload 3.
+- Unfed turrets cannot fire — the starter bot builds Gunners but does not feed them.
+
+Practical ladder rule: **start conveyor feed once ≥1 Gunner exists; ramp feed when enemies are visible; starve ammo while you still need Harvesters.**
 
 ### Builder combat tools
 
@@ -179,7 +185,7 @@ A bot that consistently beats mirror-starter and climbs ladder should:
 ### Mid
 
 - [ ] ≥3–5 Harvesters with **live** delivery (nonzero mined)
-- [ ] Ammo policy active; ≥2–4 Gunners covering approaches, fed or converted
+- [ ] Ammo policy active; ≥2–4 Gunners covering approaches, fed via conveyors
 - [ ] Heal priority on Core / Splitter / critical conveyors
 - [ ] Stop over-spawning Builders once roles are filled
 
@@ -212,7 +218,7 @@ Current `bots/starter/main.py` is economy-first but incomplete:
 **Highest ROI upgrade order** (matches tutorial “where to go from here”):
 
 1. Full Harvester→Core chains + Splitter last-mile  
-2. Core ammo buffer (or conveyor ammo feed) the moment a Gunner exists  
+2. Conveyor ammo feed from a Splitter side port the moment a Gunner exists  
 3. Store roles + ore claims  
 4. Real pathfinding  
 5. Heal + logistics sabotage  
@@ -222,7 +228,7 @@ Current `bots/starter/main.py` is economy-first but incomplete:
 
 ## One-sentence strategy
 
-**Win the mined race with short, complete logistics and disciplined scale, keep a small ammo buffer so turrets actually shoot, assign Builders roles so they don’t trip over each other, then either snip the enemy’s conveyors or punch their Core — and if the clock hits 1000, leave with more delivered titanium and more living Harvesters than they do.**
+**Win the mined race with short, complete logistics and disciplined scale, keep turrets conveyor-fed so they actually shoot, assign Builders roles so they don’t trip over each other, then either snip the enemy’s conveyors or punch their Core — and if the clock hits 1000, leave with more delivered titanium and more living Harvesters than they do.**
 
 ---
 
