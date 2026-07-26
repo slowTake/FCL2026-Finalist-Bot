@@ -165,8 +165,17 @@ Maps are 8×8–30×30 and **symmetric**. Use that:
 
 - Mirror of your Core ≈ enemy Core → aim raids / gun lines along the symmetry axis
 - Chokepoints (pinch, strait, fjord-style maps): Gunner + Barrier walls; don’t leave open flanks
-- Open maps (duel, sprint): faster expand + more Harvesters; fewer static Sentinels early
+- Close-quarter open maps (sprint, duel — area ≤ 144): gunners ASAP after 1 harvester; place gunner on harvester's enemy-facing flank at ore; multi-builder defense near core as backup
+- Large open maps: faster expand + more Harvesters; fewer static Sentinels early
 - Dense walls: fewer Builders, better pathfinding, Launchers to hop bottlenecks
+
+**Close-quarter maps (sprint, duel)** — cores are only ~6–8 tiles apart; enemy bots reach your base in seconds:
+
+- Group `sprint.map26` (10×10) and `duel.map26` (12×12) together; classify at runtime via `width × height ≤ 144` (no map-name API) and publish profile to a store slot so all units agree.
+- Survival beats economy: enter `STAGE_DEFEND` at 1 harvester; lower push threshold (~250 rounds); build first splitter-fed gunner after 1 harvester, not 3.
+- **Harvester-flank gunner**: place a gunner on the tile beside a new harvester, facing the mirrored enemy core. Ore sits on the rush lane — harvester outputs to the adjacent gunner for immediate ammo without a core splitter ring.
+- Placement priority: (1) harvester-flank gunner at ore, (2) splitter-fed gunner at core, (3) fallback adjacent facing enemy.
+- Turtle wins close fights because all builders help defense; on close-quarter maps Router should also place gunners near core.
 
 Keep a Stage enum driven by Store (`OPENING / EXPAND / DEFEND / PUSH`) so all units agree.
 

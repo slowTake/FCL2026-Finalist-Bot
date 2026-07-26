@@ -1,38 +1,76 @@
-"""Magnum Grokus v1.3 — disciplined logistics.
+"""Magnum Grokus — map-aware turtle fork.
 
-One harvester chain at a time; one builder owns the active route.
-Belts only while routing; strict chain verification; no vision gaps.
+League/CI bot under bots/. Gitignored dev copy: local_bots/magnum_grokus/.
+
+Map detection (slots 14–15), profile-driven policy (slot 4), and obstacle-aware
+L-path movement via florent_lib.make_path_ct.
 """
 
 from __future__ import annotations
 
 import random
 import sys
-from collections import deque
+from enum import IntEnum
 from pathlib import Path
 
 from fcode import Controller, Direction, EntityType, Environment, Position
 
-_ROOT = Path(__file__).resolve().parents[2]
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+_MAP_FEATURES = _REPO_ROOT / "bots" / "map_detector_bot"
+if str(_MAP_FEATURES) not in sys.path:
+    sys.path.insert(0, str(_MAP_FEATURES))
 
-from florent_lib import l_path_step
+from features import KNOWN_MAPS, MAP_ID_TO_NAME, ORE_LOCATIONS  # noqa: E402
+from florent_lib import make_path_ct  # noqa: E402
 
+# All directions except CENTRE — useful for movement and spawning
 DIRECTIONS = [d for d in Direction if d != Direction.CENTRE]
+
+# Cardinal directions only — conveyors and splitters can only face these
 CARDINALS = [Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST]
 
+# --- Communication store slot assignments ---
 SLOT_CORE_X = 0
 SLOT_CORE_Y = 1
 SLOT_HARVESTER_COUNT = 2
 SLOT_ORE_LOCATION = 3
-SLOT_CHAIN_OK = 4
-SLOT_ACTIVE_HARVESTER = 5
-SLOT_ROUTE_OWNER = 6
-SLOT_CHAIN_STALL = 7
-STALL_TIMEOUT = 30
+SLOT_MAP_PROFILE = 4
+SLOT_STAGE = 5
+SLOT_GUNNER_COUNT = 6
+SLOT_MAP_ID = 14
+SLOT_PACKED_CORES = 15
 
 MAX_BUILDERS = 5
+TARGET_HARVESTERS = 3
+TARGET_HARVESTERS_CLOSE = 1
+MAX_GUNNERS_CLOSE = 8
+
+
+class CoreState(IntEnum):
+    UNKNOWN = 0
+    ASSUMED = 1
+    KNOWN = 2
+
+
+class MapProfile(IntEnum):
+    DEFAULT = 0
+    CLOSE_QUARTER = 1
+    CHOKE = 2
+    OPEN_LARGE = 3
+
+
+class Stage(IntEnum):
+    OPENING = 0
+    EXPAND = 1
+    DEFEND = 2
+    PUSH = 3
+
+
+CLOSE_QUARTER_MAPS = {4, 12}  # duel, sprint
+CHOKE_MAPS = {2, 3, 8, 13}  # aurora, crossfire, pinch, strait
+OPEN_LARGE_MAPS = {6, 7, 9, 11}  # hive, longship, quarry, skerry
 
 
 def pack_pos(pos: Position) -> int:
@@ -43,6 +81,37 @@ def unpack_pos(val: int) -> Position | None:
     if val == 0:
         return None
     return Position((val >> 16) - 1, (val & 0xFFFF) - 1)
+
+
+def pack_cores(
+    ally_state: int,
+    ally_x: int,
+    ally_y: int,
+    enemy_state: int,
+    enemy_x: int,
+    enemy_y: int,
+) -> int:
+    ally_bits = (ally_state << 14) | (ally_x << 7) | ally_y
+    enemy_bits = (enemy_state << 14) | (enemy_x << 7) | enemy_y
+    return (enemy_bits << 16) | ally_bits
+
+
+def unpack_cores(val: int):
+    ally_bits = val & 0xFFFF
+    enemy_bits = (val >> 16) & 0xFFFF
+    ally = (ally_bits >> 14, (ally_bits >> 7) & 0x7F, ally_bits & 0x7F)
+    enemy = (enemy_bits >> 14, (enemy_bits >> 7) & 0x7F, enemy_bits & 0x7F)
+    return ally, enemy
+
+
+def profile_for_map_id(map_id: int) -> MapProfile:
+    if map_id in CLOSE_QUARTER_MAPS:
+        return MapProfile.CLOSE_QUARTER
+    if map_id in CHOKE_MAPS:
+        return MapProfile.CHOKE
+    if map_id in OPEN_LARGE_MAPS:
+        return MapProfile.OPEN_LARGE
+    return MapProfile.DEFAULT
 
 
 def nearest_cardinal(d: Direction) -> Direction:
@@ -63,22 +132,27 @@ def in_bounds(ct: Controller, pos: Position) -> bool:
     return 0 <= pos.x < ct.get_map_width() and 0 <= pos.y < ct.get_map_height()
 
 
-def splitter_outputs(facing: Direction) -> list[Direction]:
+def splitter_output_dirs(facing: Direction) -> list[Direction]:
     facing = nearest_cardinal(facing)
-    return [facing, facing.rotate_left().rotate_left(), facing.rotate_right().rotate_right()]
+    left = facing.rotate_left().rotate_left()
+    right = facing.rotate_right().rotate_right()
+    return [facing, left, right]
+
+
+def target_harvesters_for(profile: int) -> int:
+    if profile == MapProfile.CLOSE_QUARTER:
+        return TARGET_HARVESTERS_CLOSE
+    return TARGET_HARVESTERS
 
 
 class Player:
-    def __init__(self) -> None:
+    def __init__(self):
         self.num_spawned = 0
-        self.core_pos: Position | None = None
         self.target: Position | None = None
         self.last_pos: Position | None = None
         self.stuck = 0
-        self.routing = False
-        self.route_step: Direction | None = None
-        self.harvester_pos: Position | None = None
-        self.l_path_y_first = False
+        self.core_pos: Position | None = None
+        self.map_detected = False
 
     def run(self, ct: Controller) -> None:
         etype = ct.get_entity_type()
@@ -89,14 +163,66 @@ class Player:
         elif etype == EntityType.GUNNER:
             self._run_gunner(ct)
 
+    # ------------------------------------------------------------------
+    # Core
+    # ------------------------------------------------------------------
+
+    def _detect_and_store_map(self, ct: Controller) -> None:
+        w = ct.get_map_width()
+        h = ct.get_map_height()
+        team = ct.get_team()
+        pos = ct.get_position()
+        fingerprint = (w, h, team, pos.x, pos.y)
+
+        map_id = 0
+        enemy_state = CoreState.UNKNOWN
+        enemy_x = 0
+        enemy_y = 0
+
+        if fingerprint in KNOWN_MAPS:
+            map_id, _map_name, enemy_x, enemy_y = KNOWN_MAPS[fingerprint]
+            enemy_state = CoreState.ASSUMED
+
+        profile = profile_for_map_id(map_id)
+        ct.write_store(SLOT_MAP_ID, map_id)
+        ct.write_store(SLOT_MAP_PROFILE, profile)
+
+        packed = pack_cores(
+            CoreState.KNOWN, pos.x, pos.y,
+            enemy_state, enemy_x, enemy_y,
+        )
+        ct.write_store(SLOT_PACKED_CORES, packed)
+
+        harvesters = ct.read_store(SLOT_HARVESTER_COUNT)
+        if profile == MapProfile.CLOSE_QUARTER:
+            stage = Stage.DEFEND if harvesters >= TARGET_HARVESTERS_CLOSE else Stage.OPENING
+        elif harvesters >= TARGET_HARVESTERS:
+            stage = Stage.EXPAND
+        else:
+            stage = Stage.OPENING
+        ct.write_store(SLOT_STAGE, stage)
+
+        if not self.map_detected:
+            ally, enemy = unpack_cores(packed)
+            print(
+                f"DETECTED MAP {MAP_ID_TO_NAME.get(map_id, 'UNKNOWN')} "
+                f"(ID: {map_id}, profile={profile.name}) | "
+                f"ALLY: {ally[1]},{ally[2]} | ENEMY: {enemy[1]},{enemy[2]}"
+            )
+            self.map_detected = True
+
     def _run_core(self, ct: Controller) -> None:
         pos = ct.get_position()
         ct.write_store(SLOT_CORE_X, pos.x)
         ct.write_store(SLOT_CORE_Y, pos.y)
+        self._detect_and_store_map(ct)
 
         if self.num_spawned >= MAX_BUILDERS:
             return
-        if ct.get_global_resources() < ct.get_builder_bot_cost():
+
+        ti = ct.get_global_resources()
+        cost = ct.get_builder_bot_cost()
+        if ti < cost:
             return
 
         dirs = list(DIRECTIONS)
@@ -108,19 +234,15 @@ class Player:
                 self.num_spawned += 1
                 return
 
+    # ------------------------------------------------------------------
+    # Builder bot
+    # ------------------------------------------------------------------
+
     def _run_builder(self, ct: Controller) -> None:
         pos = ct.get_position()
-        self._read_core_pos(ct)
-        self._sync_team_state(ct)
 
-        is_owner = self._is_route_owner(ct)
-        if is_owner and self.routing and ct.read_store(SLOT_CHAIN_OK) == 0:
-            ct.write_store(SLOT_CHAIN_STALL, ct.read_store(SLOT_CHAIN_STALL) + 1)
-            if ct.read_store(SLOT_CHAIN_STALL) >= STALL_TIMEOUT:
-                ct.write_store(SLOT_ROUTE_OWNER, 0)
-                ct.write_store(SLOT_ACTIVE_HARVESTER, 0)
-                ct.write_store(SLOT_CHAIN_STALL, 0)
-                self._finish_routing_local()
+        if self.core_pos is None:
+            self._read_core_pos(ct)
 
         if self.last_pos == pos:
             self.stuck += 1
@@ -128,255 +250,112 @@ class Player:
             self.stuck = 0
         self.last_pos = pos
 
-        is_owner = self._is_route_owner(ct)
+        profile = ct.read_store(SLOT_MAP_PROFILE)
+        harvester_count = ct.read_store(SLOT_HARVESTER_COUNT)
+        target_harvesters = target_harvesters_for(profile)
+        in_defend = (
+            profile == MapProfile.CLOSE_QUARTER
+            and harvester_count >= TARGET_HARVESTERS_CLOSE
+        )
 
         if ct.get_action_cooldown() == 0:
-            if self._can_build_harvester_team(ct):
-                if not self._try_build_harvester(ct):
-                    if self.routing and is_owner:
-                        if self.harvester_pos is not None:
-                            self._try_first_conveyor(ct, self.harvester_pos)
-                        self._try_ensure_core_splitter(ct)
-                        self._try_finish_routing(ct)
-            elif self.routing and is_owner:
-                if self.harvester_pos is not None:
-                    self._try_first_conveyor(ct, self.harvester_pos)
-                self._try_ensure_core_splitter(ct)
-                self._try_finish_routing(ct)
-            if ct.get_action_cooldown() == 0:
-                self._try_heal(ct)
+            if not self._try_build_harvester(ct):
+                if in_defend or harvester_count >= target_harvesters:
+                    if not self._try_ensure_core_splitter(ct):
+                        self._try_build_gunner(ct, profile)
+
+        if ct.get_action_cooldown() == 0:
+            self._try_heal(ct)
 
         self._move_toward_target(ct)
         self._share_ore(ct)
 
-    def _is_route_owner(self, ct: Controller) -> bool:
-        return ct.read_store(SLOT_ROUTE_OWNER) == ct.get_id()
-
-    def _can_build_harvester_team(self, ct: Controller) -> bool:
-        if ct.read_store(SLOT_CHAIN_OK) != 0:
-            return True
-        if unpack_pos(ct.read_store(SLOT_ACTIVE_HARVESTER)) is not None:
-            return False
-        return ct.read_store(SLOT_ROUTE_OWNER) == 0
-
-    def _sync_team_state(self, ct: Controller) -> None:
-        active = unpack_pos(ct.read_store(SLOT_ACTIVE_HARVESTER))
-        if active is not None:
-            self.harvester_pos = active
-
-        owner = ct.read_store(SLOT_ROUTE_OWNER)
-        chain_ok = ct.read_store(SLOT_CHAIN_OK)
-        my_id = ct.get_id()
-
-        if chain_ok == 0 and owner == my_id:
-            self.routing = True
-        elif owner != my_id:
-            self.routing = False
-
-        if owner == 0 and chain_ok == 0:
-            self._try_reclaim_route(ct)
-
-    def _try_reclaim_route(self, ct: Controller) -> None:
-        if ct.read_store(SLOT_ROUTE_OWNER) != 0:
-            return
-        active = unpack_pos(ct.read_store(SLOT_ACTIVE_HARVESTER))
-        if active is None or ct.read_store(SLOT_CHAIN_OK) != 0:
-            return
-        if not ct.is_in_vision(active):
-            return
-        my_id = ct.get_id()
-        my_team = ct.get_team()
-        for eid in ct.get_nearby_units():
-            if eid == my_id:
-                continue
-            if ct.get_entity_type(eid) != EntityType.BUILDER_BOT:
-                continue
-            if ct.get_team(eid) != my_team:
-                continue
-            if eid < my_id:
-                return
-        ct.write_store(SLOT_ROUTE_OWNER, my_id)
-        ct.write_store(SLOT_CHAIN_STALL, 0)
-        self.harvester_pos = active
-        self.routing = True
-
     def _read_core_pos(self, ct: Controller) -> None:
-        if self.core_pos is not None:
-            return
-        if ct.get_current_round() > 1:
-            x = ct.read_store(SLOT_CORE_X)
-            y = ct.read_store(SLOT_CORE_Y)
-            if x > 0 or y > 0:
-                self.core_pos = Position(x, y)
-                return
-        for tile in ct.get_nearby_tiles():
-            bid = ct.get_tile_building_id(tile)
-            if bid is not None and ct.get_entity_type(bid) == EntityType.CORE:
-                self.core_pos = tile
-                return
+        x = ct.read_store(SLOT_CORE_X)
+        y = ct.read_store(SLOT_CORE_Y)
+        if x > 0 or y > 0:
+            self.core_pos = Position(x, y)
 
-    def _finish_routing_local(self) -> None:
-        self.routing = False
-        self.route_step = None
-        self.harvester_pos = None
-        self.l_path_y_first = False
+    def _enemy_core_pos(self, ct: Controller) -> Position | None:
+        _, enemy = unpack_cores(ct.read_store(SLOT_PACKED_CORES))
+        if enemy[0] == CoreState.UNKNOWN:
+            return None
+        return Position(enemy[1], enemy[2])
 
-    def _mark_chain_complete(self, ct: Controller) -> None:
-        ct.write_store(SLOT_CHAIN_OK, 1)
-        ct.write_store(SLOT_ACTIVE_HARVESTER, 0)
-        ct.write_store(SLOT_ROUTE_OWNER, 0)
-        ct.write_store(SLOT_CHAIN_STALL, 0)
-        self._finish_routing_local()
-
-    def _try_finish_routing(self, ct: Controller) -> bool:
-        harvester = unpack_pos(ct.read_store(SLOT_ACTIVE_HARVESTER))
-        if harvester is None:
+    def _gunner_cap_reached(self, ct: Controller, profile: int) -> bool:
+        if profile != MapProfile.CLOSE_QUARTER:
             return False
-        if self._chain_reaches_core(ct, harvester):
-            self._mark_chain_complete(ct)
-            return True
-        return False
+        return ct.read_store(SLOT_GUNNER_COUNT) >= MAX_GUNNERS_CLOSE
 
-    def _core_tiles(self) -> set[Position]:
-        if self.core_pos is None:
-            return set()
-        return {
-            Position(self.core_pos.x + dx, self.core_pos.y + dy)
-            for dx in range(2)
-            for dy in range(2)
-        }
-
-    def _adjacent_to_core_pos(self, pos: Position) -> bool:
-        core_tiles = self._core_tiles()
-        for d in CARDINALS:
-            if pos.add(d) in core_tiles:
-                return True
-        return False
-
-    def _chain_reaches_core(self, ct: Controller, harvester_pos: Position) -> bool:
-        if self.core_pos is None:
-            return False
-
-        core_tiles = self._core_tiles()
-        queue: deque[Position] = deque()
-        visited: set[Position] = set()
-
-        for d in CARDINALS:
-            n = harvester_pos.add(d)
-            if not in_bounds(ct, n) or not ct.is_in_vision(n):
-                continue
-            bid = ct.get_tile_building_id(n)
-            if bid is None:
-                continue
-            if ct.get_entity_type(bid) not in (
-                EntityType.CONVEYOR,
-                EntityType.SPLITTER,
-            ):
-                continue
-            queue.append(n)
-            visited.add(n)
-
-        if not queue:
-            return False
-
-        while queue:
-            pos = queue.popleft()
-            if self._adjacent_to_core_pos(pos):
-                bid = ct.get_tile_building_id(pos)
-                if bid is not None:
-                    et = ct.get_entity_type(bid)
-                    if et == EntityType.SPLITTER:
-                        toward = nearest_cardinal(pos.direction_to(self.core_pos))
-                        if ct.get_direction(bid) == toward:
-                            return True
-                    elif et == EntityType.CONVEYOR:
-                        if pos.add(ct.get_direction(bid)) in core_tiles:
-                            return True
-
-            bid = ct.get_tile_building_id(pos)
-            if bid is None:
-                continue
-            et = ct.get_entity_type(bid)
-            if et == EntityType.CONVEYOR:
-                nxt = pos.add(ct.get_direction(bid))
-                if (
-                    in_bounds(ct, nxt)
-                    and nxt not in visited
-                    and ct.is_in_vision(nxt)
-                ):
-                    visited.add(nxt)
-                    queue.append(nxt)
-            elif et == EntityType.SPLITTER:
-                for out_dir in splitter_outputs(ct.get_direction(bid)):
-                    nxt = pos.add(out_dir)
-                    if (
-                        in_bounds(ct, nxt)
-                        and nxt not in visited
-                        and ct.is_in_vision(nxt)
-                    ):
-                        visited.add(nxt)
-                        queue.append(nxt)
-
-        return False
+    def _record_gunner_built(self, ct: Controller) -> None:
+        ct.write_store(SLOT_GUNNER_COUNT, ct.read_store(SLOT_GUNNER_COUNT) + 1)
 
     def _try_build_harvester(self, ct: Controller) -> bool:
-        if not self._can_build_harvester_team(ct):
-            return False
-        if ct.get_global_resources() < ct.get_harvester_cost():
+        ti = ct.get_global_resources()
+        cost = ct.get_harvester_cost()
+        if ti < cost:
             return False
 
         pos = ct.get_position()
-        candidates: list[tuple[int, Direction]] = []
-        for d in DIRECTIONS:
+        profile = ct.read_store(SLOT_MAP_PROFILE)
+        for d in Direction:
             build_pos = pos.add(d)
-            if not in_bounds(ct, build_pos):
-                continue
-            if not ct.can_build_harvester(build_pos):
-                continue
-            score = 0
-            if self.core_pos is not None:
-                step = l_path_step(build_pos, self.core_pos, self.l_path_y_first)
-                if step != Direction.CENTRE:
-                    conv_pos = build_pos.add(step)
-                    if conv_pos == pos:
-                        score = 2
-                    elif conv_pos.distance_squared(pos) == 1:
-                        score = 1
-            candidates.append((score, d))
-
-        if not candidates:
-            return False
-
-        candidates.sort(key=lambda item: (-item[0], item[1].value))
-        for _, d in candidates:
-            build_pos = pos.add(d)
-            ct.build_harvester(build_pos)
-            count = ct.read_store(SLOT_HARVESTER_COUNT)
-            ct.write_store(SLOT_HARVESTER_COUNT, count + 1)
-            ct.write_store(SLOT_ACTIVE_HARVESTER, pack_pos(build_pos))
-            ct.write_store(SLOT_ROUTE_OWNER, ct.get_id())
-            ct.write_store(SLOT_CHAIN_OK, 0)
-            ct.write_store(SLOT_CHAIN_STALL, 0)
-            self.harvester_pos = build_pos
-            self.route_step = None
-            self._try_first_conveyor(ct, build_pos)
-            self.routing = True
-            self.target = None
-            return True
+            if ct.can_build_harvester(build_pos):
+                ct.build_harvester(build_pos)
+                count = ct.read_store(SLOT_HARVESTER_COUNT)
+                ct.write_store(SLOT_HARVESTER_COUNT, count + 1)
+                self._try_build_conveyor_toward_core(ct, build_pos)
+                if profile == MapProfile.CLOSE_QUARTER:
+                    self._try_build_harvester_flank_gunner(ct, build_pos)
+                self.target = None
+                return True
         return False
 
-    def _try_first_conveyor(self, ct: Controller, harvester_pos: Position) -> None:
-        if self.core_pos is None or not ct.is_in_vision(harvester_pos):
+    def _try_build_harvester_flank_gunner(self, ct: Controller, harvester_pos: Position) -> bool:
+        if self._gunner_cap_reached(ct, MapProfile.CLOSE_QUARTER):
+            return False
+        enemy_core = self._enemy_core_pos(ct)
+        if enemy_core is None:
+            return False
+        ti = ct.get_global_resources()
+        if ti < ct.get_gunner_cost():
+            return False
+
+        for d in CARDINALS:
+            build_pos = harvester_pos.add(d)
+            facing = nearest_cardinal(build_pos.direction_to(enemy_core))
+            if facing == Direction.CENTRE:
+                continue
+            if ct.can_build_gunner(build_pos, facing):
+                ct.build_gunner(build_pos, facing)
+                self._record_gunner_built(ct)
+                return True
+        return False
+
+    def _try_build_conveyor_toward_core(self, ct: Controller, harvester_pos: Position) -> None:
+        if self.core_pos is None:
+            return
+        ti = ct.get_global_resources()
+        if ti < ct.get_conveyor_cost():
             return
 
-        step = l_path_step(harvester_pos, self.core_pos, self.l_path_y_first)
-        if step == Direction.CENTRE:
+        toward_core = harvester_pos.direction_to(self.core_pos)
+        if toward_core == Direction.CENTRE:
             return
-        conv_pos = harvester_pos.add(step)
-        if not in_bounds(ct, conv_pos):
-            return
-        if self._lay_route_tile(ct, conv_pos, step):
-            self.harvester_pos = None
+        facing = nearest_cardinal(toward_core)
+        conv_pos = harvester_pos.add(facing)
+        if ct.can_build_conveyor(conv_pos, facing):
+            ct.build_conveyor(conv_pos, facing)
+
+    def _adjacent_to_core(self, ct: Controller, pos: Position) -> bool:
+        for d in DIRECTIONS:
+            neighbor = pos.add(d)
+            if not in_bounds(ct, neighbor):
+                continue
+            bid = ct.get_tile_building_id(neighbor)
+            if bid is not None and ct.get_entity_type(bid) == EntityType.CORE:
+                return True
+        return False
 
     def _try_ensure_core_splitter(self, ct: Controller) -> bool:
         if self.core_pos is None:
@@ -386,122 +365,74 @@ class Player:
             return False
         if ct.get_tile_building_id(pos) is not None:
             return False
-
         toward = nearest_cardinal(pos.direction_to(self.core_pos))
         if toward == Direction.CENTRE:
             return False
         if ct.can_build_splitter(pos, toward):
             ct.build_splitter(pos, toward)
-            self._try_finish_routing(ct)
             return True
         return False
 
-    def _route_tile_ready(
-        self,
-        ct: Controller,
-        tile_pos: Position,
-        move_dir: Direction,
-    ) -> bool:
-        """True when the next routing tile is built or does not need a new belt."""
-        if not in_bounds(ct, tile_pos):
+    def _try_build_gunner(self, ct: Controller, profile: int) -> bool:
+        if self._gunner_cap_reached(ct, profile):
             return False
-        bid = ct.get_tile_building_id(tile_pos)
-        if bid is not None:
-            et = ct.get_entity_type(bid)
-            return et in (EntityType.CONVEYOR, EntityType.SPLITTER)
-
-        if not ct.is_in_vision(tile_pos):
-            return False
-        if not ct.is_tile_empty(tile_pos):
-            return True
-
-        return self._lay_route_tile(ct, tile_pos, move_dir)
-
-    def _lay_route_tile(
-        self,
-        ct: Controller,
-        tile_pos: Position,
-        move_dir: Direction,
-    ) -> bool:
-        """Lay belt or splitter on tile_pos along routing path. Returns True if built."""
-        if self.core_pos is None or not in_bounds(ct, tile_pos):
-            return False
-        if not ct.is_in_vision(tile_pos):
-            return False
-        if not ct.is_tile_empty(tile_pos):
+        ti = ct.get_global_resources()
+        if ti < ct.get_gunner_cost():
             return False
 
-        if self._adjacent_to_core(ct, tile_pos):
-            toward = nearest_cardinal(tile_pos.direction_to(self.core_pos))
-            if toward == Direction.CENTRE:
-                return False
-            if ct.can_build_splitter(tile_pos, toward):
-                ct.build_splitter(tile_pos, toward)
-                self._try_finish_routing(ct)
-                return True
+        pos = ct.get_position()
+        if self.core_pos is None or pos.distance_squared(self.core_pos) > 18:
             return False
 
-        leg_after = l_path_step(tile_pos, self.core_pos, self.l_path_y_first)
-        if leg_after != move_dir and leg_after != Direction.CENTRE:
-            incoming = move_dir.opposite()
-            if incoming == leg_after.opposite():
-                if ct.get_global_resources() < ct.get_splitter_cost():
-                    return False
-                if ct.can_build_splitter(tile_pos, leg_after):
-                    ct.build_splitter(tile_pos, leg_after)
+        enemy_core = self._enemy_core_pos(ct)
+
+        for tile in ct.get_nearby_tiles(dist_sq=2):
+            bid = ct.get_tile_building_id(tile)
+            if bid is None or ct.get_entity_type(bid) != EntityType.SPLITTER:
+                continue
+            facing = ct.get_direction(bid)
+            for out_dir in splitter_output_dirs(facing):
+                build_pos = tile.add(out_dir)
+                core_bid = ct.get_tile_building_id(build_pos)
+                if core_bid is not None and ct.get_entity_type(core_bid) == EntityType.CORE:
+                    continue
+                if ct.can_build_gunner(build_pos, out_dir):
+                    ct.build_gunner(build_pos, out_dir)
+                    self._record_gunner_built(ct)
                     return True
-            elif ct.can_build_conveyor(tile_pos, leg_after):
-                ct.build_conveyor(tile_pos, leg_after)
-                return True
-            return False
 
-        if ct.get_global_resources() < ct.get_conveyor_cost():
-            return False
-        if ct.can_build_conveyor(tile_pos, move_dir):
-            ct.build_conveyor(tile_pos, move_dir)
-            return True
+        if enemy_core is not None:
+            facing = nearest_cardinal(pos.direction_to(enemy_core))
+            if facing != Direction.CENTRE:
+                for d in CARDINALS:
+                    build_pos = pos.add(d)
+                    if ct.can_build_gunner(build_pos, facing):
+                        ct.build_gunner(build_pos, facing)
+                        self._record_gunner_built(ct)
+                        return True
+
+        facing = pos.direction_to(self.core_pos).opposite()
+        if facing == Direction.CENTRE:
+            facing = random.choice(CARDINALS)
+        for d in Direction:
+            build_pos = pos.add(d)
+            if ct.can_build_gunner(build_pos, facing):
+                ct.build_gunner(build_pos, facing)
+                self._record_gunner_built(ct)
+                return True
         return False
 
     def _try_heal(self, ct: Controller) -> None:
         pos = ct.get_position()
-        for d in DIRECTIONS:
+        for d in Direction:
             check = pos.add(d)
-            if not in_bounds(ct, check):
-                continue
             if ct.can_heal(check):
                 ct.heal(check)
                 return
 
-    def _adjacent_to_core(self, ct: Controller, pos: Position) -> bool:
-        for d in CARDINALS:
-            n = pos.add(d)
-            if not in_bounds(ct, n) or not ct.is_in_vision(n):
-                continue
-            bid = ct.get_tile_building_id(n)
-            if bid is not None and ct.get_entity_type(bid) == EntityType.CORE:
-                return True
-        return False
-
-
-    def _maybe_lay_explore_belt(self, ct: Controller, tile_pos: Position) -> None:
-        if self.core_pos is None or not in_bounds(ct, tile_pos):
-            return
-        if ct.read_store(SLOT_ROUTE_OWNER) != 0:
-            return
-        if (
-            ct.read_store(SLOT_HARVESTER_COUNT) > 0
-            and ct.read_store(SLOT_CHAIN_OK) == 0
-        ):
-            return
-        if not ct.is_in_vision(tile_pos) or not ct.is_tile_empty(tile_pos):
-            return
-        if ct.get_global_resources() < ct.get_conveyor_cost():
-            return
-        if tile_pos == self.core_pos:
-            return
-        facing = nearest_cardinal(tile_pos.direction_to(self.core_pos))
-        if ct.can_build_conveyor(tile_pos, facing):
-            ct.build_conveyor(tile_pos, facing)
+    # ------------------------------------------------------------------
+    # Builder bot — movement
+    # ------------------------------------------------------------------
 
     def _move_toward_target(self, ct: Controller) -> None:
         if ct.get_move_cooldown() != 0:
@@ -509,37 +440,29 @@ class Player:
 
         pos = ct.get_position()
 
-        if self.routing and self._is_route_owner(ct) and self.core_pos is not None:
-            if self.stuck >= 3:
-                self.l_path_y_first = not self.l_path_y_first
-                self.stuck = 0
-            step = l_path_step(pos, self.core_pos, self.l_path_y_first)
-            if step != Direction.CENTRE and self._try_move(ct, step, routing=True):
-                return
-            return
-
         if self.target is None or pos == self.target or self.stuck >= 3:
             self.target = self._pick_target(ct)
             self.stuck = 0
-
         if self.target is None:
             return
 
-        desired = pos.direction_to(self.target)
+        desired = make_path_ct(ct, pos, self.target, y_first=self.stuck >= 1)
+        if desired == Direction.CENTRE:
+            desired = nearest_cardinal(pos.direction_to(self.target))
         if desired == Direction.CENTRE:
             return
 
         primary = [desired, desired.rotate_left(), desired.rotate_right()]
         for d in primary:
-            if self._try_move(ct, d, routing=False):
+            if self._try_move(ct, d):
                 return
         remaining = [d for d in DIRECTIONS if d not in primary]
         random.shuffle(remaining)
         for d in remaining:
-            if self._try_move(ct, d, routing=False):
+            if self._try_move(ct, d):
                 return
 
-    def _try_move(self, ct: Controller, d: Direction, routing: bool) -> bool:
+    def _try_move(self, ct: Controller, d: Direction) -> bool:
         if d == Direction.CENTRE:
             return False
         pos = ct.get_position()
@@ -547,35 +470,79 @@ class Player:
         if not in_bounds(ct, next_pos):
             return False
 
-        if routing:
-            if not self._route_tile_ready(ct, next_pos, d):
-                return False
-        else:
-            self._maybe_lay_explore_belt(ct, next_pos)
+        if ct.is_tile_empty(next_pos) and self.core_pos is not None:
+            toward_core = next_pos.direction_to(self.core_pos)
+            cardinal = nearest_cardinal(toward_core)
+            if self._adjacent_to_core(ct, next_pos):
+                if ct.can_build_splitter(next_pos, cardinal):
+                    ct.build_splitter(next_pos, cardinal)
+                elif ct.can_build_conveyor(next_pos, cardinal):
+                    ct.build_conveyor(next_pos, cardinal)
+            elif ct.can_build_conveyor(next_pos, cardinal):
+                ct.build_conveyor(next_pos, cardinal)
 
         if ct.can_move(d):
             ct.move(d)
-            if routing:
-                self.route_step = d
             return True
         return False
 
-    def _pick_target(self, ct: Controller) -> Position | None:
+    def _ore_has_harvester(self, ct: Controller, ore_pos: Position) -> bool:
+        if not ct.is_in_vision(ore_pos):
+            return False
+        bid = ct.get_tile_building_id(ore_pos)
+        if bid is None:
+            return False
+        return ct.get_entity_type(bid) == EntityType.HARVESTER
+
+    def _nearest_known_ore(self, ct: Controller, pos: Position) -> Position | None:
+        map_id = ct.read_store(SLOT_MAP_ID)
+        if map_id <= 0 or map_id not in ORE_LOCATIONS:
+            return None
+        best: Position | None = None
+        best_dist = float("inf")
+        for x, y in ORE_LOCATIONS[map_id]:
+            ore_pos = Position(x, y)
+            if not in_bounds(ct, ore_pos):
+                continue
+            if self._ore_has_harvester(ct, ore_pos):
+                continue
+            d = pos.distance_squared(ore_pos)
+            if d < best_dist:
+                best_dist = d
+                best = ore_pos
+        return best
+
+    def _pick_target(self, ct: Controller) -> Position:
         pos = ct.get_position()
+        profile = ct.read_store(SLOT_MAP_PROFILE)
+        harvester_count = ct.read_store(SLOT_HARVESTER_COUNT)
+        target_harvesters = target_harvesters_for(profile)
 
         best_ore = None
-        best_dist = 10**9
+        best_dist = float("inf")
         for tile in ct.get_nearby_tiles():
             if ct.get_tile_env(tile) != Environment.ORE_TITANIUM:
                 continue
             if ct.get_tile_building_id(tile) is not None:
                 continue
-            dist = pos.distance_squared(tile)
-            if dist < best_dist:
-                best_dist = dist
+            d = pos.distance_squared(tile)
+            if d < best_dist:
+                best_dist = d
                 best_ore = tile
         if best_ore is not None:
             return best_ore
+
+        known_ore = self._nearest_known_ore(ct, pos)
+        if known_ore is not None and pos.distance_squared(known_ore) > 0:
+            return known_ore
+
+        if profile == MapProfile.CLOSE_QUARTER and harvester_count >= TARGET_HARVESTERS_CLOSE:
+            if self.core_pos is not None and pos.distance_squared(self.core_pos) > 8:
+                return self.core_pos
+
+        if harvester_count >= target_harvesters and self.core_pos is not None:
+            if pos.distance_squared(self.core_pos) > 8:
+                return self.core_pos
 
         shared = unpack_pos(ct.read_store(SLOT_ORE_LOCATION))
         if shared is not None and pos.distance_squared(shared) > 4:
@@ -586,12 +553,14 @@ class Player:
 
     def _share_ore(self, ct: Controller) -> None:
         for tile in ct.get_nearby_tiles():
-            if ct.get_tile_env(tile) != Environment.ORE_TITANIUM:
-                continue
-            if ct.get_tile_building_id(tile) is not None:
-                continue
-            ct.write_store(SLOT_ORE_LOCATION, pack_pos(tile))
-            return
+            if ct.get_tile_env(tile) == Environment.ORE_TITANIUM:
+                if ct.get_tile_building_id(tile) is None:
+                    ct.write_store(SLOT_ORE_LOCATION, pack_pos(tile))
+                    return
+
+    # ------------------------------------------------------------------
+    # Gunner
+    # ------------------------------------------------------------------
 
     def _run_gunner(self, ct: Controller) -> None:
         target = ct.get_gunner_target()
