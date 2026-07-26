@@ -7,8 +7,6 @@ Florent Code League bot — v1 economy loop:
 - v1.3: strict CHAIN_OK BFS, no vision-skip gaps, stall recovery, conveyor-first corners
 - Heal when action free
 
-Design: `docs/superpowers/specs/2026-07-22-magnum-grokus-design.md`
-
 Uses `l_path_step` from [`florent_lib.py`](../../florent_lib.py). League upload zips only `main.py` — vendor that function into `main.py` before submitting if needed.
 
 ## Replay analysis
