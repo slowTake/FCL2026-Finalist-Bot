@@ -28,10 +28,10 @@ class HiveMind:
         self.map_id = 0
         self.map_name = "UNKNOWN"
         self._map_detected = False
-        
+
     def _detect_and_store_map(self, ct: Controller) -> None:
         if self._map_detected: return
-        
+
         w = ct.get_map_width()
         h = ct.get_map_height()
         team = ct.get_team()
@@ -54,19 +54,19 @@ class HiveMind:
         )
         ct.write_store(15, packed)
         self._map_detected = True
-        
+
     def _update_local_vision(self, ct: Controller):
         pos = ct.get_position()
         w = ct.get_map_width()
         h = ct.get_map_height()
-        
+
         entity_positions = {}
         for eid in ct.get_nearby_entities():
             epos = ct.get_position(eid)
             etype = ct.get_entity_type(eid)
             eteam = ct.get_team(eid)
             entity_positions[(epos.x, epos.y)] = {"type": etype, "team": eteam}
-        
+
         for dy in range(-4, 5):
             for dx in range(-4, 5):
                 if dx*dx + dy*dy <= 16:
@@ -88,33 +88,33 @@ class HiveMind:
         pos = ct.get_position()
         grid_81 = 0
         intel_targets = []
-        
+
         for dy in range(-4, 5):
             for dx in range(-4, 5):
                 px = pos.x + dx
                 py = pos.y + dy
                 idx = (dy + 4) * 9 + (dx + 4)
-                
+
                 if (px, py) in self.local_map and not self.local_map[(px, py)].get("passable", True):
                     grid_81 |= (1 << idx)
-                    
+
                 if (px, py) in self.local_map and "entity" in self.local_map[(px, py)]:
                     etype = self.local_map[(px, py)]["entity"]["type"]
                     eteam = self.local_map[(px, py)]["entity"]["team"]
                     if eteam != ct.get_team() and etype in (EntityType.CORE, EntityType.SENTINEL, EntityType.GUNNER, EntityType.HARVESTER):
                         if len(intel_targets) < 4:
                             intel_targets.append((px, py, etype))
-                        
+
         s10, s11, s12 = pack_vision_grid(pos.x, pos.y, grid_81)
         ct.write_store(10, s10)
         ct.write_store(11, s11)
         ct.write_store(12, s12)
-        
+
         t0 = intel_targets[0] if len(intel_targets) > 0 else None
         t1 = intel_targets[1] if len(intel_targets) > 1 else None
         t2 = intel_targets[2] if len(intel_targets) > 2 else None
         t3 = intel_targets[3] if len(intel_targets) > 3 else None
-        
+
         ct.write_store(8, pack_intel_slot(t0, t1))
         ct.write_store(9, pack_intel_slot(t2, t3))
 
@@ -122,28 +122,28 @@ class HiveMind:
         s10 = ct.read_store(10)
         s11 = ct.read_store(11)
         s12 = ct.read_store(12)
-        
+
         if s10 == 0 and s11 == 0 and s12 == 0:
             return
-            
+
         bx, by, grid_81 = unpack_vision_grid(s10, s11, s12)
         w = ct.get_map_width()
         h = ct.get_map_height()
-        
+
         for dy in range(9):
             for dx in range(9):
                 idx = dy * 9 + dx
                 is_blocked = bool((grid_81 >> idx) & 1)
                 px = bx - 4 + dx
                 py = by - 4 + dy
-                
+
                 if 0 <= px < w and 0 <= py < h:
                     if (px, py) not in self.local_map or self.local_map[(px, py)].get("last_seen_turn", -1) < self.global_turn:
                         if (px, py) not in self.local_map:
                             self.local_map[(px, py)] = {}
                         self.local_map[(px, py)]["passable"] = not is_blocked
                         self.local_map[(px, py)]["last_seen_turn"] = self.global_turn
-                
+
         i8 = ct.read_store(8)
         i9 = ct.read_store(9)
         t0, t1 = unpack_intel_slot(i8)
@@ -167,25 +167,25 @@ class HiveMind:
     def tick(self, ct: Controller):
         """Must be called at the very top of every unit's run() method."""
         is_core = (ct.get_entity_type() == EntityType.CORE)
-        
+
         # 1. Sync global turn natively from the engine
         self.global_turn = ct.get_current_round()
-            
+
         # 2. Assign Builder Index on first turn alive
         if ct.get_entity_type() == EntityType.BUILDER_BOT and self.my_index == 0:
             self.my_index = ct.read_store(7)
-            
+
         # 3. Process Map Detection (Core Only)
         if is_core and self.global_turn == 1:
             self._detect_and_store_map(ct)
-            
+
         # 4. Read static map knowledge if we haven't
         if self.map_id == 0 and self.global_turn > 1:
             self.map_id = ct.read_store(14)
-            
+
         # 5. Always update personal vision first
         self._update_local_vision(ct)
-        
+
         # 6. Execute Metronome & Sync Protocol
         if self.global_turn % 2 == 0:
             if is_core:
