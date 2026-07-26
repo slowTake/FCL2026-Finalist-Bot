@@ -45,4 +45,5 @@ python scripts/bot_gauntlet.py --bot <your-bot>
 ## Notes
 
 - Do not commit `.venv/` — each person creates their own.
-- 
+- Strategy notes: [`STRATEGY.md`](STRATEGY.md)
+- Shared bot helpers: [`florent_lib.py`](florent_lib.py) (copy into `main.py` before league upload if needed)

@@ -1,31 +1,38 @@
 # Magnum Grokus
 
-Mid-ladder Florent Code League bot following `STRATEGY.md`:
+Florent Code League bot — v1 economy loop:
 
 - Full Harvester → Core chains with **Splitter** last-mile
-- Conveyor/splitter-fed Gunner ammo (fcode 2.2)
-- Store roles (Scout / Miner / Router / Defender / Raider) + ore claims
-- Bounded BFS pathfinding
-- Heal + logistics sabotage
+- Spiral exploration from core; ore shared via store
+- v1.3: strict CHAIN_OK BFS, no vision-skip gaps, stall recovery, conveyor-first corners
+- Heal when action free
 
-Portable under `local_bots/` (gitignored). Design: `docs/superpowers/specs/2026-07-22-magnum-grokus-design.md`.
+Uses `l_path_step` from [`florent_lib.py`](../../florent_lib.py). League upload zips only `main.py` — vendor that function into `main.py` before submitting if needed.
+
+## Replay analysis
+
+```bash
+pip install protobuf
+fcode run magnum_grokus starter maps/fjord.map26 --replay /tmp/fjord.replay26 --seed 1
+cd scripts && PYTHONPATH=. python analyze_replay.py /tmp/fjord.replay26
+```
 
 ## Run
 
 ```bash
 source .venv/bin/activate
-fcode run local_bots/magnum_grokus starter
+fcode run magnum_grokus starter
 fcode watch replay.replay26
 ```
 
-Vs turtle:
+Specific map:
 
 ```bash
-fcode run local_bots/magnum_grokus local_bots/turtle
+fcode run magnum_grokus starter maps/quarry.map26
 ```
 
-## Lift out
+Gauntlet:
 
 ```bash
-cp -r local_bots/magnum_grokus ~/somewhere/magnum_grokus
+python scripts/bot_gauntlet.py --bot magnum_grokus
 ```

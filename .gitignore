@@ -3,3 +3,5 @@ __pycache__/
 *.py[cod]
 *.replay*
 .fcode/
+local_bots/
+docs/superpowers/
