@@ -108,13 +108,16 @@ class Player:
         We check what type of entity we are and dispatch to the right handler.
         Each entity type (core, builder bot, gunner) has its own run logic.
         """
-        etype = ct.get_entity_type()
-        if etype == EntityType.CORE:
-            self._run_core(ct)
-        elif etype == EntityType.BUILDER_BOT:
-            self._run_builder(ct)
-        elif etype == EntityType.GUNNER:
-            self._run_gunner(ct)
+        try:
+            etype = ct.get_entity_type()
+            if etype == EntityType.CORE:
+                self._run_core(ct)
+            elif etype == EntityType.BUILDER_BOT:
+                self._run_builder(ct)
+            elif etype == EntityType.GUNNER:
+                self._run_gunner(ct)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Core
@@ -366,11 +369,12 @@ class Player:
         pos = ct.get_position()
         next_pos = pos.add(d)
 
-        if ct.is_tile_empty(next_pos) and self.core_pos is not None:
-            toward_core = next_pos.direction_to(self.core_pos)
-            cardinal = nearest_cardinal(toward_core)
-            if ct.can_build_conveyor(next_pos, cardinal):
-                ct.build_conveyor(next_pos, cardinal)
+        if 0 <= next_pos.x < ct.get_map_width() and 0 <= next_pos.y < ct.get_map_height():
+            if ct.is_tile_empty(next_pos) and self.core_pos is not None:
+                toward_core = next_pos.direction_to(self.core_pos)
+                cardinal = nearest_cardinal(toward_core)
+                if ct.can_build_conveyor(next_pos, cardinal):
+                    ct.build_conveyor(next_pos, cardinal)
 
         if ct.can_move(d):
             ct.move(d)
