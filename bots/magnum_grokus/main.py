@@ -22,8 +22,9 @@ _MAP_FEATURES = _REPO_ROOT / "bots" / "map_detector_bot"
 if str(_MAP_FEATURES) not in sys.path:
     sys.path.insert(0, str(_MAP_FEATURES))
 
-from features import KNOWN_MAPS, MAP_ID_TO_NAME, ORE_LOCATIONS  # noqa: E402
-from florent_lib import make_path_ct  # noqa: E402
+from features import MAP_ID_TO_NAME, ORE_LOCATIONS  # noqa: E402
+from florent_lib import bfs_next_step, make_path_ct  # noqa: E402
+from hivemind import HiveMind  # noqa: E402
 
 # All directions except CENTRE — useful for movement and spawning
 DIRECTIONS = [d for d in Direction if d != Direction.CENTRE]
@@ -147,14 +148,17 @@ def target_harvesters_for(profile: int) -> int:
 
 class Player:
     def __init__(self):
+        self.hivemind = HiveMind()
         self.num_spawned = 0
         self.target: Position | None = None
         self.last_pos: Position | None = None
         self.stuck = 0
         self.core_pos: Position | None = None
         self.map_detected = False
+        self.l_path_y_first = False
 
     def run(self, ct: Controller) -> None:
+        self.hivemind.tick(ct)
         etype = ct.get_entity_type()
         if etype == EntityType.CORE:
             self._run_core(ct)
@@ -167,31 +171,13 @@ class Player:
     # Core
     # ------------------------------------------------------------------
 
-    def _detect_and_store_map(self, ct: Controller) -> None:
-        w = ct.get_map_width()
-        h = ct.get_map_height()
-        team = ct.get_team()
-        pos = ct.get_position()
-        fingerprint = (w, h, team, pos.x, pos.y)
-
-        map_id = 0
-        enemy_state = CoreState.UNKNOWN
-        enemy_x = 0
-        enemy_y = 0
-
-        if fingerprint in KNOWN_MAPS:
-            map_id, _map_name, enemy_x, enemy_y = KNOWN_MAPS[fingerprint]
-            enemy_state = CoreState.ASSUMED
+    def _sync_map_policy(self, ct: Controller) -> None:
+        map_id = self.hivemind.map_id or ct.read_store(SLOT_MAP_ID)
+        if map_id == 0:
+            return
 
         profile = profile_for_map_id(map_id)
-        ct.write_store(SLOT_MAP_ID, map_id)
         ct.write_store(SLOT_MAP_PROFILE, profile)
-
-        packed = pack_cores(
-            CoreState.KNOWN, pos.x, pos.y,
-            enemy_state, enemy_x, enemy_y,
-        )
-        ct.write_store(SLOT_PACKED_CORES, packed)
 
         harvesters = ct.read_store(SLOT_HARVESTER_COUNT)
         if profile == MapProfile.CLOSE_QUARTER:
@@ -203,7 +189,7 @@ class Player:
         ct.write_store(SLOT_STAGE, stage)
 
         if not self.map_detected:
-            ally, enemy = unpack_cores(packed)
+            ally, enemy = unpack_cores(ct.read_store(SLOT_PACKED_CORES))
             print(
                 f"DETECTED MAP {MAP_ID_TO_NAME.get(map_id, 'UNKNOWN')} "
                 f"(ID: {map_id}, profile={profile.name}) | "
@@ -215,7 +201,7 @@ class Player:
         pos = ct.get_position()
         ct.write_store(SLOT_CORE_X, pos.x)
         ct.write_store(SLOT_CORE_Y, pos.y)
-        self._detect_and_store_map(ct)
+        self._sync_map_policy(ct)
 
         if self.num_spawned >= MAX_BUILDERS:
             return
@@ -229,8 +215,7 @@ class Player:
         random.shuffle(dirs)
         for d in dirs:
             spawn_pos = pos.add(d)
-            if ct.can_spawn(spawn_pos):
-                ct.spawn_builder(spawn_pos)
+            if self.hivemind.spawn_builder(ct, spawn_pos):
                 self.num_spawned += 1
                 return
 
@@ -440,6 +425,28 @@ class Player:
     # Builder bot — movement
     # ------------------------------------------------------------------
 
+    def _direction_candidates(
+        self, ct: Controller, pos: Position, target: Position
+    ) -> list[Direction]:
+        w = ct.get_map_width()
+        h = ct.get_map_height()
+        desired = bfs_next_step(
+            self.hivemind.local_map, pos, target, w, h
+        )
+        if desired is None:
+            desired = make_path_ct(
+                ct, pos, target, y_first=self.l_path_y_first
+            )
+        if desired == Direction.CENTRE:
+            desired = nearest_cardinal(pos.direction_to(target))
+        if desired == Direction.CENTRE:
+            return []
+
+        primary = [desired, desired.rotate_left(), desired.rotate_right()]
+        remaining = [d for d in DIRECTIONS if d not in primary]
+        random.shuffle(remaining)
+        return primary + remaining
+
     def _move_toward_target(self, ct: Controller) -> None:
         if ct.get_move_cooldown() != 0:
             return
@@ -447,24 +454,14 @@ class Player:
         pos = ct.get_position()
 
         if self.target is None or pos == self.target or self.stuck >= 3:
+            if self.stuck >= 3:
+                self.l_path_y_first = not self.l_path_y_first
             self.target = self._pick_target(ct)
             self.stuck = 0
         if self.target is None:
             return
 
-        desired = make_path_ct(ct, pos, self.target, y_first=self.stuck >= 1)
-        if desired == Direction.CENTRE:
-            desired = nearest_cardinal(pos.direction_to(self.target))
-        if desired == Direction.CENTRE:
-            return
-
-        primary = [desired, desired.rotate_left(), desired.rotate_right()]
-        for d in primary:
-            if self._try_move(ct, d):
-                return
-        remaining = [d for d in DIRECTIONS if d not in primary]
-        random.shuffle(remaining)
-        for d in remaining:
+        for d in self._direction_candidates(ct, pos, self.target):
             if self._try_move(ct, d):
                 return
 
@@ -501,22 +498,29 @@ class Player:
         return ct.get_entity_type(bid) == EntityType.HARVESTER
 
     def _nearest_known_ore(self, ct: Controller, pos: Position) -> Position | None:
-        map_id = ct.read_store(SLOT_MAP_ID)
+        map_id = self.hivemind.map_id or ct.read_store(SLOT_MAP_ID)
         if map_id <= 0 or map_id not in ORE_LOCATIONS:
             return None
-        best: Position | None = None
-        best_dist = float("inf")
+
+        w = ct.get_map_width()
+        h = ct.get_map_height()
+        candidates: list[tuple[int, Position]] = []
         for x, y in ORE_LOCATIONS[map_id]:
             ore_pos = Position(x, y)
             if not in_bounds(ct, ore_pos):
                 continue
             if self._ore_has_harvester(ct, ore_pos):
                 continue
-            d = pos.distance_squared(ore_pos)
-            if d < best_dist:
-                best_dist = d
-                best = ore_pos
-        return best
+            candidates.append((pos.distance_squared(ore_pos), ore_pos))
+
+        if not candidates:
+            return None
+
+        candidates.sort(key=lambda item: item[0])
+        for _dist, ore_pos in candidates:
+            if bfs_next_step(self.hivemind.local_map, pos, ore_pos, w, h) is not None:
+                return ore_pos
+        return candidates[0][1]
 
     def _pick_target(self, ct: Controller) -> Position:
         pos = ct.get_position()
