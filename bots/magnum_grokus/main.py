@@ -393,6 +393,8 @@ class Player:
             facing = ct.get_direction(bid)
             for out_dir in splitter_output_dirs(facing):
                 build_pos = tile.add(out_dir)
+                if not in_bounds(ct, build_pos):
+                    continue
                 core_bid = ct.get_tile_building_id(build_pos)
                 if core_bid is not None and ct.get_entity_type(core_bid) == EntityType.CORE:
                     continue
@@ -406,6 +408,8 @@ class Player:
             if facing != Direction.CENTRE:
                 for d in CARDINALS:
                     build_pos = pos.add(d)
+                    if not in_bounds(ct, build_pos):
+                        continue
                     if ct.can_build_gunner(build_pos, facing):
                         ct.build_gunner(build_pos, facing)
                         self._record_gunner_built(ct)
@@ -416,6 +420,8 @@ class Player:
             facing = random.choice(CARDINALS)
         for d in Direction:
             build_pos = pos.add(d)
+            if not in_bounds(ct, build_pos):
+                continue
             if ct.can_build_gunner(build_pos, facing):
                 ct.build_gunner(build_pos, facing)
                 self._record_gunner_built(ct)
