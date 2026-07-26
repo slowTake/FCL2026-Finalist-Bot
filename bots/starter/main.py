@@ -89,6 +89,11 @@ def nearest_cardinal(d: Direction) -> Direction:
     }[d]
 
 
+def in_bounds(ct: Controller, pos: Position) -> bool:
+    """Check whether pos is within the map boundaries."""
+    return 0 <= pos.x < ct.get_map_width() and 0 <= pos.y < ct.get_map_height()
+
+
 class Player:
     def __init__(self):
         # Core tracks how many builder bots it has spawned
@@ -117,7 +122,7 @@ class Player:
             elif etype == EntityType.GUNNER:
                 self._run_gunner(ct)
         except Exception:
-            pass
+            return  # Intentionally swallow starter bot errors to avoid noisy stack traces.
 
     # ------------------------------------------------------------------
     # Core
@@ -369,12 +374,14 @@ class Player:
         pos = ct.get_position()
         next_pos = pos.add(d)
 
-        if 0 <= next_pos.x < ct.get_map_width() and 0 <= next_pos.y < ct.get_map_height():
-            if ct.is_tile_empty(next_pos) and self.core_pos is not None:
-                toward_core = next_pos.direction_to(self.core_pos)
-                cardinal = nearest_cardinal(toward_core)
-                if ct.can_build_conveyor(next_pos, cardinal):
-                    ct.build_conveyor(next_pos, cardinal)
+        if not in_bounds(ct, next_pos):
+            return False
+
+        if ct.is_tile_empty(next_pos) and self.core_pos is not None:
+            toward_core = next_pos.direction_to(self.core_pos)
+            cardinal = nearest_cardinal(toward_core)
+            if ct.can_build_conveyor(next_pos, cardinal):
+                ct.build_conveyor(next_pos, cardinal)
 
         if ct.can_move(d):
             ct.move(d)
