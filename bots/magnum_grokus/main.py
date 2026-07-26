@@ -133,6 +133,16 @@ def in_bounds(ct: Controller, pos: Position) -> bool:
     return 0 <= pos.x < ct.get_map_width() and 0 <= pos.y < ct.get_map_height()
 
 
+def _can_lay_infrastructure(ct: Controller, pos: Position) -> bool:
+    """True only on plain empty terrain — not ore, walls, or occupied tiles."""
+    if not in_bounds(ct, pos):
+        return False
+    return (
+        ct.is_tile_empty(pos)
+        and ct.get_tile_env(pos) == Environment.EMPTY
+    )
+
+
 def splitter_output_dirs(facing: Direction) -> list[Direction]:
     facing = nearest_cardinal(facing)
     left = facing.rotate_left().rotate_left()
@@ -156,6 +166,7 @@ class Player:
         self.core_pos: Position | None = None
         self.map_detected = False
         self.l_path_y_first = False
+        self.relay_home: set[int] = set()
 
     def run(self, ct: Controller) -> None:
         self.hivemind.tick(ct)
@@ -292,7 +303,7 @@ class Player:
                 self._try_build_conveyor_toward_core(ct, build_pos)
                 if profile == MapProfile.CLOSE_QUARTER:
                     self._try_build_harvester_flank_gunner(ct, build_pos)
-                self.target = None
+                self.relay_home.add(ct.get_id())
                 return True
         return False
 
@@ -320,16 +331,25 @@ class Player:
     def _try_build_conveyor_toward_core(self, ct: Controller, harvester_pos: Position) -> None:
         if self.core_pos is None:
             return
-        ti = ct.get_global_resources()
-        if ti < ct.get_conveyor_cost():
+        if ct.get_global_resources() < ct.get_conveyor_cost():
             return
 
-        toward_core = harvester_pos.direction_to(self.core_pos)
-        if toward_core == Direction.CENTRE:
-            return
-        facing = nearest_cardinal(toward_core)
-        conv_pos = harvester_pos.add(facing)
-        if ct.can_build_conveyor(conv_pos, facing):
+        best: tuple[int, Position, Direction] | None = None
+        for d in CARDINALS:
+            conv_pos = harvester_pos.add(d)
+            if not _can_lay_infrastructure(ct, conv_pos):
+                continue
+            facing = nearest_cardinal(conv_pos.direction_to(self.core_pos))
+            if facing == Direction.CENTRE:
+                continue
+            if not ct.can_build_conveyor(conv_pos, facing):
+                continue
+            dist = conv_pos.distance_squared(self.core_pos)
+            if best is None or dist < best[0]:
+                best = (dist, conv_pos, facing)
+
+        if best is not None:
+            _, conv_pos, facing = best
             ct.build_conveyor(conv_pos, facing)
 
     def _adjacent_to_core(self, ct: Controller, pos: Position) -> bool:
@@ -348,7 +368,7 @@ class Player:
         pos = ct.get_position()
         if not self._adjacent_to_core(ct, pos):
             return False
-        if ct.get_tile_building_id(pos) is not None:
+        if not _can_lay_infrastructure(ct, pos):
             return False
         toward = nearest_cardinal(pos.direction_to(self.core_pos))
         if toward == Direction.CENTRE:
@@ -453,6 +473,17 @@ class Player:
 
         pos = ct.get_position()
 
+        bid = ct.get_id()
+        if bid in self.relay_home and self.core_pos is not None:
+            if pos.distance_squared(self.core_pos) <= 8:
+                self.relay_home.discard(bid)
+                self.target = None
+            else:
+                for d in self._direction_candidates(ct, pos, self.core_pos):
+                    if self._try_move(ct, d):
+                        return
+                return
+
         if self.target is None or pos == self.target or self.stuck >= 3:
             if self.stuck >= 3:
                 self.l_path_y_first = not self.l_path_y_first
@@ -473,7 +504,7 @@ class Player:
         if not in_bounds(ct, next_pos):
             return False
 
-        if ct.is_tile_empty(next_pos) and self.core_pos is not None:
+        if _can_lay_infrastructure(ct, next_pos) and self.core_pos is not None:
             toward_core = next_pos.direction_to(self.core_pos)
             cardinal = nearest_cardinal(toward_core)
             if self._adjacent_to_core(ct, next_pos):
