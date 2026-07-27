@@ -1,34 +1,35 @@
 # Magnum Grokus
 
-Florent Code League bot — v1 economy loop:
+Map-aware turtle fork with obstacle-aware L-path movement and profile-driven policy.
 
-- Full Harvester → Core chains with **Splitter** last-mile
-- Spiral exploration from core; ore shared via store
-- v1.3: strict CHAIN_OK BFS, no vision-skip gaps, stall recovery, conveyor-first corners
-- Heal when action free
+## Features
 
-Uses `l_path_step` from [`florent_lib.py`](../../florent_lib.py). League upload zips only `main.py` — vendor that function into `main.py` before submitting if needed.
+- **Map detection** (slots 14–15): fingerprint lookup from `map_detector_bot/features.py`
+- **Map profiles** (slot 4): CloseQuarter (sprint/duel), Choke, OpenLarge, Default
+- **Stage** (slot 5): OPENING / EXPAND / DEFEND driven by harvester count
+- **Movement**: `florent_lib.make_path_ct` with greedy fallback
+- **Close-quarter**: early gunners, harvester-flank placement, gunner cap (slot 6)
 
-## Replay analysis
+## Store slots
 
-```bash
-pip install protobuf
-fcode run magnum_grokus starter maps/fjord.map26 --replay /tmp/fjord.replay26 --seed 1
-cd scripts && PYTHONPATH=. python analyze_replay.py /tmp/fjord.replay26
-```
+| Slot | Purpose |
+|------|---------|
+| 0–1 | Core X/Y |
+| 2 | Harvester count |
+| 3 | Shared ore position |
+| 4 | Map profile enum |
+| 5 | Stage enum |
+| 6 | Gunner count (close-quarter cap) |
+| 14 | Map ID (1–15) |
+| 15 | Packed ally/enemy core info |
 
 ## Run
 
 ```bash
 source .venv/bin/activate
 fcode run magnum_grokus starter
+fcode run magnum_grokus turtle maps/sprint.map26
 fcode watch replay.replay26
-```
-
-Specific map:
-
-```bash
-fcode run magnum_grokus starter maps/quarry.map26
 ```
 
 Gauntlet:
@@ -36,3 +37,7 @@ Gauntlet:
 ```bash
 python scripts/bot_gauntlet.py --bot magnum_grokus
 ```
+
+## Dev branch
+
+Work targets `dev/magnum_grokus`. Local experiments: `local_bots/magnum_grokus/` (gitignored).
