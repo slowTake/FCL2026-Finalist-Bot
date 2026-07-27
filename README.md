@@ -28,19 +28,60 @@ fcode run starter starter
 fcode watch replay.replay26   # replay name may differ
 ```
 
-## CI bot test
+## Scripts
 
-When your bot is ready, commit it under `bots/<your-bot>/main.py` and open a PR.
-
-CI will automatically run your bot against `starter` on all 15 maps. The check passes only on **15/15 wins**.
-
-Run the same test locally before pushing:
+Local test runners live in `scripts/`. Install CI deps first:
 
 ```bash
 source .venv/bin/activate
 pip install -r requirements-ci.txt
-python scripts/bot_gauntlet.py --bot <your-bot>
 ```
+
+Both gauntlets pit your bot (team A) against `starter` on every map in `maps/`. Each match prints:
+
+| Column | Meaning |
+| --- | --- |
+| Map | Map name (`extreme_gauntlet` appends `-1` … `-5` per run) |
+| Result | `WIN` or `LOSS` for your bot |
+| Condition | How the game ended (e.g. `Core destroyed`, `Titanium collected`) |
+| Ally Ti | Titanium your bot delivered to its core |
+| Enemy Ti | Titanium `starter` delivered to its core |
+| Turn | Final turn count |
+
+Optional: limit to specific maps with `--maps sprint strait`.
+
+### `bot_gauntlet.py`
+
+Runs each map once. Passes only on **15/15 wins** (same bar as CI).
+
+```bash
+python scripts/bot_gauntlet.py --bot <your-bot>
+python scripts/bot_gauntlet.py --bot turtle --maps sprint strait
+```
+
+### `extreme_gauntlet.py`
+
+Runs each map **5 times** with different seeds (`base`, `base+1`, …). Reports total wins and win rate at the bottom. Passes only if every match is won.
+
+```bash
+python scripts/extreme_gauntlet.py --bot <your-bot>
+python scripts/extreme_gauntlet.py --bot turtle --maps sprint
+```
+
+Example footer:
+
+```
+Total: 12/15
+Win rate: 80.0%
+```
+
+## CI bot test
+
+When your bot is ready, commit it under `bots/<your-bot>/main.py` and open a PR.
+
+CI runs `bot_gauntlet.py` automatically on changed bots. The check passes only on **15/15 wins**.
+
+Run the same test locally before pushing — see [`bot_gauntlet.py`](#bot_gauntletpy) above.
 
 ## Notes
 
