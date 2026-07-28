@@ -14,11 +14,11 @@ from fcode.fcode_engine import run_game
 CONDITION_LABELS = {
     "core_destroyed": "Core destroyed",
     "resigned": "Resigned",
-    "resources": "Resources (tiebreak)",
-    "titanium_collected": "Titanium collected (tiebreak)",
-    "harvesters": "Harvesters (tiebreak)",
-    "titanium_stored": "Titanium stored (tiebreak)",
-    "coinflip": "Coinflip (tiebreak)",
+    "resources": "Resources",
+    "titanium_collected": "Titanium collected",
+    "harvesters": "Harvesters",
+    "titanium_stored": "Titanium stored",
+    "coinflip": "Coinflip",
     "timeout": "Draw",
 }
 
@@ -87,11 +87,14 @@ def run_gauntlet(bot_name: str, map_names: list[str] | None) -> int:
 
     print(f"Bot gauntlet: {bot_name} vs starter ({len(maps)} maps, seed={seed})")
     print()
-    print(f"{'Map':<12} {'Result':<8} {'Condition':<32} {'Turn':>6}")
-    print("-" * 62)
+    print(
+        f"{'Map':<12} {'Result':<8} {'Condition':<24} {'Ally Ti':>8} "
+        f"{'Enemy Ti':>9} {'Turn':>6}"
+    )
+    print("-" * 71)
 
     wins = 0
-    rows: list[tuple[str, str, str, int]] = []
+    rows: list[tuple[str, str, str, int, int, int]] = []
 
     for map_path in maps:
         replay_path = f"/tmp/gauntlet-{bot_name}-{map_path.stem}.replay26"
@@ -109,12 +112,20 @@ def run_gauntlet(bot_name: str, map_names: list[str] | None) -> int:
         if won:
             wins += 1
 
+        ally_ti = result["a_titanium_collected"]
+        enemy_ti = result["b_titanium_collected"]
+
         condition = CONDITION_LABELS.get(
             result["win_condition"], result["win_condition"]
         )
         label = "WIN" if won else "LOSS"
-        rows.append((map_path.stem, label, condition, result["turns"]))
-        print(f"{map_path.stem:<12} {label:<8} {condition:<32} {result['turns']:>6}")
+        rows.append(
+            (map_path.stem, label, condition, ally_ti, enemy_ti, result["turns"])
+        )
+        print(
+            f"{map_path.stem:<12} {label:<8} {condition:<24} {ally_ti:>8} "
+            f"{enemy_ti:>9} {result['turns']:>6}"
+        )
 
     total = len(maps)
     passed = wins == total
@@ -127,11 +138,13 @@ def run_gauntlet(bot_name: str, map_names: list[str] | None) -> int:
         "",
         f"**Score: {wins}/{total} — {verdict}** (seed={seed})",
         "",
-        "| Map | Result | Condition | Turn |",
-        "| --- | --- | --- | ---: |",
+        "| Map | Result | Condition | Ally Ti | Enemy Ti | Turn |",
+        "| --- | --- | --- | ---: | ---: | ---: |",
     ]
-    for map_name, label, condition, turns in rows:
-        summary_lines.append(f"| {map_name} | {label} | {condition} | {turns} |")
+    for map_name, label, condition, ally_ti, enemy_ti, turns in rows:
+        summary_lines.append(
+            f"| {map_name} | {label} | {condition} | {ally_ti} | {enemy_ti} | {turns} |"
+        )
     write_summary(summary_lines)
     write_github_output(wins, total, passed, bot_name)
 
