@@ -2,7 +2,9 @@
 
 Map-aware turtle fork with obstacle-aware L-path movement and profile-driven policy.
 
-`main.py` is **self-contained and league-ready** — all helpers from `features.py`, `vision.py`, `florent_lib.py`, `conveyor_pathing.py`, and `hivemind.py` are inlined with section headers. Upload only `main.py` to the league.
+`main.py` is **self-contained and league-ready** — all helpers from `components/features.py`, `components/vision.py`, `components/hivemind.py`, `florent_lib.py`, and `conveyor_pathing.py` are inlined with section headers. Upload only `main.py` to the league.
+
+The inlined HiveMind and vision sections are kept in sync with the canonical modules in [`components/`](../../components/). When those change upstream, re-sync the matching section here.
 
 ## Features
 
@@ -15,18 +17,26 @@ Map-aware turtle fork with obstacle-aware L-path movement and profile-driven pol
 
 ## Store slots
 
-| Slot | Purpose |
-|------|---------|
-| 0–1 | Core X/Y |
-| 2 | Harvester count |
-| 3 | Shared ore position |
-| 4 | Map profile enum |
-| 5 | Stage enum |
-| 6 | Gunner count (close-quarter cap) |
-| 7 | Builder spawn counter (HiveMind) |
-| 8–12 | Vision/intel broadcast (HiveMind) |
-| 14 | Map ID (1–15) |
-| 15 | Packed ally/enemy core info |
+Slots 0–6 belong to the bot's own policy; 7–15 are reserved by HiveMind. Nothing may
+be written to a HiveMind slot from `Player`.
+
+| Slot | Owner | Purpose |
+|------|-------|---------|
+| 0 | Player | Spawn credits (earned by completing a relay) |
+| 1 | Player | Orphaned relay origin, packed position |
+| 2 | Player | Harvester count |
+| 3 | Player | Shared ore position |
+| 4 | Player | Map profile enum |
+| 5 | Player | Stage enum |
+| 6 | Player | Gunner count (close-quarter cap) |
+| 7 | HiveMind | Builder registry / spawn counter |
+| 8–9 | HiveMind | Enemy intel targets |
+| 10–12 | HiveMind | Packed 9x9 vision grid |
+| 13 | HiveMind | Broadcast metronome |
+| 14 | HiveMind | Map ID (1–15) |
+| 15 | HiveMind | Packed ally/enemy core positions |
+
+Ally core position is read from slot 15 via `unpack_cores`, not stored separately.
 
 ## Run
 
@@ -41,6 +51,22 @@ Gauntlet:
 
 ```bash
 python scripts/bot_gauntlet.py --bot magnum_grokus
+```
+
+**A single gauntlet score is not a reliable measurement.** The bot calls
+`random.shuffle`/`random.choice` and never calls `random.seed`, so the engine's
+`seed` does not control the bot's own randomness — the same code can score 15/15
+on one run and 12/15 on the next. Most matches also reach turn 1000 with
+near-identical titanium and are settled by tiebreak, so a single flipped coin
+moves the score.
+
+To compare two versions, average over many games with `multiseed_eval.py`, which
+plays every map at several seeds, one game per process:
+
+```bash
+python scripts/multiseed_eval.py \
+  --variants before=/tmp/before.py after=bots/magnum_grokus/main.py \
+  --seeds 1 2 3 4 5
 ```
 
 ## Dev branch

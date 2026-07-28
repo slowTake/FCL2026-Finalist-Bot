@@ -3,8 +3,12 @@
 Map-aware turtle fork with obstacle-aware L-path movement, relay belt
 logistics, and profile-driven policy.
 
-Inlined from: features.py, vision.py, florent_lib.py,
-conveyor_pathing.py, hivemind.py (see section headers below).
+Inlined from: components/features.py, components/vision.py,
+components/hivemind.py, florent_lib.py, conveyor_pathing.py
+(see section headers below).
+
+Store slots 0-6 are this bot's; 7-15 belong to HiveMind. The ally core
+position is read from HiveMind's slot 15 rather than published separately.
 """
 
 from __future__ import annotations
@@ -114,9 +118,25 @@ WALL_LOCATIONS = {
 }
 
 # ---------------------------------------------------------------------------
-# Inlined from bots/map_detector_bot/vision.py
+# Inlined from components/vision.py
 # Pack/unpack team vision grid and enemy intel into communication store slots.
 # ---------------------------------------------------------------------------
+
+# Wire format for entity types on the intel slots — 4 bits, so 1-15 only
+ENTITY_TO_INT = {
+    EntityType.CORE: 1,
+    EntityType.BUILDER_BOT: 2,
+    EntityType.HARVESTER: 3,
+    EntityType.CONVEYOR: 4,
+    EntityType.SPLITTER: 5,
+    EntityType.GUNNER: 6,
+    EntityType.SENTINEL: 7,
+    EntityType.LAUNCHER: 8,
+    EntityType.BARRIER: 9,
+}
+
+INT_TO_ENTITY = {v: k for k, v in ENTITY_TO_INT.items()}
+
 
 def pack_vision_grid(x: int, y: int, grid_81: int) -> tuple[int, int, int]:
     """
@@ -135,7 +155,7 @@ def pack_vision_grid(x: int, y: int, grid_81: int) -> tuple[int, int, int]:
 
 def unpack_vision_grid(slot_10: int, slot_11: int, slot_12: int) -> tuple[int, int, int]:
     """Unpacks the 3 slots back into X, Y, and the 81-bit grid."""
-    payload = (slot_10 << 59) | (slot_11 << 27) | (slot_12 & 0x7FFFFFF)
+    payload = ((slot_10 & 0xFFFFFFFF) << 59) | ((slot_11 & 0xFFFFFFFF) << 27) | (slot_12 & 0x7FFFFFF)
     
     x = (payload >> 86) & 0x1F
     y = (payload >> 81) & 0x1F
@@ -151,7 +171,8 @@ def pack_intel_slot(target0: tuple[int, int, int] | None, target1: tuple[int, in
     """
     def pack_target(t):
         if not t: return 0
-        return (t[0] << 9) | (t[1] << 4) | (t[2] & 0xF)
+        etype_int = ENTITY_TO_INT.get(t[2], 0)
+        return (t[0] << 9) | (t[1] << 4) | (etype_int & 0xF)
         
     val0 = pack_target(target0)
     val1 = pack_target(target1)
@@ -367,17 +388,10 @@ def in_bounds(ct: Controller, pos: Position) -> bool:
     return 0 <= pos.x < ct.get_map_width() and 0 <= pos.y < ct.get_map_height()
 
 
-# Inlined from bots/map_detector_bot/hivemind.py
+# ---------------------------------------------------------------------------
+# Inlined from components/hivemind.py
 # Shared vision map, map detection, and builder coordination.
 # ---------------------------------------------------------------------------
-
-_INTEL_ENTITY_TO_ID = {
-    EntityType.CORE: 1,
-    EntityType.SENTINEL: 2,
-    EntityType.GUNNER: 3,
-    EntityType.HARVESTER: 4,
-}
-_INTEL_ID_TO_ENTITY = {value: key for key, value in _INTEL_ENTITY_TO_ID.items()}
 
 
 class HiveMind:
@@ -388,21 +402,7 @@ class HiveMind:
         self.map_id = 0
         self.map_name = "UNKNOWN"
         self._map_detected = False
-        self._terrain_seeded = False
-
-    def _seed_static_terrain(self) -> None:
-        if self.map_id not in WALL_LOCATIONS:
-            return
-        for x, y in WALL_LOCATIONS[self.map_id]:
-            tile = self.local_map.setdefault((x, y), {})
-            tile["passable"] = False
-            tile["static"] = True
-
-    def _ensure_terrain_seeded(self) -> None:
-        if self._terrain_seeded or self.map_id == 0:
-            return
-        self._seed_static_terrain()
-        self._terrain_seeded = True
+        self._walls_loaded = False
 
     def _detect_and_store_map(self, ct: Controller) -> None:
         if self._map_detected: return
@@ -429,7 +429,6 @@ class HiveMind:
         )
         ct.write_store(15, packed)
         self._map_detected = True
-        self._ensure_terrain_seeded()
 
     def _update_local_vision(self, ct: Controller):
         pos = ct.get_position()
@@ -441,7 +440,13 @@ class HiveMind:
             epos = ct.get_position(eid)
             etype = ct.get_entity_type(eid)
             eteam = ct.get_team(eid)
-            entity_positions[(epos.x, epos.y)] = {"type": etype, "team": eteam}
+            ent_data = {"type": etype, "team": eteam}
+            if etype in (EntityType.CONVEYOR, EntityType.SPLITTER, EntityType.GUNNER, EntityType.SENTINEL):
+                try:
+                    ent_data["direction"] = ct.get_direction(eid)
+                except Exception:
+                    pass
+            entity_positions[(epos.x, epos.y)] = ent_data
 
         for dy in range(-4, 5):
             for dx in range(-4, 5):
@@ -449,15 +454,27 @@ class HiveMind:
                     px = pos.x + dx
                     py = pos.y + dy
                     if 0 <= px < w and 0 <= py < h:
+                        pos_obj = Position(px, py)
+                        if not ct.is_in_vision(pos_obj):
+                            continue
+
                         if (px, py) not in self.local_map:
                             self.local_map[(px, py)] = {}
                         self.local_map[(px, py)]["last_seen_turn"] = self.global_turn
                         if (px, py) in entity_positions:
-                            self.local_map[(px, py)]["passable"] = False
+                            ent_type = entity_positions[(px, py)]["type"]
+                            if ent_type in (EntityType.CONVEYOR, EntityType.SPLITTER):
+                                self.local_map[(px, py)]["passable"] = True
+                            else:
+                                self.local_map[(px, py)]["passable"] = False
                             self.local_map[(px, py)]["entity"] = entity_positions[(px, py)]
                         else:
-                            if not self.local_map[(px, py)].get("static"):
-                                self.local_map[(px, py)]["passable"] = True
+                            env_tile = ct.get_tile_env(pos_obj)
+                            is_wall = (env_tile == Environment.WALL)
+                            self.local_map[(px, py)]["passable"] = not is_wall
+                            if env_tile == Environment.ORE_TITANIUM:
+                                self.local_map[(px, py)]["ore"] = True
+
                             if "entity" in self.local_map[(px, py)]:
                                 del self.local_map[(px, py)]["entity"]
 
@@ -475,15 +492,12 @@ class HiveMind:
                 if (px, py) in self.local_map and not self.local_map[(px, py)].get("passable", True):
                     grid_81 |= (1 << idx)
 
-                entity = self.local_map.get((px, py), {}).get("entity")
-                if entity:
-                    etype = entity.get("type")
-                    eteam = entity.get("team")
-                    if etype in _INTEL_ENTITY_TO_ID and (
-                        eteam is None or eteam != ct.get_team()
-                    ):
+                if (px, py) in self.local_map and "entity" in self.local_map[(px, py)]:
+                    etype = self.local_map[(px, py)]["entity"]["type"]
+                    eteam = self.local_map[(px, py)]["entity"].get("team")
+                    if eteam != ct.get_team() and etype in (EntityType.CORE, EntityType.SENTINEL, EntityType.GUNNER, EntityType.HARVESTER):
                         if len(intel_targets) < 4:
-                            intel_targets.append((px, py, _INTEL_ENTITY_TO_ID[etype]))
+                            intel_targets.append((px, py, etype))
 
         s10, s11, s12 = pack_vision_grid(pos.x, pos.y, grid_81)
         ct.write_store(10, s10)
@@ -530,13 +544,12 @@ class HiveMind:
         t2, t3 = unpack_intel_slot(i9)
         for t in (t0, t1, t2, t3):
             if t:
-                tx, ty, ttype = t
-                etype = _INTEL_ID_TO_ENTITY.get(ttype)
-                if etype is None:
-                    continue
-                if (tx, ty) not in self.local_map:
-                    self.local_map[(tx, ty)] = {}
-                self.local_map[(tx, ty)]["entity"] = {"type": etype}
+                tx, ty, ttype_int = t
+                etype = INT_TO_ENTITY.get(ttype_int)
+                if etype:
+                    if (tx, ty) not in self.local_map:
+                        self.local_map[(tx, ty)] = {}
+                    self.local_map[(tx, ty)]["entity"] = {"type": etype}
 
     def spawn_builder(self, ct: Controller, pos) -> bool:
         """Helper to spawn a builder and instantly register it with the HiveMind registry."""
@@ -565,7 +578,22 @@ class HiveMind:
         # 4. Read static map knowledge if we haven't
         if self.map_id == 0 and self.global_turn > 1:
             self.map_id = ct.read_store(14)
-            self._ensure_terrain_seeded()
+
+        if self.map_id != 0 and not self._walls_loaded:
+            if self.map_id in WALL_LOCATIONS:
+                for wx, wy in WALL_LOCATIONS[self.map_id]:
+                    if (wx, wy) not in self.local_map:
+                        self.local_map[(wx, wy)] = {}
+                    self.local_map[(wx, wy)]["passable"] = False
+
+            if self.map_id in ORE_LOCATIONS:
+                for ox, oy in ORE_LOCATIONS[self.map_id]:
+                    if (ox, oy) not in self.local_map:
+                        self.local_map[(ox, oy)] = {}
+                    self.local_map[(ox, oy)]["passable"] = True
+                    self.local_map[(ox, oy)]["ore"] = True
+
+            self._walls_loaded = True
 
         # 5. Always update personal vision first
         self._update_local_vision(ct)
@@ -836,15 +864,16 @@ def first_incomplete_index(
 DIRECTIONS = [d for d in Direction if d != Direction.CENTRE]
 
 # --- Communication store slot assignments ---
-SLOT_CORE_X = 0
-SLOT_CORE_Y = 1
+# Slots 0-6 belong to Player. Slots 7-15 are reserved by HiveMind:
+#   7 builder registry, 8-9 enemy intel, 10-12 vision grid,
+#   13 broadcast metronome, 14 map id, 15 packed core positions.
+SLOT_SPAWN_CREDITS = 0
+SLOT_ORPHAN_RELAY = 1
 SLOT_HARVESTER_COUNT = 2
 SLOT_ORE_LOCATION = 3
 SLOT_MAP_PROFILE = 4
 SLOT_STAGE = 5
 SLOT_GUNNER_COUNT = 6
-SLOT_SPAWN_CREDITS = 7
-SLOT_ORPHAN_RELAY = 8
 SLOT_MAP_ID = 14
 SLOT_PACKED_CORES = 15
 
@@ -963,8 +992,6 @@ class Player:
 
     def _run_core(self, ct: Controller) -> None:
         pos = ct.get_position()
-        ct.write_store(SLOT_CORE_X, pos.x)
-        ct.write_store(SLOT_CORE_Y, pos.y)
         self._sync_map_policy(ct)
 
         living = max(0, ct.get_unit_count() - 1)
@@ -1029,10 +1056,10 @@ class Player:
         self._share_ore(ct)
 
     def _read_core_pos(self, ct: Controller) -> None:
-        x = ct.read_store(SLOT_CORE_X)
-        y = ct.read_store(SLOT_CORE_Y)
-        if x > 0 or y > 0:
-            self.core_pos = Position(x, y)
+        """Ally core position comes from HiveMind's packed slot 15."""
+        ally, _ = unpack_cores(ct.read_store(SLOT_PACKED_CORES))
+        if ally[0] != CoreState.UNKNOWN:
+            self.core_pos = Position(ally[1], ally[2])
 
     def _enemy_core_pos(self, ct: Controller) -> Position | None:
         _, enemy = unpack_cores(ct.read_store(SLOT_PACKED_CORES))
