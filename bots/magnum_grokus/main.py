@@ -949,6 +949,9 @@ class Player:
         self.in_relay = False
         self.relay_origin: Position | None = None
         self.relay_stuck = 0
+        # Commit to one conveyor route; replanning every turn caused builders to
+        # flip between opposite paths as vision changed (see README).
+        self.relay_path: list[Position] | None = None
 
     def run(self, ct: Controller) -> None:
         self.hivemind.tick(ct)
@@ -1310,6 +1313,7 @@ class Player:
         self.in_relay = False
         self.relay_origin = None
         self.relay_stuck = 0
+        self.relay_path = None
 
     def _complete_relay(self, ct: Controller) -> None:
         credits = ct.read_store(SLOT_SPAWN_CREDITS)
@@ -1329,6 +1333,20 @@ class Player:
             ct.write_store(SLOT_ORPHAN_RELAY, pack_pos(self.relay_origin))
         self._clear_relay()
 
+    def _relay_path_ok(
+        self,
+        ct: Controller,
+        path: list[Position],
+        ore_blocked: set[tuple[int, int]] | None,
+    ) -> bool:
+        """True while a committed route is still usable, so we can keep to it."""
+        for tile in path:
+            if _allied_belt_id(ct, tile) is not None:
+                continue
+            if not is_layable_or_join(ct, tile, ore_blocked=ore_blocked):
+                return False
+        return True
+
     def _relay_toward_core(self, ct: Controller) -> None:
         """Walk the layable BFS path, laying travel-facing belts until Core-adj."""
         if self.core_pos is None or self.relay_origin is None:
@@ -1336,9 +1354,17 @@ class Player:
             return
 
         ore_blocked = self._ore_blocked_set(ct)
-        path = plan_conveyor_path(
-            ct, self.relay_origin, self.core_pos, ore_blocked=ore_blocked
-        )
+        # Commit to one route. Replanning every turn flipped the seed neighbours
+        # of the harvester origin as vision changed, so two opposite routes
+        # alternated and the builder paced forever with relay_stuck at 0.
+        path = self.relay_path
+        if path is not None and not self._relay_path_ok(ct, path, ore_blocked):
+            path = None
+        if path is None:
+            path = plan_conveyor_path(
+                ct, self.relay_origin, self.core_pos, ore_blocked=ore_blocked
+            )
+            self.relay_path = path
         if path is None:
             self._abort_relay(ct)
             return
@@ -1511,5 +1537,12 @@ class Player:
 
     def _run_gunner(self, ct: Controller) -> None:
         target = ct.get_gunner_target()
-        if target is not None and ct.can_fire(target):
-            ct.fire(target)
+        if target is None or not ct.can_fire(target):
+            return
+        # get_gunner_target() returns the first occupied tile on the line, ours
+        # included. Firing blind shells our own relay belts.
+        bot = ct.get_tile_builder_bot_id(target)
+        victim = bot if bot is not None else ct.get_tile_building_id(target)
+        if victim is None or ct.get_team(victim) == ct.get_team():
+            return
+        ct.fire(target)

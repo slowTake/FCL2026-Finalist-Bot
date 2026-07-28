@@ -16,6 +16,17 @@ from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
+CONDITION_LABELS = {
+    "core_destroyed": "Core destroyed",
+    "resigned": "Resigned",
+    "resources": "Resources",
+    "titanium_collected": "Titanium collected",
+    "harvesters": "Harvesters",
+    "titanium_stored": "Titanium stored",
+    "coinflip": "Coinflip",
+    "timeout": "Draw",
+}
+
 WORKER = """
 import json, sys
 from fcode.fcode_engine import run_game
@@ -90,6 +101,9 @@ def main() -> None:
     wins: dict[str, int] = defaultdict(int)
     played: dict[str, int] = defaultdict(int)
     per_map: dict[tuple[str, str], list[str]] = defaultdict(list)
+    cond_counts: dict[str, dict[str, list[int]]] = defaultdict(
+        lambda: defaultdict(lambda: [0, 0])
+    )
     for r in results:
         if "error" in r:
             continue
@@ -97,12 +111,35 @@ def main() -> None:
         won = r["winner"] == "A"
         wins[r["variant"]] += won
         per_map[(r["variant"], r["map"])].append("W" if won else "L")
+        idx = 0 if won else 1
+        cond_counts[r["cond"]][r["variant"]][idx] += 1
 
     names = [s.split("=", 1)[0] for s in args.variants]
     print("\n=== Win rate over all maps and seeds ===")
     for n in names:
         print(f"  {n:<12} {wins[n]}/{played[n]}  "
               f"({100 * wins[n] / max(1, played[n]):.1f}%)")
+
+    print("\n=== Win condition breakdown ===")
+    known_conds = [c for c in CONDITION_LABELS if c in cond_counts]
+    unknown_conds = sorted(set(cond_counts) - set(CONDITION_LABELS))
+    header = f"{'condition':<22}"
+    for n in names:
+        header += f"{n + ' W':>7}{n + ' L':>7}"
+    print(header)
+    for cond in known_conds + unknown_conds:
+        label = CONDITION_LABELS.get(cond, cond)
+        row = f"{label:<22}"
+        for n in names:
+            w, loss = cond_counts[cond][n]
+            row += f"{w:>7}{loss:>7}"
+        print(row)
+    print()
+    for n in names:
+        core_w, core_l = cond_counts["core_destroyed"][n]
+        kill_note = " (no core kills)" if core_w == 0 else ""
+        print(f"  {n}: {core_w} won by destroying enemy core{kill_note}, "
+              f"{core_l} lost by own core destroyed")
 
     print(f"\n=== Per map (one letter per seed {args.seeds}) ===")
     print(f"{'map':<12}" + "".join(f"{n:<14}" for n in names))

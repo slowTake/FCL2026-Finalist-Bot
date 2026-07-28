@@ -12,7 +12,9 @@ The inlined HiveMind and vision sections are kept in sync with the canonical mod
 - **Map profiles** (slot 4): CloseQuarter (sprint/duel), Choke, OpenLarge, Default
 - **Stage** (slot 5): OPENING / EXPAND / DEFEND driven by harvester count
 - **Movement**: BFS over HiveMind `local_map`, with `make_path_ct` L-path fallback
-- **Relay belts**: BFS conveyor path from harvester to core (ore-aware)
+- **Relay belts**: BFS conveyor path from harvester to core (ore-aware), planned
+  once and committed — replanning every turn caused opposite-route pacing
+- **Gunners**: skip friendly targets (`get_gunner_target` can return our own belts)
 - **Close-quarter**: early gunners, harvester-flank placement, gunner cap (slot 6)
 
 ## Store slots
