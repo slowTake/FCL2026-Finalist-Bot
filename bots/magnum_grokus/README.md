@@ -62,13 +62,12 @@ on one run and 12/15 on the next. Most matches also reach turn 1000 with
 near-identical titanium and are settled by tiebreak, so a single flipped coin
 moves the score.
 
-To compare two versions, average over many games with `multiseed_eval.py`, which
-plays every map at several seeds, one game per process:
+To compare versions more reliably, average over many games with
+`multiseed_eval.py` (every map × 5 seeds, same CLI as gauntlet):
 
 ```bash
-python scripts/multiseed_eval.py \
-  --variants before=/tmp/before.py after=bots/magnum_grokus/main.py \
-  --seeds 1 2 3 4 5
+python scripts/multiseed_eval.py --bot magnum_grokus
+python scripts/multiseed_eval.py --bot magnum_grokus --maps atoll vault
 ```
 
 ## Dev branch

@@ -55,6 +55,9 @@ ABORT_RELAY = False
 # NOTE: pave-while-move off — outbound/inbound relays own belts toward ore/core.
 PAVE_WHILE_MOVE = False
 
+# NOTE: builder 1 far-ore job walks only — no outbound pave / apron en route.
+BUILDER1_PAVE_EN_ROUTE = False
+
 
 def pack_pos(pos: Position) -> int:
     return ((pos.x + 1) << 16) | (pos.y + 1)
@@ -590,12 +593,13 @@ class Player:
                         ):
                             self._try_build_gunner(ct)
         elif (
-            ct.get_action_cooldown() == 0
+            BUILDER1_PAVE_EN_ROUTE
+            and ct.get_action_cooldown() == 0
             and not self.in_relay
             and bootstrapping
             and idx == 1
         ):
-            # Claimer may still lay apron once first harvester exists elsewhere
+            # Optional: claimer may lay apron once a harvester exists elsewhere
             harvester_count = ct.read_store(SLOT_HARVESTER_COUNT)
             if harvester_count >= TARGET_HARVESTERS_APRON:
                 self._try_ensure_core_apron(ct)
@@ -1000,8 +1004,15 @@ class Player:
             return
 
         # Outbound relay toward known ore when still traveling (not on/adjacent).
+        # Builder 1 far-job may walk only when BUILDER1_PAVE_EN_ROUTE is False.
+        builder1_walk_only = (
+            self.hivemind.my_index == 1
+            and not self.far_job_done
+            and not BUILDER1_PAVE_EN_ROUTE
+        )
         if (
-            self.ore_site is not None
+            not builder1_walk_only
+            and self.ore_site is not None
             and self.core_pos is not None
             and not self._adjacent_to_ore(ct.get_position(), self.ore_site)
         ):

@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
-"""Compare bot variants across every map and several seeds.
+"""Run a bot vs starter on every map, 5 seeds each.
 
-Each game runs in its own process so results are independent of the order
-games are played in, unlike bot_gauntlet.py which shares one interpreter
-(and therefore one `random` state) across all 15 matches.
+Same CLI shape as bot_gauntlet / extreme_gauntlet:
+
+    python scripts/multiseed_eval.py --bot turtleHive
+    python scripts/multiseed_eval.py --bot turtleHive --maps atoll vault
 """
 
 from __future__ import annotations
 
 import argparse
-import json
-import subprocess
 import sys
 from collections import defaultdict
-from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
+
+from fcode.config import find_config
+from fcode.fcode_engine import run_game
+
+SEEDS_PER_MAP = 5
 
 CONDITION_LABELS = {
     "core_destroyed": "Core destroyed",
@@ -27,127 +30,134 @@ CONDITION_LABELS = {
     "timeout": "Draw",
 }
 
-WORKER = """
-import json, sys
-from fcode.fcode_engine import run_game
-bot, starter, engine_root, map_path, seed = sys.argv[1:6]
-res = run_game(bot, starter, engine_root, map_path,
-               "/tmp/ms-%s.replay26" % seed, int(seed), 0)
-print("RESULT" + json.dumps({
-    "winner": res["winner"],
-    "cond": res["win_condition"],
-    "a": res["a_titanium_collected"],
-    "b": res["b_titanium_collected"],
-}))
-"""
+
+def resolve_maps(maps_dir: Path, override: list[str] | None) -> list[Path]:
+    if override:
+        maps = []
+        for name in override:
+            path = maps_dir / name
+            if not path.suffix:
+                path = path.with_suffix(".map26")
+            if not path.exists():
+                raise FileNotFoundError(f"Map not found: {path}")
+            maps.append(path)
+        return maps
+    return sorted(maps_dir.glob("*.map26"))
 
 
-def play(args: tuple[str, str, str, str, int]) -> dict:
-    variant, bot, map_path, engine_root, seed = args
-    starter = str(Path("bots/starter/main.py").resolve())
-    proc = subprocess.run(
-        [sys.executable, "-c", WORKER, bot, starter, engine_root, map_path, str(seed)],
-        capture_output=True,
-        text=True,
+def run_multiseed(bot_name: str, map_names: list[str] | None) -> int:
+    config, project_root = find_config()
+    bots_dir = (project_root / config.bots_dir).resolve()
+    maps_dir = (project_root / config.maps_dir).resolve()
+    base_seed = config.seed
+    engine_root = str(Path(__import__("fcode").__file__).resolve().parent)
+
+    candidate = bots_dir / bot_name / "main.py"
+    starter = bots_dir / "starter" / "main.py"
+
+    if not candidate.is_file():
+        print(f"Error: bot not found at {candidate}", file=sys.stderr)
+        return 1
+    if not starter.is_file():
+        print(f"Error: starter bot not found at {starter}", file=sys.stderr)
+        return 1
+
+    maps = resolve_maps(maps_dir, map_names)
+    if not maps:
+        print(f"Error: no maps found in {maps_dir}", file=sys.stderr)
+        return 1
+
+    seeds = [base_seed + i for i in range(SEEDS_PER_MAP)]
+    total = len(maps) * SEEDS_PER_MAP
+    print(
+        f"Multiseed eval: {bot_name} vs starter "
+        f"({len(maps)} maps x {SEEDS_PER_MAP} seeds = {total} matches, "
+        f"seeds={seeds})",
+        flush=True,
     )
-    line = next(
-        (l for l in proc.stdout.splitlines() if l.startswith("RESULT")), None
+    print(flush=True)
+    print(
+        f"{'Map':<12} {'Result':<8} {'Condition':<24} {'Ally Ti':>8} "
+        f"{'Enemy Ti':>9} {'Turn':>6}",
+        flush=True,
     )
-    if line is None:
-        return {
-            "variant": variant,
-            "map": Path(map_path).stem,
-            "seed": seed,
-            "error": proc.stderr[-400:],
-        }
-    out = json.loads(line[len("RESULT"):])
-    out.update(variant=variant, map=Path(map_path).stem, seed=seed)
-    return out
+    print("-" * 71, flush=True)
+
+    wins = 0
+    done = 0
+    per_map: dict[str, list[str]] = defaultdict(list)
+
+    for map_path in maps:
+        for i, match_seed in enumerate(seeds, start=1):
+            map_label = f"{map_path.stem}-{i}"
+            print(
+                f"  … {map_label} (seed {match_seed})  [{done + 1}/{total}]",
+                flush=True,
+            )
+            replay_path = (
+                f"/tmp/multiseed-{bot_name}-{map_path.stem}-s{match_seed}.replay26"
+            )
+            result = run_game(
+                str(candidate.resolve()),
+                str(starter.resolve()),
+                engine_root,
+                str(map_path.resolve()),
+                replay_path,
+                match_seed,
+                0,
+            )
+
+            won = result["winner"] == "A"
+            if won:
+                wins += 1
+            done += 1
+
+            ally_ti = result["a_titanium_collected"]
+            enemy_ti = result["b_titanium_collected"]
+            condition = CONDITION_LABELS.get(
+                result["win_condition"], result["win_condition"]
+            )
+            label = "WIN" if won else "LOSS"
+            per_map[map_path.stem].append("W" if won else "L")
+            print(
+                f"{map_label:<12} {label:<8} {condition:<24} {ally_ti:>8} "
+                f"{enemy_ti:>9} {result['turns']:>6}  "
+                f"({wins}/{done})",
+                flush=True,
+            )
+
+    winrate = (wins / total) * 100 if total else 0.0
+    print(flush=True)
+    print(f"Total: {wins}/{total}", flush=True)
+    print(f"Win rate: {winrate:.1f}%", flush=True)
+    print(flush=True)
+    print(f"=== Per map (one letter per seed {seeds}) ===", flush=True)
+    for map_path in maps:
+        letters = "".join(per_map[map_path.stem])
+        print(f"  {map_path.stem:<12} {letters}", flush=True)
+
+    return 0 if wins == total else 1
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--variants", nargs="+", required=True,
-                    help="name=path/to/main.py pairs")
-    ap.add_argument("--seeds", nargs="+", type=int, default=[1, 2, 3, 4, 5])
-    ap.add_argument("--workers", type=int, default=12)
-    args = ap.parse_args()
-
-    engine_root = str(Path(__import__("fcode").__file__).resolve().parent)
-    maps = sorted(Path("maps").glob("*.map26"))
-
-    jobs = []
-    for spec in args.variants:
-        name, path = spec.split("=", 1)
-        for m in maps:
-            for seed in args.seeds:
-                jobs.append((name, str(Path(path).resolve()), str(m.resolve()),
-                             engine_root, seed))
-
-    print(f"{len(jobs)} games "
-          f"({len(args.variants)} variants x {len(maps)} maps x {len(args.seeds)} seeds)")
-
-    results = []
-    with ProcessPoolExecutor(max_workers=args.workers) as pool:
-        for i, res in enumerate(pool.map(play, jobs), 1):
-            results.append(res)
-            if i % 25 == 0:
-                print(f"  {i}/{len(jobs)}", flush=True)
-
-    errors = [r for r in results if "error" in r]
-    if errors:
-        print(f"\n{len(errors)} games errored, e.g.:\n{errors[0]['error']}")
-
-    wins: dict[str, int] = defaultdict(int)
-    played: dict[str, int] = defaultdict(int)
-    per_map: dict[tuple[str, str], list[str]] = defaultdict(list)
-    cond_counts: dict[str, dict[str, list[int]]] = defaultdict(
-        lambda: defaultdict(lambda: [0, 0])
+    parser = argparse.ArgumentParser(
+        description=(
+            "Run a bot against starter on every map, 5 seeds each. "
+            "Same CLI as bot_gauntlet."
+        )
     )
-    for r in results:
-        if "error" in r:
-            continue
-        played[r["variant"]] += 1
-        won = r["winner"] == "A"
-        wins[r["variant"]] += won
-        per_map[(r["variant"], r["map"])].append("W" if won else "L")
-        idx = 0 if won else 1
-        cond_counts[r["cond"]][r["variant"]][idx] += 1
-
-    names = [s.split("=", 1)[0] for s in args.variants]
-    print("\n=== Win rate over all maps and seeds ===")
-    for n in names:
-        print(f"  {n:<12} {wins[n]}/{played[n]}  "
-              f"({100 * wins[n] / max(1, played[n]):.1f}%)")
-
-    print("\n=== Win condition breakdown ===")
-    known_conds = [c for c in CONDITION_LABELS if c in cond_counts]
-    unknown_conds = sorted(set(cond_counts) - set(CONDITION_LABELS))
-    header = f"{'condition':<22}"
-    for n in names:
-        header += f"{n + ' W':>7}{n + ' L':>7}"
-    print(header)
-    for cond in known_conds + unknown_conds:
-        label = CONDITION_LABELS.get(cond, cond)
-        row = f"{label:<22}"
-        for n in names:
-            w, loss = cond_counts[cond][n]
-            row += f"{w:>7}{loss:>7}"
-        print(row)
-    print()
-    for n in names:
-        core_w, core_l = cond_counts["core_destroyed"][n]
-        kill_note = " (no core kills)" if core_w == 0 else ""
-        print(f"  {n}: {core_w} won by destroying enemy core{kill_note}, "
-              f"{core_l} lost by own core destroyed")
-
-    print(f"\n=== Per map (one letter per seed {args.seeds}) ===")
-    print(f"{'map':<12}" + "".join(f"{n:<14}" for n in names))
-    for m in maps:
-        cells = "".join(f"{''.join(per_map[(n, m.stem)]):<14}" for n in names)
-        print(f"{m.stem:<12}{cells}")
-
-    Path("/tmp/multiseed_results.json").write_text(json.dumps(results, indent=1))
+    parser.add_argument(
+        "--bot",
+        required=True,
+        help="Bot directory name under bots/ (e.g. turtleHive)",
+    )
+    parser.add_argument(
+        "--maps",
+        nargs="+",
+        help="Optional map names to run (default: all *.map26 in maps/)",
+    )
+    args = parser.parse_args()
+    raise SystemExit(run_multiseed(args.bot, args.maps))
 
 
 if __name__ == "__main__":

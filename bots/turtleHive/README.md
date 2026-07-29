@@ -28,7 +28,9 @@ Turtle + updated HiveMind (`components/` symlinks) + **committed relay belts**
   build harvester + inbound relay.
 - **Start bootstrap (one-off):** builder 1 claims nearest ore ≥5 from the core
   footprint and publishes it to slot 4; builder 2 outbound-paves toward that ore
-  (no claim). After each finishes, both permanently resume the normal ore loop.
+  (no claim). With `BUILDER1_PAVE_EN_ROUTE = False`, builder 1 walks only (no
+  outbound/apron en route). After each finishes, both permanently resume the
+  normal ore loop.
 - **Core spawn:** builders spawn toward map center (not random).
 - **Gunners:** `BUILD_GUNNERS = False` for now (belt/apron debugging). Flip that flag to re-enable.
 - **Orphan claim:** `CLAIM_ORPHAN_RELAY = False` for a test — aborted relays are not picked up.
