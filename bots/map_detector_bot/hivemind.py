@@ -1,6 +1,6 @@
 from fcode import Controller, EntityType
 from enum import IntEnum
-from features import KNOWN_MAPS, MAP_ID_TO_NAME
+from features import KNOWN_MAPS, MAP_ID_TO_NAME, WALL_LOCATIONS
 from vision import pack_vision_grid, unpack_vision_grid, pack_intel_slot, unpack_intel_slot
 
 class CoreState(IntEnum):
@@ -20,6 +20,16 @@ def unpack_cores(val: int):
     enemy = (CoreState(enemy_bits >> 14), (enemy_bits >> 7) & 0x7F, enemy_bits & 0x7F)
     return ally, enemy
 
+
+_INTEL_ENTITY_TO_ID = {
+    EntityType.CORE: 1,
+    EntityType.SENTINEL: 2,
+    EntityType.GUNNER: 3,
+    EntityType.HARVESTER: 4,
+}
+_INTEL_ID_TO_ENTITY = {value: key for key, value in _INTEL_ENTITY_TO_ID.items()}
+
+
 class HiveMind:
     def __init__(self):
         self.local_map = {}
@@ -28,6 +38,21 @@ class HiveMind:
         self.map_id = 0
         self.map_name = "UNKNOWN"
         self._map_detected = False
+        self._terrain_seeded = False
+
+    def _seed_static_terrain(self) -> None:
+        if self.map_id not in WALL_LOCATIONS:
+            return
+        for x, y in WALL_LOCATIONS[self.map_id]:
+            tile = self.local_map.setdefault((x, y), {})
+            tile["passable"] = False
+            tile["static"] = True
+
+    def _ensure_terrain_seeded(self) -> None:
+        if self._terrain_seeded or self.map_id == 0:
+            return
+        self._seed_static_terrain()
+        self._terrain_seeded = True
 
     def _detect_and_store_map(self, ct: Controller) -> None:
         if self._map_detected: return
@@ -54,6 +79,7 @@ class HiveMind:
         )
         ct.write_store(15, packed)
         self._map_detected = True
+        self._ensure_terrain_seeded()
 
     def _update_local_vision(self, ct: Controller):
         pos = ct.get_position()
@@ -80,7 +106,8 @@ class HiveMind:
                             self.local_map[(px, py)]["passable"] = False
                             self.local_map[(px, py)]["entity"] = entity_positions[(px, py)]
                         else:
-                            self.local_map[(px, py)]["passable"] = True
+                            if not self.local_map[(px, py)].get("static"):
+                                self.local_map[(px, py)]["passable"] = True
                             if "entity" in self.local_map[(px, py)]:
                                 del self.local_map[(px, py)]["entity"]
 
@@ -98,12 +125,15 @@ class HiveMind:
                 if (px, py) in self.local_map and not self.local_map[(px, py)].get("passable", True):
                     grid_81 |= (1 << idx)
 
-                if (px, py) in self.local_map and "entity" in self.local_map[(px, py)]:
-                    etype = self.local_map[(px, py)]["entity"]["type"]
-                    eteam = self.local_map[(px, py)]["entity"]["team"]
-                    if eteam != ct.get_team() and etype in (EntityType.CORE, EntityType.SENTINEL, EntityType.GUNNER, EntityType.HARVESTER):
+                entity = self.local_map.get((px, py), {}).get("entity")
+                if entity:
+                    etype = entity.get("type")
+                    eteam = entity.get("team")
+                    if etype in _INTEL_ENTITY_TO_ID and (
+                        eteam is None or eteam != ct.get_team()
+                    ):
                         if len(intel_targets) < 4:
-                            intel_targets.append((px, py, etype))
+                            intel_targets.append((px, py, _INTEL_ENTITY_TO_ID[etype]))
 
         s10, s11, s12 = pack_vision_grid(pos.x, pos.y, grid_81)
         ct.write_store(10, s10)
@@ -151,9 +181,12 @@ class HiveMind:
         for t in (t0, t1, t2, t3):
             if t:
                 tx, ty, ttype = t
+                etype = _INTEL_ID_TO_ENTITY.get(ttype)
+                if etype is None:
+                    continue
                 if (tx, ty) not in self.local_map:
                     self.local_map[(tx, ty)] = {}
-                self.local_map[(tx, ty)]["entity"] = {"type": EntityType(ttype)}
+                self.local_map[(tx, ty)]["entity"] = {"type": etype}
 
     def spawn_builder(self, ct: Controller, pos) -> bool:
         """Helper to spawn a builder and instantly register it with the HiveMind registry."""
@@ -182,6 +215,7 @@ class HiveMind:
         # 4. Read static map knowledge if we haven't
         if self.map_id == 0 and self.global_turn > 1:
             self.map_id = ct.read_store(14)
+            self._ensure_terrain_seeded()
 
         # 5. Always update personal vision first
         self._update_local_vision(ct)

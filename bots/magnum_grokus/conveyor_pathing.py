@@ -1,5 +1,6 @@
 """Conveyor path planning and lay/join/overwrite helpers for magnum_grokus.
 
+Reference copy — main.py is canonical for league submission and fcode runs.
 No PlayerBot state — callers pass Controller + positions and wire movement.
 """
 

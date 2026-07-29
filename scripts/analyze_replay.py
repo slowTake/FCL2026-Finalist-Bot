@@ -18,6 +18,8 @@ def analyze(path: str) -> dict:
     a_harvesters = 0
     a_conveyors = 0
     a_splitters = 0
+    a_gunners = 0
+    first_gunner_turn: int | None = None
     harvesters_by_turn_200 = 0
     a_collected = 0
 
@@ -36,6 +38,10 @@ def analyze(path: str) -> dict:
                     a_conveyors += 1
                 elif e.HasField("splitter"):
                     a_splitters += 1
+                elif e.HasField("gunner"):
+                    a_gunners += 1
+                    if first_gunner_turn is None:
+                        first_gunner_turn = turn_i
             elif kind == "updatePlayers":
                 a_collected = update.updatePlayers.players.a.titaniumCollected
 
@@ -51,6 +57,8 @@ def analyze(path: str) -> dict:
         "a_harvesters": a_harvesters,
         "a_conveyors": a_conveyors,
         "a_splitters": a_splitters,
+        "a_gunners": a_gunners,
+        "first_gunner_turn": first_gunner_turn,
         "harvesters_by_turn_200": harvesters_by_turn_200,
     }
 
@@ -67,6 +75,14 @@ def check(stats: dict, map_name: str) -> list[str]:
         errors.append(
             f"{map_name}: conveyors={stats['a_conveyors']} < splitters={stats['a_splitters']}"
         )
+    if map_name in ("sprint", "duel", "sprint-vs-turtle", "duel-vs-turtle"):
+        base = map_name.replace("-vs-turtle", "")
+        if stats["first_gunner_turn"] is None:
+            errors.append(f"{base}: no gunner built")
+        elif stats["first_gunner_turn"] > 120:
+            errors.append(
+                f"{base}: first gunner turn {stats['first_gunner_turn']} (want <= 120)"
+            )
     return errors
 
 
@@ -84,6 +100,7 @@ def main() -> None:
             f"  turns={stats['turns']} winner={stats['winner']} "
             f"collected={stats['a_collected']} "
             f"harvesters={stats['a_harvesters']} "
+            f"gunners={stats['a_gunners']} first_gunner_turn={stats['first_gunner_turn']} "
             f"conveyors={stats['a_conveyors']} splitters={stats['a_splitters']}"
         )
         all_errors.extend(check(stats, map_name))
