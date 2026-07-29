@@ -1,15 +1,17 @@
 """turtleHive — turtle + HiveMind + committed relays + 2-deep core apron.
 
 Lean map-aware baseline: HiveMind from components/, BFS movement, magnum-style
-committed harvester→core relay belts, and a 2-deep inward-facing conveyor apron
-around the core (N/E/S/W only — no splitters).
+committed relays (outbound core→ore join/build-only, inbound harvester→core with
+facing fix-up), and a 2-deep inward-facing conveyor apron around the core
+(N/E/S/W only — no splitters).
 
 Store slots:
-  0  SLOT_SPAWN_CREDITS   Earned by completing a relay (Player)
+  0  SLOT_SPAWN_CREDITS   Earned by completing an inbound relay (Player)
   1  SLOT_ORPHAN_RELAY    Packed harvester origin needing a relay (Player)
   2  SLOT_HARVESTER_COUNT Total harvesters (Player)
   3  SLOT_ORE_LOCATION    Packed uncovered ore (Player)
-  4–6                     Free
+  4  SLOT_FAR_ORE         One-off start: packed far ore for builder 1/2 (Player)
+  5–6                    Free
   7–15                    HiveMind-owned — never write from Player
 
 Ally core position is read from HiveMind slot 15 via unpack_cores.
@@ -31,12 +33,14 @@ SLOT_SPAWN_CREDITS = 0
 SLOT_ORPHAN_RELAY = 1
 SLOT_HARVESTER_COUNT = 2
 SLOT_ORE_LOCATION = 3
+SLOT_FAR_ORE = 4
 SLOT_PACKED_CORES = 15
 
 MAX_BUILDERS = 5
 TARGET_HARVESTERS = 3
 TARGET_HARVESTERS_APRON = 1  # start core apron after first harvester
 BFS_MAX_ITERS = 400
+FAR_ORE_MIN_DIST = 5  # one-off start: claimer picks nearest ore at least this far
 
 # NOTE: gunners off while debugging belt logistics / core apron.
 # Re-enable once relays + 2-deep apron reliably deliver mined Ti.
@@ -48,8 +52,8 @@ CLAIM_ORPHAN_RELAY = False
 # NOTE: relay abort off for a test — stuck / no-path / guard won't orphan or clear relay.
 ABORT_RELAY = False
 
-# NOTE: pave-while-move on, but _try_move must not destroy allied belts (join/build only).
-PAVE_WHILE_MOVE = True
+# NOTE: pave-while-move off — outbound/inbound relays own belts toward ore/core.
+PAVE_WHILE_MOVE = False
 
 
 def pack_pos(pos: Position) -> int:
@@ -92,6 +96,23 @@ def _core_footprint(core_pos: Position) -> list[Position]:
         Position(core_pos.x, core_pos.y + 1),
         Position(core_pos.x + 1, core_pos.y + 1),
     ]
+
+
+def core_min_manhattan(pos: Position, core_pos: Position) -> int:
+    """Min Manhattan distance from pos to any tile of the core 2x2 footprint."""
+    return min(
+        abs(pos.x - tile.x) + abs(pos.y - tile.y)
+        for tile in _core_footprint(core_pos)
+    )
+
+
+def spawn_dirs_toward_center(ct: Controller, core_pos: Position) -> list[Direction]:
+    """Prefer spawn tiles closer to map center, then fall back to farther dirs."""
+    center = Position(ct.get_map_width() // 2, ct.get_map_height() // 2)
+    return sorted(
+        DIRECTIONS,
+        key=lambda d: core_pos.add(d).distance_squared(center),
+    )
 
 
 def core_apron_specs(core_pos: Position) -> list[tuple[Position, Direction]]:
@@ -235,24 +256,16 @@ def facing_into_core(pos: Position, core_pos: Position) -> Direction:
 def plan_conveyor_path(
     ct: Controller,
     start: Position,
-    core_pos: Position,
     *,
+    is_goal,
     ore_blocked: set[tuple[int, int]] | None = None,
 ) -> list[Position] | None:
-    """BFS over layable/join tiles from start to a core-adjacent (depth-1) tile.
-
-    Goal is the inner apron ring that feeds the core. The outer (depth-2) apron
-    is joinable mid-path so relays plug into it, then continue one hop inward.
-    Ending on the outer ring alone would leave a gap before the core.
-    """
+    """BFS over layable/join tiles from start until is_goal(pos) is true."""
     w = ct.get_map_width()
     h = ct.get_map_height()
 
     def ok(p: Position) -> bool:
         return is_layable_or_join(ct, p, ore_blocked=ore_blocked)
-
-    def is_goal(p: Position) -> bool:
-        return is_core_adjacent(ct, p, core_pos)
 
     seeds: list[Position] = []
     if ok(start):
@@ -304,10 +317,63 @@ def plan_conveyor_path(
     return path_rev
 
 
+def plan_conveyor_path_to_core(
+    ct: Controller,
+    start: Position,
+    core_pos: Position,
+    *,
+    ore_blocked: set[tuple[int, int]] | None = None,
+) -> list[Position] | None:
+    """BFS from start to a core-adjacent (depth-1) tile.
+
+    Goal is the inner apron ring that feeds the core. The outer (depth-2) apron
+    is joinable mid-path so relays plug into it, then continue one hop inward.
+    """
+    return plan_conveyor_path(
+        ct,
+        start,
+        is_goal=lambda p: is_core_adjacent(ct, p, core_pos),
+        ore_blocked=ore_blocked,
+    )
+
+
+def plan_conveyor_path_to_ore(
+    ct: Controller,
+    start: Position,
+    ore_pos: Position,
+    *,
+    ore_blocked: set[tuple[int, int]] | None = None,
+) -> list[Position] | None:
+    """BFS from start (core) to a layable/join cardinal neighbor of ore_pos."""
+
+    def is_goal(p: Position) -> bool:
+        if abs(p.x - ore_pos.x) + abs(p.y - ore_pos.y) != 1:
+            return False
+        return is_layable_or_join(ct, p, ore_blocked=ore_blocked)
+
+    return plan_conveyor_path(
+        ct, start, is_goal=is_goal, ore_blocked=ore_blocked
+    )
+
+
 def path_travel_dir(
-    path: list[Position], index: int, core_pos: Position
+    path: list[Position],
+    index: int,
+    core_pos: Position,
+    *,
+    reverse: bool = False,
 ) -> Direction:
+    """Belt facing for path[index].
+
+    Inbound paths run harvester→core, so face the next hop (toward core).
+    Outbound paths run core→ore, so reverse=True faces the previous hop
+    (still toward core) — Ti must flow ore→core, not along the walk.
+    """
     tile = path[index]
+    if reverse:
+        if index > 0:
+            return travel_facing(tile, path[index - 1])
+        return facing_into_core(tile, core_pos)
     if index + 1 < len(path):
         return travel_facing(tile, path[index + 1])
     return facing_into_core(tile, core_pos)
@@ -357,37 +423,66 @@ def belt_faces(ct: Controller, tile: Position, expected: Direction) -> bool:
 
 
 def path_is_complete(
-    ct: Controller, path: list[Position], core_pos: Position
+    ct: Controller,
+    path: list[Position],
+    core_pos: Position,
+    *,
+    reverse: bool = False,
+    require_facing: bool = True,
 ) -> bool:
     if not path:
         return False
     for i, tile in enumerate(path):
-        want = path_travel_dir(path, i, core_pos)
-        if not belt_faces(ct, tile, want):
+        if require_facing:
+            want = path_travel_dir(path, i, core_pos, reverse=reverse)
+            if not belt_faces(ct, tile, want):
+                return False
+        elif _allied_belt_id(ct, tile) is None:
             return False
     return True
 
 
 def first_incomplete_index(
-    ct: Controller, path: list[Position], core_pos: Position, *, start: int = 0
+    ct: Controller,
+    path: list[Position],
+    core_pos: Position,
+    *,
+    start: int = 0,
+    reverse: bool = False,
+    require_facing: bool = True,
 ) -> int | None:
-    """First path index >= start missing the correct allied belt facing."""
+    """First path index >= start missing a satisfactory allied belt.
+
+    When require_facing is True, the belt must face the planned travel dir.
+    When False (outbound join-only), any allied belt counts — no replace.
+    """
     for i in range(max(0, start), len(path)):
         tile = path[i]
-        want = path_travel_dir(path, i, core_pos)
-        if not belt_faces(ct, tile, want):
+        if require_facing:
+            want = path_travel_dir(path, i, core_pos, reverse=reverse)
+            if not belt_faces(ct, tile, want):
+                return i
+        elif _allied_belt_id(ct, tile) is None:
             return i
     return None
 
 
 def last_built_path_index(
-    ct: Controller, path: list[Position], core_pos: Position
+    ct: Controller,
+    path: list[Position],
+    core_pos: Position,
+    *,
+    reverse: bool = False,
+    require_facing: bool = True,
 ) -> int | None:
-    """Highest path index with correct allied belt facing, or None if none built."""
+    """Highest path index with a satisfactory allied belt, or None if none."""
     last: int | None = None
     for i, tile in enumerate(path):
-        want = path_travel_dir(path, i, core_pos)
-        if belt_faces(ct, tile, want):
+        if require_facing:
+            want = path_travel_dir(path, i, core_pos, reverse=reverse)
+            if belt_faces(ct, tile, want):
+                last = i
+        elif _allied_belt_id(ct, tile) is not None:
             last = i
     return last
 
@@ -407,13 +502,19 @@ class Player:
         self.core_pos: Position | None = None
 
         self.in_relay = False
+        self.relay_mode: str = "to_core"  # "to_core" | "to_ore"
         self.relay_origin: Position | None = None
+        self.relay_ore: Position | None = None  # goal ore when mode == to_ore
         self.relay_stuck = 0
         self.relay_path: list[Position] | None = None
 
         # Clear-ore task: known ore from ORE_LOCATIONS we're claiming/clearing
         self.ore_site: Position | None = None
         self.skipped_ores: set[tuple[int, int]] = set()
+
+        # One-off game-start bootstrap (builder 1 claim / builder 2 outbound)
+        self.far_job_done = False
+        self.far_support_done = False
 
     def run(self, ct: Controller) -> None:
         self.hivemind.tick(ct)
@@ -443,9 +544,7 @@ class Player:
             return
 
         pos = ct.get_position()
-        dirs = list(DIRECTIONS)
-        random.shuffle(dirs)
-        for d in dirs:
+        for d in spawn_dirs_toward_center(ct, pos):
             spawn_pos = pos.add(d)
             if self.hivemind.spawn_builder(ct, spawn_pos):
                 self.num_spawned += 1
@@ -459,6 +558,7 @@ class Player:
 
     def _run_builder(self, ct: Controller) -> None:
         pos = ct.get_position()
+        idx = self.hivemind.my_index
 
         if self.core_pos is None:
             self._read_core_pos(ct)
@@ -469,7 +569,17 @@ class Player:
             self.stuck = 0
         self.last_pos = pos
 
-        if ct.get_action_cooldown() == 0 and not self.in_relay:
+        # One-off start bootstrap before normal ore work
+        if idx == 1 and not self.far_job_done:
+            self._bootstrap_claimer(ct)
+        elif idx == 2 and not self.far_support_done:
+            self._bootstrap_supporter(ct)
+
+        bootstrapping = (idx == 1 and not self.far_job_done) or (
+            idx == 2 and not self.far_support_done
+        )
+
+        if ct.get_action_cooldown() == 0 and not self.in_relay and not bootstrapping:
             if not self._try_build_harvester(ct):
                 harvester_count = ct.read_store(SLOT_HARVESTER_COUNT)
                 if harvester_count >= TARGET_HARVESTERS_APRON:
@@ -479,11 +589,22 @@ class Player:
                             and harvester_count >= TARGET_HARVESTERS
                         ):
                             self._try_build_gunner(ct)
+        elif (
+            ct.get_action_cooldown() == 0
+            and not self.in_relay
+            and bootstrapping
+            and idx == 1
+        ):
+            # Claimer may still lay apron once first harvester exists elsewhere
+            harvester_count = ct.read_store(SLOT_HARVESTER_COUNT)
+            if harvester_count >= TARGET_HARVESTERS_APRON:
+                self._try_ensure_core_apron(ct)
 
         if ct.get_action_cooldown() == 0:
             self._try_heal(ct)
 
-        if not self.in_relay:
+        # Supporter waits/paves only — no ore-site claim during bootstrap
+        if not self.in_relay and not (idx == 2 and not self.far_support_done):
             self._try_ore_site_task(ct)
 
         self._move_toward_target(ct)
@@ -496,7 +617,9 @@ class Player:
 
     def _enter_relay(self, ct: Controller, harvester_pos: Position) -> None:
         self.in_relay = True
+        self.relay_mode = "to_core"
         self.relay_origin = harvester_pos
+        self.relay_ore = None
         self.relay_stuck = 0
         self.relay_path = None
         self.target = self.core_pos
@@ -508,6 +631,89 @@ class Player:
             and orphan.y == harvester_pos.y
         ):
             ct.write_store(SLOT_ORPHAN_RELAY, 0)
+        # One-off claimer: finishing build/steal at the published far ore
+        if not self.far_job_done and self.hivemind.my_index == 1:
+            far = unpack_pos(ct.read_store(SLOT_FAR_ORE))
+            if (
+                far is not None
+                and far.x == harvester_pos.x
+                and far.y == harvester_pos.y
+            ):
+                self.far_job_done = True
+
+    def _enter_relay_to_ore(self, ore_site: Position) -> None:
+        """Committed outbound belt path from core toward a known ore neighbor."""
+        self.in_relay = True
+        self.relay_mode = "to_ore"
+        self.relay_origin = self.core_pos
+        self.relay_ore = ore_site
+        self.relay_stuck = 0
+        self.relay_path = None
+        self.target = ore_site
+
+    def _read_far_ore(self, ct: Controller) -> Position | None:
+        return unpack_pos(ct.read_store(SLOT_FAR_ORE))
+
+    def _publish_far_ore(self, ct: Controller, ore: Position) -> None:
+        ct.write_store(SLOT_FAR_ORE, pack_pos(ore))
+
+    def _pick_far_ore(self, ct: Controller, pos: Position) -> Position | None:
+        """Nearest known ore at least FAR_ORE_MIN_DIST from the core footprint."""
+        if self.core_pos is None:
+            return None
+        map_id = self.hivemind.map_id
+        if map_id <= 0:
+            return None
+        my_team = ct.get_team()
+        best: Position | None = None
+        best_dist = float("inf")
+        for ox, oy in ORE_LOCATIONS.get(map_id, []):
+            if (ox, oy) in self.skipped_ores:
+                continue
+            ore_pos = Position(ox, oy)
+            if core_min_manhattan(ore_pos, self.core_pos) < FAR_ORE_MIN_DIST:
+                continue
+            ent = self.hivemind.local_map.get((ox, oy), {}).get("entity")
+            if (
+                ent
+                and ent.get("type") == EntityType.HARVESTER
+                and ent.get("team") == my_team
+            ):
+                continue
+            d = pos.distance_squared(ore_pos)
+            if d < best_dist:
+                best_dist = d
+                best = ore_pos
+        return best
+
+    def _bootstrap_claimer(self, ct: Controller) -> None:
+        """Builder 1 one-off: sticky far ore claim + publish for supporter."""
+        if self.core_pos is None or self.hivemind.map_id <= 0:
+            return
+        if self.ore_site is not None:
+            return
+        far = self._pick_far_ore(ct, ct.get_position())
+        if far is None:
+            self.far_job_done = True
+            return
+        self.ore_site = far
+        self._publish_far_ore(ct, far)
+
+    def _bootstrap_supporter(self, ct: Controller) -> None:
+        """Builder 2 one-off: outbound pave toward published far ore (no claim)."""
+        far = self._read_far_ore(ct)
+        if far is None:
+            # No publish yet — if no eligible far ore exists, skip bootstrap
+            if self.core_pos is not None and self.hivemind.map_id > 0:
+                if self._pick_far_ore(ct, ct.get_position()) is None:
+                    self.far_support_done = True
+            return
+        if not self.in_relay and self.core_pos is not None:
+            self._enter_relay_to_ore(far)
+
+    def _finish_far_support_if_needed(self) -> None:
+        if self.hivemind.my_index == 2 and not self.far_support_done:
+            self.far_support_done = True
 
     def _try_build_harvester(self, ct: Controller) -> bool:
         ti = ct.get_global_resources()
@@ -689,9 +895,17 @@ class Player:
 
         if kind in ("our_harvester", "blocked"):
             self._skip_ore(ore)
-            self.ore_site = self._pick_ore_site(ct, pos)
-            if self.ore_site is not None:
-                self.target = self.ore_site
+            if self.hivemind.my_index == 1 and not self.far_job_done:
+                self.ore_site = self._pick_far_ore(ct, pos)
+                if self.ore_site is None:
+                    self.far_job_done = True
+                else:
+                    self._publish_far_ore(ct, self.ore_site)
+                    self.target = self.ore_site
+            else:
+                self.ore_site = self._pick_ore_site(ct, pos)
+                if self.ore_site is not None:
+                    self.target = self.ore_site
             return
 
         if kind == "allied_belt":
@@ -785,6 +999,16 @@ class Player:
             self._relay_toward_core(ct)
             return
 
+        # Outbound relay toward known ore when still traveling (not on/adjacent).
+        if (
+            self.ore_site is not None
+            and self.core_pos is not None
+            and not self._adjacent_to_ore(ct.get_position(), self.ore_site)
+        ):
+            self._enter_relay_to_ore(self.ore_site)
+            self._relay_toward_core(ct)
+            return
+
         if ct.get_move_cooldown() != 0:
             return
 
@@ -817,7 +1041,9 @@ class Player:
 
     def _clear_relay(self) -> None:
         self.in_relay = False
+        self.relay_mode = "to_core"
         self.relay_origin = None
+        self.relay_ore = None
         self.relay_stuck = 0
         self.relay_path = None
 
@@ -837,7 +1063,7 @@ class Player:
     def _abort_relay(self, ct: Controller) -> None:
         if not ABORT_RELAY:
             return
-        if self.relay_origin is not None:
+        if self.relay_mode == "to_core" and self.relay_origin is not None:
             ct.write_store(SLOT_ORPHAN_RELAY, pack_pos(self.relay_origin))
         self._clear_relay()
 
@@ -854,14 +1080,22 @@ class Player:
                 return False
         return True
 
+    def _adjacent_to_ore(self, pos: Position, ore: Position) -> bool:
+        return abs(pos.x - ore.x) + abs(pos.y - ore.y) <= 1
+
     def _relay_toward_core(self, ct: Controller) -> None:
-        """Walk a committed BFS belt path until it joins the core apron.
+        """Walk a committed BFS belt path (inbound to core or outbound to ore).
 
         Enemy belts on the path are cleared via stand-and-fire, then we lay ours.
         If relay_origin leaves vision, advance it to the last built path tile and
-        keep finishing the path toward the core.
+        keep finishing the path. Outbound never destroy/replaces allied belts.
         """
         if self.core_pos is None or self.relay_origin is None:
+            self._abort_relay(ct)
+            return
+
+        to_ore = self.relay_mode == "to_ore"
+        if to_ore and self.relay_ore is None:
             self._abort_relay(ct)
             return
 
@@ -870,18 +1104,25 @@ class Player:
         origin_visible = ct.is_in_vision(self.relay_origin)
         path = self.relay_path
         work_from = 0
+        require_facing = not to_ore
+        allow_destroy = not to_ore
+        face_reverse = to_ore  # outbound path is core→ore; belts face toward core
 
-        # Fog fallback: harvester (or prior origin) left vision — advance origin
-        # to last successfully built belt so we don't walk back into the fog.
+        # Fog fallback: origin left vision — advance to last successfully built belt.
         if not origin_visible:
             if path:
-                last_i = last_built_path_index(ct, path, self.core_pos)
+                last_i = last_built_path_index(
+                    ct,
+                    path,
+                    self.core_pos,
+                    reverse=face_reverse,
+                    require_facing=require_facing,
+                )
                 if last_i is not None:
                     self.relay_origin = path[last_i]
                     work_from = last_i + 1
                 else:
                     self.relay_origin = pos
-                    # Continue from nearest path tile at/behind us if possible
                     best_i = 0
                     best_d = float("inf")
                     for i, tile in enumerate(path):
@@ -892,31 +1133,67 @@ class Player:
                     work_from = best_i
             else:
                 self.relay_origin = pos
-            # Keep existing path when origin is in fog — don't drop for path_ok
-            # failures on early fog tiles near the old harvester.
         else:
             if path is not None and not self._relay_path_ok(ct, path, ore_blocked):
                 path = None
                 self.relay_path = None
 
         if path is None:
-            path = plan_conveyor_path(
-                ct, self.relay_origin, self.core_pos, ore_blocked=ore_blocked
-            )
+            if to_ore:
+                assert self.relay_ore is not None
+                path = plan_conveyor_path_to_ore(
+                    ct,
+                    self.relay_origin,
+                    self.relay_ore,
+                    ore_blocked=ore_blocked,
+                )
+            else:
+                path = plan_conveyor_path_to_core(
+                    ct, self.relay_origin, self.core_pos, ore_blocked=ore_blocked
+                )
             self.relay_path = path
             work_from = 0
         if path is None:
             self._abort_relay(ct)
             return
 
-        # Complete if everything from work_from onward is laid
-        idx = first_incomplete_index(ct, path, self.core_pos, start=work_from)
+        idx = first_incomplete_index(
+            ct,
+            path,
+            self.core_pos,
+            start=work_from,
+            reverse=face_reverse,
+            require_facing=require_facing,
+        )
         if idx is None:
+            if to_ore:
+                assert self.relay_ore is not None
+                # Belts present — stay in outbound until adjacent for site task.
+                if self._adjacent_to_ore(pos, self.relay_ore):
+                    self._finish_far_support_if_needed()
+                    self._clear_relay()
+                    return
+                if ct.get_move_cooldown() != 0:
+                    return
+                progressed = False
+                for d in self._direction_candidates(ct, pos, self.relay_ore):
+                    if self._try_move(ct, d):
+                        progressed = True
+                        break
+                if progressed:
+                    self.relay_stuck = 0
+                else:
+                    self.relay_stuck += 1
+                    if self.relay_stuck >= 3:
+                        self._abort_relay(ct)
+                return
             self._complete_relay(ct)
             return
 
         tile = path[idx]
-        travel_dir = path_travel_dir(path, idx, self.core_pos)
+        travel_dir = path_travel_dir(
+            path, idx, self.core_pos, reverse=face_reverse
+        )
 
         # Clear enemy belts before we can join/lay our own
         if _enemy_belt_id(ct, tile) is not None:
@@ -959,7 +1236,10 @@ class Player:
 
         adjacent = abs(pos.x - tile.x) + abs(pos.y - tile.y) == 1
         if adjacent:
-            result = ensure_belt_on_path(ct, tile, travel_dir)
+            # Outbound: join/build only. Inbound may destroy+rebuild wrong facing.
+            result = ensure_belt_on_path(
+                ct, tile, travel_dir, allow_destroy=allow_destroy
+            )
             if result == "failed":
                 self.relay_stuck += 1
                 if self.relay_stuck >= 3:
