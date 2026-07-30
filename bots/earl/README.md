@@ -19,6 +19,12 @@ belts to the core.
 
 Never write 7–15 from Player. Ally core is read from slot 15.
 
+## Core spawn
+
+Builders spawn on the adjacent tile **closest to the enemy core** when known
+(ASSUMED/KNOWN from slot 15); otherwise closest to **map center**. Tries dirs
+sorted by spawn-tile distance to that goal via `hivemind.spawn_builder`.
+
 ## Builder task order
 
 Each turn (`_run_builder`), after HiveMind `tick` and stuck tracking:

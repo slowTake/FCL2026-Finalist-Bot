@@ -12,6 +12,7 @@ Store slots:
   7–15                 HiveMind-owned — never write from Player
 
 Ally core from slot 15 via unpack_cores. Ore from ORE_LOCATIONS / local_map.
+Core spawns builders toward enemy core (else map center).
 """
 
 from __future__ import annotations
@@ -49,6 +50,16 @@ def nearest_cardinal(d: Direction) -> Direction:
 
 def in_bounds(ct: Controller, pos: Position) -> bool:
     return 0 <= pos.x < ct.get_map_width() and 0 <= pos.y < ct.get_map_height()
+
+
+def spawn_dirs_toward(
+    ct: Controller, core_pos: Position, goal: Position
+) -> list[Direction]:
+    """Prefer spawn tiles closer to goal (enemy core or map center)."""
+    return sorted(
+        DIRECTIONS,
+        key=lambda d: core_pos.add(d).distance_squared(goal),
+    )
 
 
 def _core_footprint(core_pos: Position) -> list[Position]:
@@ -348,9 +359,12 @@ class Player:
         if ti < ct.get_builder_bot_cost():
             return
         pos = ct.get_position()
-        dirs = list(DIRECTIONS)
-        random.shuffle(dirs)
-        for d in dirs:
+        _, enemy = unpack_cores(ct.read_store(SLOT_PACKED_CORES))
+        if enemy[0] != CoreState.UNKNOWN:
+            goal = Position(enemy[1], enemy[2])
+        else:
+            goal = Position(ct.get_map_width() // 2, ct.get_map_height() // 2)
+        for d in spawn_dirs_toward(ct, pos, goal):
             if self.hivemind.spawn_builder(ct, pos.add(d)):
                 self.num_spawned += 1
                 return
