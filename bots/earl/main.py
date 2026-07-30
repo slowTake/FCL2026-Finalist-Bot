@@ -322,6 +322,7 @@ class Player:
         self.relay_origin: Position | None = None
         self.relay_path: list[Position] | None = None
         self.relay_stuck = 0
+        self.relay_built_to = -1  # highest path index known complete this relay
 
     def run(self, ct: Controller) -> None:
         try:
@@ -537,6 +538,7 @@ class Player:
         self.relay_origin = harvester_pos
         self.relay_stuck = 0
         self.relay_path = None
+        self.relay_built_to = -1
         self.target = self.core_pos
         self.ore_site = None
         self.skipped_ores.add((harvester_pos.x, harvester_pos.y))
@@ -546,6 +548,7 @@ class Player:
         self.relay_origin = None
         self.relay_path = None
         self.relay_stuck = 0
+        self.relay_built_to = -1
 
     def _abort_relay(self) -> None:
         self._clear_relay()
@@ -592,14 +595,17 @@ class Player:
         pos = ct.get_position()
         origin_visible = ct.is_in_vision(self.relay_origin)
         path = self.relay_path
-        work_from = 0
+
+        # Raise watermark from currently visible correctly facing belts.
+        if path is not None:
+            vis = last_built_path_index(ct, path, self.core_pos)
+            if vis is not None:
+                self.relay_built_to = max(self.relay_built_to, vis)
 
         if not origin_visible:
             if path:
-                last_i = last_built_path_index(ct, path, self.core_pos)
-                if last_i is not None:
-                    self.relay_origin = path[last_i]
-                    work_from = last_i + 1
+                if self.relay_built_to >= 0:
+                    self.relay_origin = path[self.relay_built_to]
                 else:
                     self.relay_origin = pos
                     best_i = 0
@@ -609,24 +615,31 @@ class Player:
                         if d < best_d:
                             best_d = d
                             best_i = i
-                    work_from = best_i
+                    # Nearest tile is a progress hint when we have no watermark yet.
+                    self.relay_built_to = max(self.relay_built_to, best_i - 1)
             else:
                 self.relay_origin = pos
         else:
             if path is not None and not self._relay_path_ok(ct, path, ore_blocked):
+                # Reseed mid-route from last known belt before discarding indices.
+                if self.relay_built_to >= 0:
+                    self.relay_origin = path[self.relay_built_to]
                 path = None
                 self.relay_path = None
+                self.relay_built_to = -1
 
         if path is None:
             path = plan_conveyor_path_to_core(
                 ct, self.relay_origin, self.core_pos, ore_blocked=ore_blocked
             )
             self.relay_path = path
-            work_from = 0
+            self.relay_built_to = -1
         if path is None:
             self._abort_relay()
             return
 
+        # Never scan behind the high-water mark (fogged early tiles look incomplete).
+        work_from = self.relay_built_to + 1
         idx = first_incomplete_index(ct, path, self.core_pos, start=work_from)
         if idx is None:
             self._clear_relay()
@@ -684,6 +697,7 @@ class Player:
                     self._abort_relay()
                 return
             self.relay_stuck = 0
+            self.relay_built_to = max(self.relay_built_to, idx)
             if ct.get_move_cooldown() == 0:
                 step = nearest_cardinal(pos.direction_to(tile))
                 if step != Direction.CENTRE and ct.can_move(step):
