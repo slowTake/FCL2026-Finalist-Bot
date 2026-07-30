@@ -44,6 +44,7 @@ TARGET_HARVESTERS = 3
 TARGET_HARVESTERS_APRON = 1  # start core apron after first harvester
 BFS_MAX_ITERS = 400
 FAR_ORE_MIN_DIST = 5  # one-off start: claimer picks nearest ore at least this far
+SPAWN_CREDIT_INTERVAL = 50  # +1 spawn credit every N turns
 
 ATTACK_TURN = 100
 MAX_SIEGE_SENTINELS = 10
@@ -388,6 +389,25 @@ def sentinel_feed_neighbors(
     return out
 
 
+def sentinel_has_inbound_belt(
+    ct: Controller, sentinel_pos: Position, facing: Direction
+) -> bool:
+    """True if a feed-side allied belt already faces into the sentinel."""
+    face_tile = sentinel_pos.add(facing)
+    for d in CARDINALS:
+        n = sentinel_pos.add(d)
+        if n.x == face_tile.x and n.y == face_tile.y:
+            continue
+        if not in_bounds(ct, n):
+            continue
+        if not ct.is_in_vision(n):
+            continue
+        want = facing_toward(n, sentinel_pos)
+        if belt_faces(ct, n, want):
+            return True
+    return False
+
+
 def plan_conveyor_path_to_sentinel(
     ct: Controller,
     start: Position,
@@ -654,6 +674,13 @@ class Player:
 
     def _run_core(self, ct: Controller) -> None:
         # HiveMind packs ally core into slot 15 on tick; do not write slots 7–15.
+        round_n = ct.get_current_round()
+        if round_n > 0 and round_n % SPAWN_CREDIT_INTERVAL == 0:
+            ct.write_store(
+                SLOT_SPAWN_CREDITS,
+                ct.read_store(SLOT_SPAWN_CREDITS) + 1,
+            )
+
         credits = ct.read_store(SLOT_SPAWN_CREDITS)
         can_credit_spawn = credits > 0
         if self.num_spawned >= MAX_BUILDERS and not can_credit_spawn:
@@ -718,10 +745,22 @@ class Player:
         siege_builder = attacking and idx % 2 == 1
         feed_builder = attacking and idx % 2 == 0
 
+        # Odd builders place until cap; drop siege-feed relays so they don't stall at 1
+        if (
+            siege_builder
+            and self.in_relay
+            and self.relay_mode in ("to_sentinel", "from_sentinel")
+            and self._count_our_sentinels(ct) < MAX_SIEGE_SENTINELS
+        ):
+            self._clear_relay()
+
         if siege_builder and not self.in_relay:
             self._run_siege_builder(ct)
-            # Feed only once a sentinel site is published (don't clobber siege target)
-            if not self.in_relay and self._published_siege_sites(ct):
+            # Feed only after the sentinel cap — placing comes first
+            if (
+                not self.in_relay
+                and self._count_our_sentinels(ct) >= MAX_SIEGE_SENTINELS
+            ):
                 self._run_feed_builder(ct)
         elif feed_builder and not self.in_relay:
             self._run_feed_builder(ct)
@@ -948,12 +987,35 @@ class Player:
         slot = SLOT_SIEGE_A if self.hivemind.my_index % 4 == 1 else SLOT_SIEGE_B
         ct.write_store(slot, pack_pos(pos))
 
-    def _pick_siege_site(self, ct: Controller) -> Position | None:
-        """Siege tile in sentinel range of enemy core (cardinal or diagonal).
+    def _siege_preferred_side(self) -> int:
+        """0=N 1=NE 2=E 3=SE 4=S 5=SW 6=W 7=NW — staggered by odd builder index."""
+        idx = self.hivemind.my_index
+        if idx <= 0:
+            return 0
+        return ((idx - 1) // 2) % 8
 
-        Includes outer-face (N/E/S/W) and corner (diagonal) rings so turrets can
-        face 8-way at the core. Prefer ally-side sites.
-        """
+    def _siege_cand_side(self, cand: Position, enemy: Position) -> int:
+        """Classify candidate into one of 8 sides around the 2x2 core center."""
+        center_x = enemy.x + 0.5
+        center_y = enemy.y + 0.5
+        dx = cand.x - center_x
+        dy = cand.y - center_y
+        # atan2-like octant: y down is south in grid
+        ax, ay = abs(dx), abs(dy)
+        if ay * 2 < ax:
+            return 2 if dx > 0 else 6  # E / W
+        if ax * 2 < ay:
+            return 4 if dy > 0 else 0  # S / N
+        if dx > 0 and dy < 0:
+            return 1  # NE
+        if dx > 0 and dy > 0:
+            return 3  # SE
+        if dx < 0 and dy > 0:
+            return 5  # SW
+        return 7  # NW
+
+    def _pick_siege_site(self, ct: Controller) -> Position | None:
+        """Siege tile in sentinel range; each builder prefers a different side."""
         if self.enemy_core_pos is None:
             return None
         enemy = self.enemy_core_pos
@@ -964,17 +1026,16 @@ class Player:
         best_score = float("inf")
         ally = self.core_pos
         my_team = ct.get_team()
+        prefer = self._siege_preferred_side()
 
         ring: list[Position] = []
         for d in (5, 4, 3):
-            # Cardinal outer faces
             for dx in (0, 1):
                 ring.append(Position(cx + dx, cy - d))
                 ring.append(Position(cx + dx, cy + 1 + d))
             for dy in (0, 1):
                 ring.append(Position(cx - d, cy + dy))
                 ring.append(Position(cx + 1 + d, cy + dy))
-            # Diagonal corners (8-way fire lines into the 2x2)
             ring.append(Position(cx - d, cy - d))
             ring.append(Position(cx + 1 + d, cy - d))
             ring.append(Position(cx - d, cy + 1 + d))
@@ -1005,8 +1066,11 @@ class Player:
                     continue
                 if ct.get_tile_env(cand) != Environment.EMPTY:
                     continue
+            side = self._siege_cand_side(cand, enemy)
+            # Prefer own side strongly; fall back to other sides if blocked
+            side_pen = 0 if side == prefer else (1000 + 50 * min((side - prefer) % 8, (prefer - side) % 8))
             ally_d = cand.distance_squared(ally) if ally is not None else 0
-            score = ally_d + (SENTINEL_RANGE_SQ - dist)
+            score = side_pen + ally_d + (SENTINEL_RANGE_SQ - dist)
             if score < best_score:
                 best_score = score
                 best = cand
@@ -1036,8 +1100,9 @@ class Player:
         if ct.can_build_sentinel(site, facing):
             ct.build_sentinel(site, facing)
             self._publish_siege_site(ct, site)
-            # Immediately start feed relay from nearest ore harvester (enemy OK)
-            self._start_sentinel_feed(ct, site)
+            # Keep placing until cap; even builders handle feed in the meantime
+            if self._count_our_sentinels(ct) >= MAX_SIEGE_SENTINELS:
+                self._start_sentinel_feed(ct, site)
 
     def _nearest_feed_harvester(
         self, ct: Controller, near: Position | None = None
@@ -1074,31 +1139,67 @@ class Player:
 
         return best
 
+    def _known_siege_sentinels(self, ct: Controller) -> list[Position]:
+        """Published sites plus allied sentinels from HiveMind vision."""
+        sites: list[Position] = []
+        seen: set[tuple[int, int]] = set()
+        for p in self._published_siege_sites(ct):
+            key = (p.x, p.y)
+            if key not in seen:
+                seen.add(key)
+                sites.append(p)
+        my_team = ct.get_team()
+        for (x, y), info in self.hivemind.local_map.items():
+            ent = info.get("entity")
+            if (
+                not ent
+                or ent.get("type") != EntityType.SENTINEL
+                or ent.get("team") != my_team
+            ):
+                continue
+            key = (x, y)
+            if key in seen:
+                continue
+            seen.add(key)
+            sites.append(Position(x, y))
+        return sites
+
     def _start_sentinel_feed(self, ct: Controller, sentinel: Position) -> None:
-        """Enter inbound/outbound feed relay from nearest ore harvester to sentinel."""
+        """Inbound feed from nearest ore harvester unless sentinel already fed."""
+        facing = self._sentinel_facing(ct, sentinel)
+        if sentinel_has_inbound_belt(ct, sentinel, facing):
+            return
         harvester = self._nearest_feed_harvester(ct, near=sentinel)
         if harvester is None:
             harvester = self._nearest_feed_harvester(ct)
         if harvester is None:
             return
-        pos = ct.get_position()
-        if pos.distance_squared(harvester) <= pos.distance_squared(sentinel):
-            self._enter_relay_to_sentinel(harvester, sentinel)
-        else:
-            self._enter_relay_from_sentinel(sentinel, harvester)
+        # Prefer inbound (destroy/replace) so Ti actually enters the turret
+        self._enter_relay_to_sentinel(harvester, sentinel)
 
     def _run_feed_builder(self, ct: Controller) -> None:
-        """Belt relays from nearest ore harvester (any team) into siege sentinels."""
-        sites = self._published_siege_sites(ct)
+        """Even builders: inbound belts to sentinels that lack a feed-facing belt."""
+        sites = self._known_siege_sentinels(ct)
         if not sites:
-            # Wait for odd builders to place — do not surround the enemy core
             site = self._pick_siege_site(ct)
             if site is not None:
                 self.target = site
             return
 
         pos = ct.get_position()
-        sentinel = min(sites, key=lambda s: pos.distance_squared(s))
+        unfed: list[Position] = []
+        for s in sites:
+            facing = self._sentinel_facing(ct, s)
+            # Out of vision: treat as needing a check — still candidate
+            if ct.is_in_vision(s) and sentinel_has_inbound_belt(ct, s, facing):
+                continue
+            unfed.append(s)
+
+        if not unfed:
+            return
+
+        sentinel = min(unfed, key=lambda s: pos.distance_squared(s))
+        self.target = sentinel
         self._start_sentinel_feed(ct, sentinel)
 
     def _try_build_harvester(self, ct: Controller) -> bool:

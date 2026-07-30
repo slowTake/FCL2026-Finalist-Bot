@@ -35,14 +35,15 @@ siege sentinels**.
 - **Attack phase (turn ≥ 100):** once the enemy core is known, **all builders
   drop start-bootstrap and abort `to_core` / `to_ore` relays**, then odd builders
   place **sentinels** near max range (`r²` 16–32; sentinel attack `r²=32`) on
-  cardinal **or diagonal** lines, facing the enemy core (8-way), publish sites
-  to slots 5–6, then **immediately feed** that sentinel from the closest ore
-  harvester (ally or enemy). Even builders (and odd builders between placements)
-  lay the same harvester → sentinel belts (`to_sentinel` inbound may destroy/replace
-  wrong facing; `from_sentinel` outbound is join/build-only). Keep placing/feeding
-  until **`MAX_SIEGE_SENTINELS = 10`** (rings at d=3..5). Sentinels fire enemies on
-  their attack line (skip friendlies).
-- **Core spawn:** builders spawn toward map center (not random).
+  cardinal **or diagonal** lines, facing the enemy core (8-way). Each odd builder
+  prefers a **different side** of the ring (N/NE/E/… by index). They keep placing
+  until **`MAX_SIEGE_SENTINELS = 10`** before feeding; even builders feed published
+  sites from the closest ore harvester (ally or enemy). `to_sentinel` inbound may
+  destroy/replace wrong facing; `from_sentinel` outbound is join/build-only.
+  Sentinels fire enemies on their attack line (skip friendlies).
+- **Core spawn:** builders spawn toward map center (not random). Base cap
+  `MAX_BUILDERS = 5`; **+1 spawn credit every 50 turns** (and from core inbound
+  relays) to spawn beyond the cap.
 - **Gunners:** `BUILD_GUNNERS = False` for now (belt/apron debugging). Flip that flag to re-enable.
 - **Orphan claim:** `CLAIM_ORPHAN_RELAY = False` for a test — aborted relays are not picked up.
 - **Relay abort:** `ABORT_RELAY = False` for a test — stuck/no-path won't orphan or leave the relay.
@@ -51,7 +52,7 @@ siege sentinels**.
 
 | Slot | Owner | Purpose |
 |------|-------|---------|
-| 0 | Player | Spawn credits (earned by completing a core inbound relay) |
+| 0 | Player | Spawn credits (core inbound relays +1 every 50 turns) |
 | 1 | Player | Orphaned relay origin, packed position |
 | 2 | Player | Harvester count |
 | 3 | Player | Shared ore position |
