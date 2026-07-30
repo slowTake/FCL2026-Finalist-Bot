@@ -487,15 +487,16 @@ class Player:
             return
 
     def _pick_ore_site(self, ct: Controller, pos: Position) -> Position | None:
-        """Nearest known ore: prefer empty, then enemy/unknown harvester steal."""
+        """Nth-nearest known ore by builder index: prefer empty, then steal.
+
+        Builder my_index N takes candidates[(N-1) % len]; unregistered (0) → nearest.
+        """
         map_id = self.hivemind.map_id
         if map_id <= 0:
             return None
         my_team = ct.get_team()
-        best_empty: Position | None = None
-        best_empty_d = float("inf")
-        best_steal: Position | None = None
-        best_steal_d = float("inf")
+        empty: list[tuple[int, Position]] = []
+        steal: list[tuple[int, Position]] = []
 
         for ox, oy in ORE_LOCATIONS.get(map_id, []):
             if (ox, oy) in self.skipped_ores:
@@ -515,15 +516,17 @@ class Player:
             ore_pos = Position(ox, oy)
             d = pos.distance_squared(ore_pos)
             if ent and ent.get("type") == EntityType.HARVESTER:
-                if d < best_steal_d:
-                    best_steal_d = d
-                    best_steal = ore_pos
+                steal.append((d, ore_pos))
             else:
-                if d < best_empty_d:
-                    best_empty_d = d
-                    best_empty = ore_pos
+                empty.append((d, ore_pos))
 
-        return best_empty if best_empty is not None else best_steal
+        candidates = empty if empty else steal
+        if not candidates:
+            return None
+        candidates.sort(key=lambda t: t[0])
+        idx = self.hivemind.my_index
+        pick = 0 if idx <= 0 else (idx - 1) % len(candidates)
+        return candidates[pick][1]
 
     # ------------------------------------------------------------------
     # Inbound relay
