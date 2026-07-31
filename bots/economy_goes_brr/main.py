@@ -1,9 +1,8 @@
-"""turtleHive — turtle + HiveMind + committed relays + 2-deep core apron.
+"""economy_goes_brr — pure economy bot
 
 Lean map-aware baseline: HiveMind from components/, BFS movement, magnum-style
 committed relays (outbound core→ore join/build-only, inbound harvester→core with
-facing fix-up), and a 2-deep inward-facing conveyor apron around the core
-(N/E/S/W only — no splitters).
+facing fix-up). Avoids building core aprons or gunners to save Titanium.
 
 Store slots:
   0  SLOT_SPAWN_CREDITS   Earned by completing an inbound relay (Player)
@@ -11,7 +10,8 @@ Store slots:
   2  SLOT_HARVESTER_COUNT Total harvesters (Player)
   3  SLOT_ORE_LOCATION    Packed uncovered ore (Player)
   4  SLOT_FAR_ORE         One-off start: packed far ore for builder 1/2 (Player)
-  5–6                    Free
+  5  SLOT_CLAIM_1         Ore claim for Builder 1 (Player)
+  6  SLOT_CLAIM_2         Ore claim for Builder 2 (Player)
   7–15                    HiveMind-owned — never write from Player
 
 Ally core position is read from HiveMind slot 15 via unpack_cores.
@@ -698,9 +698,9 @@ class Player:
             self.ore_site = None
 
     def _publish_my_ore_target(self, ct: Controller, ore: Position | None) -> None:
-        if self.hivemind.my_index <= 0:
+        if self.hivemind.my_index not in (1, 2):
             return
-        slot = 3 + ((self.hivemind.my_index - 1) % 4)
+        slot = 5 + (self.hivemind.my_index - 1)
         val = pack_pos(ore) if ore is not None else 0
         ct.write_store(slot, val)
 
@@ -709,7 +709,7 @@ class Player:
         queue: deque[Position] = deque([start])
         visited = {(start.x, start.y)}
         iters = 0
-        while queue and iters < 1000:
+        while queue and iters < BFS_MAX_ITERS:
             iters += 1
             curr = queue.popleft()
             if abs(curr.x - goal.x) + abs(curr.y - goal.y) <= 1:
@@ -735,9 +735,9 @@ class Player:
 
         claimed_by_others: set[tuple[int, int]] = set()
         if self.hivemind.my_index > 0:
-            my_slot = 3 + ((self.hivemind.my_index - 1) % 4)
-            for s in (3, 4, 5, 6):
-                if s == my_slot:
+            for s in (5, 6):
+                # Don't read our own claim
+                if self.hivemind.my_index in (1, 2) and s == 5 + (self.hivemind.my_index - 1):
                     continue
                 p = unpack_pos(ct.read_store(s))
                 if p is not None:
