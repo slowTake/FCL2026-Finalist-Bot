@@ -23,9 +23,10 @@ Never write 7–15 from Player. Ally core is read from slot 15.
 
 ## Core spawn
 
-Builders spawn on the adjacent tile **closest to the enemy core** when known
-(ASSUMED/KNOWN from slot 15); otherwise closest to **map center**. Tries dirs
-sorted by spawn-tile distance to that goal via `hivemind.spawn_builder`.
+Builders spawn on an apron tile around the full **2×2 core footprint**
+(not just neighbors of the NW tile), preferring the tile **closest to the
+enemy core** when known (ASSUMED/KNOWN from slot 15); otherwise closest to
+**map center**. Tries candidates via `hivemind.spawn_builder` / `can_spawn`.
 
 From turn ≥ 80 the core also tops team ammo to `20 × max(1, living sentinels)`
 via `convert_ammo` (before the spawn-cap early return), reading slot 3.

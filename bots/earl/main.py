@@ -57,14 +57,26 @@ def in_bounds(ct: Controller, pos: Position) -> bool:
     return 0 <= pos.x < ct.get_map_width() and 0 <= pos.y < ct.get_map_height()
 
 
-def spawn_dirs_toward(
+def spawn_sites_toward(
     ct: Controller, core_pos: Position, goal: Position
-) -> list[Direction]:
-    """Prefer spawn tiles closer to goal (enemy core or map center)."""
-    return sorted(
-        DIRECTIONS,
-        key=lambda d: core_pos.add(d).distance_squared(goal),
-    )
+) -> list[Position]:
+    """Apron tiles around the full 2x2 core, closest to goal first."""
+    footprint = _core_footprint(core_pos)
+    footprint_keys = {(t.x, t.y) for t in footprint}
+    sites: list[Position] = []
+    seen: set[tuple[int, int]] = set()
+    for tile in footprint:
+        for d in DIRECTIONS:
+            cand = tile.add(d)
+            key = (cand.x, cand.y)
+            if key in seen or key in footprint_keys:
+                continue
+            if not in_bounds(ct, cand):
+                continue
+            seen.add(key)
+            sites.append(cand)
+    sites.sort(key=lambda p: p.distance_squared(goal))
+    return sites
 
 
 def _core_footprint(core_pos: Position) -> list[Position]:
@@ -375,8 +387,8 @@ class Player:
             goal = Position(enemy[1], enemy[2])
         else:
             goal = Position(ct.get_map_width() // 2, ct.get_map_height() // 2)
-        for d in spawn_dirs_toward(ct, pos, goal):
-            if self.hivemind.spawn_builder(ct, pos.add(d)):
+        for spawn_pos in spawn_sites_toward(ct, pos, goal):
+            if self.hivemind.spawn_builder(ct, spawn_pos):
                 self.num_spawned += 1
                 return
 
