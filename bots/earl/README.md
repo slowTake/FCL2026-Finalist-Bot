@@ -3,8 +3,9 @@
 Starter economy loop + HiveMind (`components/` symlinks) + **inbound steal-relay**
 belts to the **ally** core only. **Even builders** run the active raid order
 (`ACTIVE_RAID_ORDER` in `main.py`): default **`phalanx`** (home apron + wing
-gunners in `defence.py`; **odd** builders pivot to raiders at round **300**,
-**even** at **600**); set to **`raiders`** for the old offensive belt-raid →
+gunners in `defence.py`; pre-600 **odd** builders pivot to raiders at **300**,
+pre-600 **even** at **600**, fire-and-forget; post-600 odds → economy, post-600
+evens → phalanx); set to **`raiders`** for the old offensive belt-raid →
 gunner/sentinel siege loop (`attack.py`). Builders 1/3/5 stay on
 economy (idle ore recheck every 50 turns); late spawns 6+ defend and lay a home
 apron (`defence.py`). Core tops ammo from turn 10 (phalanx) or 30 (raiders).
@@ -34,10 +35,11 @@ enemy core** when known (ASSUMED/KNOWN from slot 15); otherwise closest to
 **map center**. Tries candidates via `hivemind.spawn_builder` / `can_spawn`.
 
 **Schedule:** rush the first **5** as soon as Ti allows, then spawn **one more
-every 25 turns** starting at turn **10**, up to **9 living** (turns
-10 / 35 / 60 / 85). After the initial 9 have been spawned, **replenish ASAP**
-whenever living builders drop below 9. If the rush finishes after turn 10, take
-the next interval slot.
+every 25 turns** starting at turn **10**, up to **9** total spawned (turns
+10 / 35 / 60 / 85). **Hard cap: 15** total `num_spawned` (threat may fill 10–15
+ASAP). Living-count replenish is disabled — raiders leave core vision and were
+causing 30+ overshoot. If the rush finishes after turn 10, take the next
+interval slot.
 
 From the ammo start turn the core tops team ammo to
 `5 + 20 × max(1, living count in slot 3)` via `convert_ammo` (before the
@@ -81,27 +83,37 @@ Even builders stay home once the enemy core is known:
 
 1. **Hunt turrets** — if an enemy gunner or sentinel is in vision, fire if
    orthogonally adjacent, else move to attack it.
-2. **Place wing gunners** from turn **10**: fill every open **wing** tile flanking
-   the approach belt strip (**4 per flank** at depths 1–4, up to 8); face toward
-   the enemy; sync living count to slot 3. Raiders stagger across missing pads.
+2. **Place wing gunners** from turn **10**: fill **every in-bounds side**
+   (not only the approach). Depth rings fill before stacking (all sides get
+   depth-1 before approach depth-2); within a depth prefer the enemy approach
+   side. Up to **4 pads per flank** at depths 1–4; face toward the enemy;
+   sync living count to slot 3. Raiders stagger across missing pads.
 3. **Assist apron** on the enemy approach side: 3-deep inward conveyors (no
    barriers).
 4. **Guard harvesters**: place **1 gunner** cardinally beside each ally harvester
    within Chebyshev **10** of the core footprint (skip apron/core tiles; face
    enemy). Stagger raiders across missing pads.
-5. **Soft idle** — repair missing apron / rebuild dead pads; otherwise linger on
+5. **Clear economy** — if an enemy harvester is in vision, fire when adjacent
+   else move to it; else path onto the nearest enemy belt and stand-fire.
+6. **Soft idle** — repair missing apron / rebuild dead pads; otherwise linger on
    the approach depth-1 strip.
 
 While an enemy gunner/sentinel is in **core vision**, the core keeps spawning
-extra builders past the normal 9-cap (team unit cap still applies). Even-index
+extra builders past the normal 9 up to **15 total spawned** (hard `num_spawned`
+cap; team unit cap still applies). Even-index
 builders run phalanx (including 6+); odd late spawns still defend assigned sides
 until their pivot.
 
-**Pivot to raiders** (`run_attack_builder`):
-- Round **300+**: odd-index builders (1, 3, 5, 7, …)
-- Round **600+**: even-index builders (2, 4, 6, …) leave phalanx
+**Pivot to raiders** (`run_attack_builder`) — fire-and-forget (no recall):
+- Round **300+**: pre-600 odd-index builders (1, 3, 5, 7, …)
+- Round **600+**: pre-600 even-index builders (2, 4, 6, …) leave phalanx
 
-Home wing gunners stay; threat-spawn stops once evens leave phalanx (round 600).
+**Post-600 home refill** (by spawn round):
+- New **odds** → economy (mine / defender gate)
+- New **evens** → phalanx forever
+
+Home wing gunners stay; threat-spawn and phalanx ammo stay active while
+`ACTIVE_RAID_ORDER = "phalanx"` (new evens keep the home role after 600).
 
 Gunner fire uses shared `run_gunner` (core → gunner → sentinel → builder →
 harvester → belts; rotates toward core/combat in vision).

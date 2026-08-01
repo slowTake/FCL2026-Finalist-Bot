@@ -6,8 +6,9 @@ Wrong-facing allied belts are destroyed and rebuilt; enemy belts are cleared
 via stand-and-fire.
 
 Even builders (raiders) abort economy once the enemy core is known. Active
-order is ACTIVE_RAID_ORDER: "phalanx" (home apron + wing gunners; odds
-pivot to raiders at 300, evens at 600) or "raiders" (belt raid →
+order is ACTIVE_RAID_ORDER: "phalanx" (home apron + wing gunners; pre-600
+odds → raiders at 300, pre-600 evens at 600 fire-and-forget; post-600 odds
+→ economy, post-600 evens → phalanx) or "raiders" (belt raid →
 gunner/sentinel siege loop in attack.py). Odd economy
 builders (1, 3, 5) keep mining; idle ore recheck every 50 turns. Indices 6+
 defend the core from spawn.
@@ -67,6 +68,7 @@ SLOT_PACKED_CORES = 15
 
 MAX_BUILDERS_EARLY = 5
 MAX_BUILDERS = 9
+MAX_BUILDERS_THREAT = 15
 FIRST_INTERVAL_SPAWN = 10
 SPAWN_INTERVAL = 25
 PATH_MAX_ITERS = 2000
@@ -74,13 +76,20 @@ ORE_RECHECK_INTERVAL = 50
 MERGE_SAVE_MIN = 2
 
 
-def effective_raid_order(round_n: int, my_index: int = 0) -> str:
-    """Under phalanx: odds → raiders at 300, evens → raiders at 600."""
+def effective_raid_order(
+    round_n: int, my_index: int = 0, spawn_round: int | None = None
+) -> str:
+    """Under phalanx: pre-600 cohort raids; post-600 odds economy, evens phalanx."""
     if ACTIVE_RAID_ORDER != "phalanx":
         return ACTIVE_RAID_ORDER
+    spawned_before_600 = (
+        spawn_round is None or spawn_round < PHALANX_EVEN_TO_RAIDERS_TURN
+    )
     if my_index % 2 == 1:
-        if round_n >= PHALANX_ODD_TO_RAIDERS_TURN:
+        if spawned_before_600 and round_n >= PHALANX_ODD_TO_RAIDERS_TURN:
             return "raiders"
+        return "phalanx"
+    if not spawned_before_600:
         return "phalanx"
     if round_n >= PHALANX_EVEN_TO_RAIDERS_TURN:
         return "raiders"
@@ -88,24 +97,29 @@ def effective_raid_order(round_n: int, my_index: int = 0) -> str:
 
 
 def home_phalanx_active(round_n: int) -> bool:
-    """True while even builders are still on home phalanx (before round 600)."""
-    return (
-        ACTIVE_RAID_ORDER == "phalanx"
-        and round_n < PHALANX_EVEN_TO_RAIDERS_TURN
-    )
+    """True while home phalanx role is active (new evens refill after 600)."""
+    del round_n
+    return ACTIVE_RAID_ORDER == "phalanx"
 
 
 def on_raid_tasklist(
-    my_index: int, enemy_core: Position | None, round_n: int
+    my_index: int,
+    enemy_core: Position | None,
+    round_n: int,
+    spawn_round: int | None = None,
 ) -> bool:
     """Who runs phalanx or raiders this turn (enemy core must be known)."""
     if enemy_core is None or my_index <= 0:
         return False
     if ACTIVE_RAID_ORDER != "phalanx":
         return is_raider(my_index, enemy_core)
-    # Phalanx mode: odds join offense from 300; evens always on the raid path.
+    spawned_before_600 = (
+        spawn_round is None or spawn_round < PHALANX_EVEN_TO_RAIDERS_TURN
+    )
+    # Pre-600 odds raid from 300 (sticky). Post-600 odds stay off (economy).
     if my_index % 2 == 1:
-        return round_n >= PHALANX_ODD_TO_RAIDERS_TURN
+        return spawned_before_600 and round_n >= PHALANX_ODD_TO_RAIDERS_TURN
+    # Evens always on the raid path (phalanx or raiders by spawn cohort).
     return True
 
 
@@ -476,6 +490,7 @@ class Player:
         self.relay_stuck = 0
         self.relay_built_to = -1  # highest path index known complete this relay
         self.relay_merging = False
+        self.spawn_round: int | None = None
 
     def run(self, ct: Controller) -> None:
         try:
@@ -505,10 +520,11 @@ class Player:
         )
         top_up_ammo(ct, min_turn=ammo_turn)
 
-        living = self._count_living_builders(ct)
         threat = phalanx_home and core_under_turret_threat(ct)
-        # Under turret threat, keep spawning past the normal builder cap.
-        if living >= MAX_BUILDERS and not threat:
+        # num_spawned is the hard ceiling — living undercounts raiders out of vision.
+        if self.num_spawned >= MAX_BUILDERS_THREAT:
+            return
+        if self.num_spawned >= MAX_BUILDERS and not threat:
             return
         if ct.get_unit_count() >= GameConstants.MAX_TEAM_UNITS:
             return
@@ -520,11 +536,11 @@ class Player:
             and round_n >= FIRST_INTERVAL_SPAWN
             and (round_n - FIRST_INTERVAL_SPAWN) % SPAWN_INTERVAL == 0
         )
-        can_replenish = (
-            self.num_spawned >= MAX_BUILDERS and living < MAX_BUILDERS
-        )
-        # While enemy turrets are in core vision, spawn ASAP past the normal cap.
-        can_threat_spawn = threat
+        # Death-replenish disabled: living undercounts raiders out of vision
+        # and was spawning into the 30s. Soft schedule caps at num_spawned==9;
+        # threat may continue up to MAX_BUILDERS_THREAT via can_threat_spawn.
+        can_replenish = False
+        can_threat_spawn = threat and self.num_spawned < MAX_BUILDERS_THREAT
         if not can_rush and not can_interval and not can_replenish and not can_threat_spawn:
             return
 
@@ -581,16 +597,24 @@ class Player:
             self.stuck = 0
         self.last_pos = pos
 
-        # Raid path: odds → raiders from 300; evens phalanx then raiders at 600.
+        # Raid path: pre-600 odds → raiders from 300; pre-600 evens phalanx
+        # then raiders at 600 (fire-and-forget). Post-600: odds economy, evens phalanx.
         round_n = ct.get_current_round()
+        if self.spawn_round is None:
+            self.spawn_round = round_n
         if on_raid_tasklist(
-            self.hivemind.my_index, self.enemy_core_pos, round_n
+            self.hivemind.my_index,
+            self.enemy_core_pos,
+            round_n,
+            self.spawn_round,
         ):
             enemy = self.enemy_core_pos
             assert enemy is not None
             self._clear_relay()
             self.ore_site = None
-            order = effective_raid_order(round_n, self.hivemind.my_index)
+            order = effective_raid_order(
+                round_n, self.hivemind.my_index, self.spawn_round
+            )
             if order == "phalanx":
                 site = run_phalanx(
                     ct,

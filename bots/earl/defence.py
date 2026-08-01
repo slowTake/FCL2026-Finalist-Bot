@@ -5,14 +5,18 @@ enemy gunners in vision, heal, fire, then lay a per-side inward apron
 (3-deep belts, no barriers).
 
 Even builders may run PHALANX (see ACTIVE_RAID_ORDER in main): hunt enemy
-gunners/sentinels, fill flank wing gunners from round 10, then apron, then
-one gunner beside each nearby ally harvester, then soft-idle.
+gunners/sentinels, fill wing gunners on all in-bounds sides from round 10
+(depth rings; approach side first within each depth), then approach apron,
+then one gunner beside each nearby ally harvester, clear encroaching enemy
+harvesters/belts in vision, then soft-idle.
 """
 
 from __future__ import annotations
 
 from attack import (
     SLOT_SENTINEL_COUNT,
+    _pick_enemy_belt_target,
+    _try_stand_fire_belt,
     build_gunner,
 )
 from fcode import Controller, Direction, EntityType, Position
@@ -39,6 +43,7 @@ PHALANX = (
     "place_phalanx_gunners",
     "assist_apron",
     "guard_harvesters",
+    "clear_economy",
     "soft_idle",
 )
 PHALANX_GUNNER_TURN = 10
@@ -149,22 +154,38 @@ def enemy_approach_side(ally_core: Position, enemy_core: Position) -> int:
 
 def side_wing_tiles(core_pos: Position, side: int) -> list[Position]:
     """Flank columns/rows beside the belt strip — 4 pads per wing."""
-    cx, cy = core_pos.x, core_pos.y
     tiles: list[Position] = []
     for depth in WING_DEPTHS:
-        if side == SIDE_N:
-            tiles.append(Position(cx - 1, cy - depth))
-            tiles.append(Position(cx + 2, cy - depth))
-        elif side == SIDE_E:
-            tiles.append(Position(cx + 1 + depth, cy - 1))
-            tiles.append(Position(cx + 1 + depth, cy + 2))
-        elif side == SIDE_S:
-            tiles.append(Position(cx - 1, cy + 1 + depth))
-            tiles.append(Position(cx + 2, cy + 1 + depth))
-        elif side == SIDE_W:
-            tiles.append(Position(cx - depth, cy - 1))
-            tiles.append(Position(cx - depth, cy + 2))
+        tiles.extend(side_wing_tiles_at_depth(core_pos, side, depth))
     return tiles
+
+
+def side_wing_tiles_at_depth(
+    core_pos: Position, side: int, depth: int
+) -> list[Position]:
+    """Two flank pads at one depth on a cardinal side."""
+    cx, cy = core_pos.x, core_pos.y
+    if side == SIDE_N:
+        return [
+            Position(cx - 1, cy - depth),
+            Position(cx + 2, cy - depth),
+        ]
+    if side == SIDE_E:
+        return [
+            Position(cx + 1 + depth, cy - 1),
+            Position(cx + 1 + depth, cy + 2),
+        ]
+    if side == SIDE_S:
+        return [
+            Position(cx - 1, cy + 1 + depth),
+            Position(cx + 2, cy + 1 + depth),
+        ]
+    if side == SIDE_W:
+        return [
+            Position(cx - depth, cy - 1),
+            Position(cx - depth, cy + 2),
+        ]
+    return []
 
 
 def phalanx_gunner_sites(
@@ -182,6 +203,43 @@ def phalanx_gunner_sites(
         if not ct.is_tile_empty(tile) and not _has_allied_gunner(ct, tile):
             continue
         sites.append(tile)
+    return sites
+
+
+def phalanx_all_gunner_sites(
+    ct: Controller,
+    core_pos: Position,
+    approach_side: int,
+) -> list[Position]:
+    """Wing pads on every in-bounds side; depth rings fill before stacking.
+
+    Within each depth, prefer the enemy approach side, then other available
+    sides — so on atoll (east approach) north/south get depth-1 before east
+    stacks depth-2+.
+    """
+    sides = available_sides(ct, core_pos)
+    if not sides:
+        return []
+    ordered = [approach_side] + [s for s in sides if s != approach_side]
+    # Keep only sides that are actually available.
+    ordered = [s for s in ordered if s in sides]
+
+    sites: list[Position] = []
+    seen: set[tuple[int, int]] = set()
+    for depth in WING_DEPTHS:
+        for side in ordered:
+            for tile in side_wing_tiles_at_depth(core_pos, side, depth):
+                key = (tile.x, tile.y)
+                if key in seen:
+                    continue
+                if not _in_bounds(ct, tile):
+                    continue
+                if not ct.is_in_vision(tile):
+                    continue
+                if not ct.is_tile_empty(tile) and not _has_allied_gunner(ct, tile):
+                    continue
+                seen.add(key)
+                sites.append(tile)
     return sites
 
 
@@ -333,6 +391,28 @@ def _nearest_enemy_turret(
             best_dist = d
             best = tpos
     return best
+
+
+def _nearest_enemy_harvester(ct: Controller) -> Position | None:
+    """Nearest enemy harvester in vision."""
+    return _nearest_enemy_turret(ct, (EntityType.HARVESTER,))
+
+
+def _run_phalanx_clear(ct: Controller) -> Position | None:
+    """Clear encroaching enemy harvesters/belts in vision. None if nothing to do."""
+    if _try_stand_fire_belt(ct):
+        return ct.get_position()
+
+    harvester = _nearest_enemy_harvester(ct)
+    if harvester is not None:
+        if _try_fire_tile(ct, harvester):
+            return harvester
+        return harvester
+
+    belt = _pick_enemy_belt_target(ct)
+    if belt is not None:
+        return belt
+    return None
 
 
 def core_under_turret_threat(ct: Controller) -> bool:
@@ -535,7 +615,7 @@ def run_phalanx(
     enemy_core: Position,
     ally_core: Position | None,
 ) -> Position | None:
-    """PHALANX: hunt turrets → wing gunners → apron → harvester guards → idle."""
+    """PHALANX: turrets → wings → apron → guards → clear economy → idle."""
     if ally_core is None:
         return None
 
@@ -550,8 +630,8 @@ def run_phalanx(
 
     round_n = ct.get_current_round()
 
-    # 2. Wing gunners before apron.
-    sites = phalanx_gunner_sites(ct, ally_core, side)
+    # 2. Wing gunners on every in-bounds side (depth rings before stacking).
+    sites = phalanx_all_gunner_sites(ct, ally_core, side)
     wing_living = sum(1 for s in sites if _has_allied_gunner(ct, s))
     missing = phalanx_missing_gunner_sites(ct, sites)
     if round_n >= PHALANX_GUNNER_TURN and missing:
@@ -589,6 +669,11 @@ def run_phalanx(
                 if abs(pos.x - site.x) + abs(pos.y - site.y) == 1:
                     build_gunner(ct, site, enemy_core)
                 return site
+
+    # 5. Clear encroaching enemy harvesters / belts in vision.
+    clear = _run_phalanx_clear(ct)
+    if clear is not None:
+        return clear
 
     return _defence_hold_target(ct, ally_core, side)
 
