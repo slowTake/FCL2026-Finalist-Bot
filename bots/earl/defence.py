@@ -47,8 +47,8 @@ PHALANX = (
     "soft_idle",
 )
 PHALANX_GUNNER_TURN = 10
-# Chebyshev distance from core footprint — ~10×10 neighbourhood.
-HARVESTER_GUARD_CHEB = 10
+# Chebyshev distance from core footprint — ~15×15 neighbourhood.
+HARVESTER_GUARD_CHEB = 15
 _ENEMY_TURRET_TYPES = (EntityType.GUNNER, EntityType.SENTINEL)
 
 

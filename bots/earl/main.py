@@ -38,10 +38,12 @@ from attack import (
 )
 from defence import (
     PHALANX_GUNNER_TURN,
+    available_sides,
     core_under_turret_threat,
     is_defender,
     run_defender,
     run_phalanx,
+    side_depth1_tiles,
 )
 from fcode import (
     Controller,
@@ -73,7 +75,15 @@ FIRST_INTERVAL_SPAWN = 10
 SPAWN_INTERVAL = 25
 PATH_MAX_ITERS = 2000
 ORE_RECHECK_INTERVAL = 50
-MERGE_SAVE_MIN = 2
+MERGE_SAVE_MIN = 8
+# Do not join onto allied belts this close to the core (apron / near-core funnel).
+MERGE_MIN_CORE_CHEB = 4
+
+
+def _chebyshev_to_core_footprint(pos: Position, core_pos: Position) -> int:
+    return min(
+        max(abs(pos.x - t.x), abs(pos.y - t.y)) for t in _core_footprint(core_pos)
+    )
 
 
 def effective_raid_order(
@@ -309,7 +319,25 @@ def plan_conveyor_path_to_core(
     core_pos: Position,
     *,
     ore_blocked: set[tuple[int, int]] | None = None,
+    my_index: int = 0,
 ) -> list[Position] | None:
+    """Path to a core-adjacent tile; stagger preferred entry side by builder index."""
+    preferred = _preferred_entry_tiles(ct, core_pos, my_index)
+    if preferred:
+        want = {(t.x, t.y) for t in preferred}
+
+        def preferred_goal(p: Position) -> bool:
+            return (p.x, p.y) in want and is_core_adjacent(ct, p, core_pos)
+
+        path = plan_conveyor_path(
+            ct,
+            start,
+            is_goal=preferred_goal,
+            ore_blocked=ore_blocked,
+            heuristic_to=core_pos,
+        )
+        if path is not None:
+            return path
     return plan_conveyor_path(
         ct,
         start,
@@ -319,8 +347,26 @@ def plan_conveyor_path_to_core(
     )
 
 
-def is_merge_goal(ct: Controller, pos: Position, *, origin: Position) -> bool:
-    """Visible allied belt that is not the relay origin or its cardinal neighbors."""
+def _preferred_entry_tiles(
+    ct: Controller, core_pos: Position, my_index: int
+) -> list[Position]:
+    """Depth-1 apron tiles on a side staggered by builder index."""
+    sides = available_sides(ct, core_pos)
+    if not sides:
+        return []
+    idx = max(my_index, 1) - 1
+    side = sides[idx % len(sides)]
+    return [t for t in side_depth1_tiles(core_pos, side) if in_bounds(ct, t)]
+
+
+def is_merge_goal(
+    ct: Controller,
+    pos: Position,
+    *,
+    origin: Position,
+    core_pos: Position,
+) -> bool:
+    """Visible allied belt far enough from core; not origin or its neighbors."""
     if _allied_belt_id(ct, pos) is None:
         return False
     if pos.x == origin.x and pos.y == origin.y:
@@ -329,6 +375,8 @@ def is_merge_goal(ct: Controller, pos: Position, *, origin: Position) -> bool:
         n = origin.add(d)
         if pos.x == n.x and pos.y == n.y:
             return False
+    if _chebyshev_to_core_footprint(pos, core_pos) < MERGE_MIN_CORE_CHEB:
+        return False
     return True
 
 
@@ -344,7 +392,9 @@ def plan_conveyor_path_to_merge(
     return plan_conveyor_path(
         ct,
         start,
-        is_goal=lambda p: is_merge_goal(ct, p, origin=origin),
+        is_goal=lambda p: is_merge_goal(
+            ct, p, origin=origin, core_pos=core_pos
+        ),
         ore_blocked=ore_blocked,
         heuristic_to=core_pos,
     )
@@ -357,10 +407,15 @@ def pick_relay_path(
     *,
     origin: Position,
     ore_blocked: set[tuple[int, int]] | None = None,
+    my_index: int = 0,
 ) -> tuple[list[Position] | None, bool]:
     """Prefer a merge spur when it saves at least MERGE_SAVE_MIN tiles vs core."""
     core_path = plan_conveyor_path_to_core(
-        ct, start, core_pos, ore_blocked=ore_blocked
+        ct,
+        start,
+        core_pos,
+        ore_blocked=ore_blocked,
+        my_index=my_index,
     )
     merge_path = plan_conveyor_path_to_merge(
         ct, start, core_pos, origin=origin, ore_blocked=ore_blocked
@@ -520,11 +575,14 @@ class Player:
         )
         top_up_ammo(ct, min_turn=ammo_turn)
 
+        living = self._count_living_builders(ct)
         threat = phalanx_home and core_under_turret_threat(ct)
-        # num_spawned is the hard ceiling — living undercounts raiders out of vision.
+        # Lifetime safety net — living can undercount raiders out of vision.
         if self.num_spawned >= MAX_BUILDERS_THREAT:
             return
-        if self.num_spawned >= MAX_BUILDERS and not threat:
+        if living >= MAX_BUILDERS_THREAT:
+            return
+        if living >= MAX_BUILDERS and not threat:
             return
         if ct.get_unit_count() >= GameConstants.MAX_TEAM_UNITS:
             return
@@ -536,11 +594,12 @@ class Player:
             and round_n >= FIRST_INTERVAL_SPAWN
             and (round_n - FIRST_INTERVAL_SPAWN) % SPAWN_INTERVAL == 0
         )
-        # Death-replenish disabled: living undercounts raiders out of vision
-        # and was spawning into the 30s. Soft schedule caps at num_spawned==9;
-        # threat may continue up to MAX_BUILDERS_THREAT via can_threat_spawn.
-        can_replenish = False
-        can_threat_spawn = threat and self.num_spawned < MAX_BUILDERS_THREAT
+        # Replace deaths back up to 9 living (after the initial 9 have been spawned).
+        can_replenish = (
+            self.num_spawned >= MAX_BUILDERS and living < MAX_BUILDERS
+        )
+        # Turret threat: ASAP up to 15 living for home defence.
+        can_threat_spawn = threat and living < MAX_BUILDERS_THREAT
         if not can_rush and not can_interval and not can_replenish and not can_threat_spawn:
             return
 
@@ -994,6 +1053,7 @@ class Player:
                 self.core_pos,
                 origin=self.relay_origin,
                 ore_blocked=ore_blocked,
+                my_index=self.hivemind.my_index,
             )
             self.relay_path = path
             self.relay_merging = merging

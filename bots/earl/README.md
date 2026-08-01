@@ -36,10 +36,10 @@ enemy core** when known (ASSUMED/KNOWN from slot 15); otherwise closest to
 
 **Schedule:** rush the first **5** as soon as Ti allows, then spawn **one more
 every 25 turns** starting at turn **10**, up to **9** total spawned (turns
-10 / 35 / 60 / 85). **Hard cap: 15** total `num_spawned` (threat may fill 10–15
-ASAP). Living-count replenish is disabled — raiders leave core vision and were
-causing 30+ overshoot. If the rush finishes after turn 10, take the next
-interval slot.
+10 / 35 / 60 / 85). After that, **replenish ASAP** whenever living builders
+drop below 9. Under turret threat, spawn ASAP up to **15 living** (hard
+lifetime `num_spawned` cap still **15** so vision undercount cannot run away).
+If the rush finishes after turn 10, take the next interval slot.
 
 From the ammo start turn the core tops team ammo to
 `5 + 20 × max(1, living count in slot 3)` via `convert_ammo` (before the
@@ -91,7 +91,7 @@ Even builders stay home once the enemy core is known:
 3. **Assist apron** on the enemy approach side: 3-deep inward conveyors (no
    barriers).
 4. **Guard harvesters**: place **1 gunner** cardinally beside each ally harvester
-   within Chebyshev **10** of the core footprint (skip apron/core tiles; face
+   within Chebyshev **15** of the core footprint (skip apron/core tiles; face
    enemy). Stagger raiders across missing pads.
 5. **Clear economy** — if an enemy harvester is in vision, fire when adjacent
    else move to it; else path onto the nearest enemy belt and stand-fire.
@@ -99,8 +99,8 @@ Even builders stay home once the enemy core is known:
    the approach depth-1 strip.
 
 While an enemy gunner/sentinel is in **core vision**, the core keeps spawning
-extra builders past the normal 9 up to **15 total spawned** (hard `num_spawned`
-cap; team unit cap still applies). Even-index
+extra builders past the normal 9 up to **15 living** (lifetime `num_spawned`
+hard-capped at 15). Even-index
 builders run phalanx (including 6+); odd late spawns still defend assigned sides
 until their pivot.
 
@@ -167,14 +167,17 @@ finds no path. Relays search layable/joinable tiles toward the ally core.
 ### Inbound relay
 
 After building or claiming a harvester, A\* a conveyor path to an **ally**
-core-adjacent tile (`is_core_adjacent` requires our team). If a path onto a
-**visible allied belt** is at least 2 tiles shorter, prefer that merge spur
-instead (build up to the join; do not rebuild the existing network). Belts face
-toward the next hop / ally core. Wrong-facing allied belts on the spur are
-destroyed and rebuilt; enemy belts are cleared via stand-and-fire, then
-replaced. Progress uses a contiguous vision watermark (`relay_built_to`) so
-fogged mid-path gaps are not skipped. Completing or aborting the path clears
-relay state; builder then picks a new ore.
+core-adjacent tile (`is_core_adjacent` requires our team). Entry side is
+**staggered by builder index** across in-bounds core faces (depth-1), falling
+back to any core-adjacent tile if that face is unreachable. If a path onto a
+**visible allied belt** at least Chebyshev **4** from the core is at least
+**8** tiles shorter than the core path, prefer that merge spur instead (build
+up to the join; do not rebuild the existing network). Near-core / apron belts
+are not merge targets. Belts face toward the next hop / ally core. Wrong-facing
+allied belts on the spur are destroyed and rebuilt; enemy belts are cleared via
+stand-and-fire, then replaced. Progress uses a contiguous vision watermark
+(`relay_built_to`) so fogged mid-path gaps are not skipped. Completing or
+aborting the path clears relay state; builder then picks a new ore.
 
 ## Run
 
