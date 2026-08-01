@@ -10,11 +10,15 @@ Store slots:
   1  SLOT_ORPHAN_RELAY    Packed harvester origin needing a relay (Player)
   2  SLOT_HARVESTER_COUNT Total harvesters (Player)
   3  SLOT_ORE_LOCATION    Packed uncovered ore (Player)
-  4  SLOT_FAR_ORE         One-off start: packed far ore for builder 1/2 (Player)
-  5–6                    Free
+  4  SLOT_FAR_ORE / SLOT_SENTINEL_COUNT
+                          Early: packed far ore for builder 1/2; after attack
+                          start: living sentinel count for core convert_ammo
+  5  SLOT_SIEGE_A         Packed siege sentinel A (Player, attack phase)
+  6  SLOT_SIEGE_B         Packed siege sentinel B (Player, attack phase)
   7–15                    HiveMind-owned — never write from Player
 
 Ally core position is read from HiveMind slot 15 via unpack_cores.
+Core tops team ammo to 10 × sentinel count via convert_ammo each turn.
 """
 
 from __future__ import annotations
@@ -33,7 +37,10 @@ SLOT_SPAWN_CREDITS = 0
 SLOT_ORPHAN_RELAY = 1
 SLOT_HARVESTER_COUNT = 2
 SLOT_ORE_LOCATION = 3
-SLOT_FAR_ORE = 4
+SLOT_FAR_ORE = 4  # early packed far ore; then sentinel count (alias below)
+SLOT_SENTINEL_COUNT = 4
+SLOT_SIEGE_A = 5
+SLOT_SIEGE_B = 6
 SLOT_PACKED_CORES = 15
 
 MAX_BUILDERS = 5
@@ -41,6 +48,12 @@ TARGET_HARVESTERS = 3
 TARGET_HARVESTERS_APRON = 1  # start core apron after first harvester
 BFS_MAX_ITERS = 400
 FAR_ORE_MIN_DIST = 5  # one-off start: claimer picks nearest ore at least this far
+SPAWN_CREDIT_INTERVAL = 50  # +1 spawn credit every N turns
+
+ATTACK_TURN = 100
+MAX_SIEGE_SENTINELS = 10
+SENTINEL_RANGE_SQ = 32
+SENTINEL_PLACE_MIN_SQ = 16  # d=4 → 16; enough outer-face slots for 10 turrets
 
 # NOTE: gunners off while debugging belt logistics / core apron.
 # Re-enable once relays + 2-deep apron reliably deliver mined Ti.
@@ -359,27 +372,141 @@ def plan_conveyor_path_to_ore(
     )
 
 
+def sentinel_feed_neighbors(
+    ct: Controller,
+    sentinel_pos: Position,
+    facing: Direction,
+    *,
+    ore_blocked: set[tuple[int, int]] | None = None,
+) -> list[Position]:
+    """Cardinal neighbors of a sentinel excluding the facing-side tile (no Ti input there)."""
+    face_tile = sentinel_pos.add(facing)
+    out: list[Position] = []
+    for d in CARDINALS:
+        n = sentinel_pos.add(d)
+        if n.x == face_tile.x and n.y == face_tile.y:
+            continue
+        if not in_bounds(ct, n):
+            continue
+        if is_layable_or_join(ct, n, ore_blocked=ore_blocked):
+            out.append(n)
+    return out
+
+
+def sentinel_has_inbound_belt(
+    ct: Controller, sentinel_pos: Position, facing: Direction
+) -> bool:
+    """True if a feed-side allied belt already faces into the sentinel."""
+    face_tile = sentinel_pos.add(facing)
+    for d in CARDINALS:
+        n = sentinel_pos.add(d)
+        if n.x == face_tile.x and n.y == face_tile.y:
+            continue
+        if not in_bounds(ct, n):
+            continue
+        if not ct.is_in_vision(n):
+            continue
+        want = facing_toward(n, sentinel_pos)
+        if belt_faces(ct, n, want):
+            return True
+    return False
+
+
+def plan_conveyor_path_to_sentinel(
+    ct: Controller,
+    start: Position,
+    sentinel_pos: Position,
+    facing: Direction,
+    *,
+    ore_blocked: set[tuple[int, int]] | None = None,
+) -> list[Position] | None:
+    """BFS harvester → feed-side neighbor of sentinel (inbound_to_sentinel)."""
+    goals = {
+        (p.x, p.y)
+        for p in sentinel_feed_neighbors(
+            ct, sentinel_pos, facing, ore_blocked=ore_blocked
+        )
+    }
+    if not goals:
+        return None
+
+    def is_goal(p: Position) -> bool:
+        return (p.x, p.y) in goals
+
+    return plan_conveyor_path(
+        ct, start, is_goal=is_goal, ore_blocked=ore_blocked
+    )
+
+
+def plan_conveyor_path_from_sentinel(
+    ct: Controller,
+    sentinel_pos: Position,
+    harvester_pos: Position,
+    facing: Direction,
+    *,
+    ore_blocked: set[tuple[int, int]] | None = None,
+) -> list[Position] | None:
+    """BFS from a sentinel feed-side neighbor toward a harvester neighbor (outbound)."""
+    starts = sentinel_feed_neighbors(
+        ct, sentinel_pos, facing, ore_blocked=ore_blocked
+    )
+    if not starts:
+        return None
+
+    def is_goal(p: Position) -> bool:
+        if abs(p.x - harvester_pos.x) + abs(p.y - harvester_pos.y) != 1:
+            return False
+        return is_layable_or_join(ct, p, ore_blocked=ore_blocked)
+
+    best: list[Position] | None = None
+    for start in starts:
+        path = plan_conveyor_path(
+            ct, start, is_goal=is_goal, ore_blocked=ore_blocked
+        )
+        if path is None:
+            continue
+        if best is None or len(path) < len(best):
+            best = path
+    return best
+
+
+def facing_toward(tile: Position, target: Position) -> Direction:
+    """Cardinal facing (for conveyor travel dirs)."""
+    d = nearest_cardinal(tile.direction_to(target))
+    return d if d != Direction.CENTRE else Direction.NORTH
+
+
+def facing_8way(tile: Position, target: Position) -> Direction:
+    """Full 8-direction facing (for sentinels / gunners — includes diagonals)."""
+    d = tile.direction_to(target)
+    return d if d != Direction.CENTRE else Direction.NORTH
+
+
 def path_travel_dir(
     path: list[Position],
     index: int,
-    core_pos: Position,
+    face_target: Position,
     *,
     reverse: bool = False,
+    into_core: bool = False,
 ) -> Direction:
     """Belt facing for path[index].
 
-    Inbound paths run harvester→core, so face the next hop (toward core).
-    Outbound paths run core→ore, so reverse=True faces the previous hop
-    (still toward core) — Ti must flow ore→core, not along the walk.
+    Inbound paths face the next hop (toward face_target).
+    Outbound paths (reverse=True) face the previous hop (still toward face_target).
     """
     tile = path[index]
     if reverse:
         if index > 0:
             return travel_facing(tile, path[index - 1])
-        return facing_into_core(tile, core_pos)
+        if into_core:
+            return facing_into_core(tile, face_target)
+        return facing_toward(tile, face_target)
     if index + 1 < len(path):
         return travel_facing(tile, path[index + 1])
-    return facing_into_core(tile, core_pos)
+    if into_core:
+        return facing_into_core(tile, face_target)
+    return facing_toward(tile, face_target)
 
 
 def ensure_belt_on_path(
@@ -428,16 +555,19 @@ def belt_faces(ct: Controller, tile: Position, expected: Direction) -> bool:
 def path_is_complete(
     ct: Controller,
     path: list[Position],
-    core_pos: Position,
+    face_target: Position,
     *,
     reverse: bool = False,
     require_facing: bool = True,
+    into_core: bool = False,
 ) -> bool:
     if not path:
         return False
     for i, tile in enumerate(path):
         if require_facing:
-            want = path_travel_dir(path, i, core_pos, reverse=reverse)
+            want = path_travel_dir(
+                path, i, face_target, reverse=reverse, into_core=into_core
+            )
             if not belt_faces(ct, tile, want):
                 return False
         elif _allied_belt_id(ct, tile) is None:
@@ -448,11 +578,12 @@ def path_is_complete(
 def first_incomplete_index(
     ct: Controller,
     path: list[Position],
-    core_pos: Position,
+    face_target: Position,
     *,
     start: int = 0,
     reverse: bool = False,
     require_facing: bool = True,
+    into_core: bool = False,
 ) -> int | None:
     """First path index >= start missing a satisfactory allied belt.
 
@@ -462,7 +593,9 @@ def first_incomplete_index(
     for i in range(max(0, start), len(path)):
         tile = path[i]
         if require_facing:
-            want = path_travel_dir(path, i, core_pos, reverse=reverse)
+            want = path_travel_dir(
+                path, i, face_target, reverse=reverse, into_core=into_core
+            )
             if not belt_faces(ct, tile, want):
                 return i
         elif _allied_belt_id(ct, tile) is None:
@@ -473,16 +606,19 @@ def first_incomplete_index(
 def last_built_path_index(
     ct: Controller,
     path: list[Position],
-    core_pos: Position,
+    face_target: Position,
     *,
     reverse: bool = False,
     require_facing: bool = True,
+    into_core: bool = False,
 ) -> int | None:
     """Highest path index with a satisfactory allied belt, or None if none."""
     last: int | None = None
     for i, tile in enumerate(path):
         if require_facing:
-            want = path_travel_dir(path, i, core_pos, reverse=reverse)
+            want = path_travel_dir(
+                path, i, face_target, reverse=reverse, into_core=into_core
+            )
             if belt_faces(ct, tile, want):
                 last = i
         elif _allied_belt_id(ct, tile) is not None:
@@ -505,11 +641,15 @@ class Player:
         self.core_pos: Position | None = None
 
         self.in_relay = False
-        self.relay_mode: str = "to_core"  # "to_core" | "to_ore"
+        # to_core | to_ore | to_sentinel | from_sentinel
+        self.relay_mode: str = "to_core"
         self.relay_origin: Position | None = None
-        self.relay_ore: Position | None = None  # goal ore when mode == to_ore
+        self.relay_ore: Position | None = None  # goal ore / harvester for outbound modes
+        self.relay_sentinel: Position | None = None
         self.relay_stuck = 0
         self.relay_path: list[Position] | None = None
+        self.enemy_core_pos: Position | None = None
+        self.siege_done = False  # odd builders: stop placing after cap / no sites
 
         # Clear-ore task: known ore from ORE_LOCATIONS we're claiming/clearing
         self.ore_site: Position | None = None
@@ -529,6 +669,8 @@ class Player:
             self._run_builder(ct)
         elif etype == EntityType.GUNNER:
             self._run_gunner(ct)
+        elif etype == EntityType.SENTINEL:
+            self._run_sentinel(ct)
 
     # ------------------------------------------------------------------
     # Core
@@ -536,6 +678,23 @@ class Player:
 
     def _run_core(self, ct: Controller) -> None:
         # HiveMind packs ally core into slot 15 on tick; do not write slots 7–15.
+        # Top up team ammo to one sentinel shot each (tutorial convert_ammo model).
+        n = ct.read_store(SLOT_SENTINEL_COUNT)
+        if 0 < n <= MAX_SIEGE_SENTINELS:
+            target = n * 10
+            ammo = ct.get_global_ammo()
+            if ammo < target:
+                amount = min(target - ammo, ct.get_global_resources())
+                if amount > 0 and ct.can_convert_ammo(amount):
+                    ct.convert_ammo(amount)
+
+        round_n = ct.get_current_round()
+        if round_n > 0 and round_n % SPAWN_CREDIT_INTERVAL == 0:
+            ct.write_store(
+                SLOT_SPAWN_CREDITS,
+                ct.read_store(SLOT_SPAWN_CREDITS) + 1,
+            )
+
         credits = ct.read_store(SLOT_SPAWN_CREDITS)
         can_credit_spawn = credits > 0
         if self.num_spawned >= MAX_BUILDERS and not can_credit_spawn:
@@ -582,7 +741,53 @@ class Player:
             idx == 2 and not self.far_support_done
         )
 
-        if ct.get_action_cooldown() == 0 and not self.in_relay and not bootstrapping:
+        self._read_enemy_core(ct)
+        attack_time = (
+            ct.get_current_round() >= ATTACK_TURN
+            and self.enemy_core_pos is not None
+            and idx > 0
+        )
+        if attack_time:
+            # Drop start bootstrap and abandon ore/core relays for siege/feed
+            self.far_job_done = True
+            self.far_support_done = True
+            self.ore_site = None
+            if self.in_relay and self.relay_mode in ("to_core", "to_ore"):
+                self._clear_relay()
+            # Slot 4 held a packed far-ore pos; clear so it can store sentinel count.
+            # Packed positions are always >> MAX_SIEGE_SENTINELS.
+            if ct.read_store(SLOT_SENTINEL_COUNT) > MAX_SIEGE_SENTINELS:
+                ct.write_store(SLOT_SENTINEL_COUNT, 0)
+
+        attacking = attack_time
+        siege_builder = attacking and idx % 2 == 1
+        feed_builder = attacking and idx % 2 == 0
+
+        # Odd builders place until cap; drop siege-feed relays so they don't stall at 1
+        if (
+            siege_builder
+            and self.in_relay
+            and self.relay_mode in ("to_sentinel", "from_sentinel")
+            and self._count_our_sentinels(ct) < MAX_SIEGE_SENTINELS
+        ):
+            self._clear_relay()
+
+        if siege_builder and not self.in_relay:
+            self._run_siege_builder(ct)
+            # Feed only after the sentinel cap — placing comes first
+            if (
+                not self.in_relay
+                and self._count_our_sentinels(ct) >= MAX_SIEGE_SENTINELS
+            ):
+                self._run_feed_builder(ct)
+        elif feed_builder and not self.in_relay:
+            self._run_feed_builder(ct)
+        elif (
+            not attacking
+            and ct.get_action_cooldown() == 0
+            and not self.in_relay
+            and not bootstrapping
+        ):
             if not self._try_build_harvester(ct):
                 harvester_count = ct.read_store(SLOT_HARVESTER_COUNT)
                 if harvester_count >= TARGET_HARVESTERS_APRON:
@@ -593,7 +798,8 @@ class Player:
                         ):
                             self._try_build_gunner(ct)
         elif (
-            BUILDER1_PAVE_EN_ROUTE
+            not attacking
+            and BUILDER1_PAVE_EN_ROUTE
             and ct.get_action_cooldown() == 0
             and not self.in_relay
             and bootstrapping
@@ -607,8 +813,12 @@ class Player:
         if ct.get_action_cooldown() == 0:
             self._try_heal(ct)
 
-        # Supporter waits/paves only — no ore-site claim during bootstrap
-        if not self.in_relay and not (idx == 2 and not self.far_support_done):
+        # Supporter waits/paves only — no ore-site claim during bootstrap / attack
+        if (
+            not attacking
+            and not self.in_relay
+            and not (idx == 2 and not self.far_support_done)
+        ):
             self._try_ore_site_task(ct)
 
         self._move_toward_target(ct)
@@ -619,11 +829,17 @@ class Player:
         if ally[0] != CoreState.UNKNOWN:
             self.core_pos = Position(ally[1], ally[2])
 
+    def _read_enemy_core(self, ct: Controller) -> None:
+        _, enemy = unpack_cores(ct.read_store(SLOT_PACKED_CORES))
+        if enemy[0] != CoreState.UNKNOWN:
+            self.enemy_core_pos = Position(enemy[1], enemy[2])
+
     def _enter_relay(self, ct: Controller, harvester_pos: Position) -> None:
         self.in_relay = True
         self.relay_mode = "to_core"
         self.relay_origin = harvester_pos
         self.relay_ore = None
+        self.relay_sentinel = None
         self.relay_stuck = 0
         self.relay_path = None
         self.target = self.core_pos
@@ -651,9 +867,38 @@ class Player:
         self.relay_mode = "to_ore"
         self.relay_origin = self.core_pos
         self.relay_ore = ore_site
+        self.relay_sentinel = None
         self.relay_stuck = 0
         self.relay_path = None
         self.target = ore_site
+
+    def _enter_relay_to_sentinel(
+        self, harvester_pos: Position, sentinel_pos: Position
+    ) -> None:
+        """Inbound feed: harvester → sentinel (destroy/replace wrong facing)."""
+        self.in_relay = True
+        self.relay_mode = "to_sentinel"
+        self.relay_origin = harvester_pos
+        self.relay_ore = None
+        self.relay_sentinel = sentinel_pos
+        self.relay_stuck = 0
+        self.relay_path = None
+        self.target = sentinel_pos
+        self.ore_site = None
+
+    def _enter_relay_from_sentinel(
+        self, sentinel_pos: Position, harvester_pos: Position
+    ) -> None:
+        """Outbound feed: walk sentinel → harvester; belts face toward sentinel."""
+        self.in_relay = True
+        self.relay_mode = "from_sentinel"
+        self.relay_origin = sentinel_pos
+        self.relay_ore = harvester_pos
+        self.relay_sentinel = sentinel_pos
+        self.relay_stuck = 0
+        self.relay_path = None
+        self.target = harvester_pos
+        self.ore_site = None
 
     def _read_far_ore(self, ct: Controller) -> Position | None:
         return unpack_pos(ct.read_store(SLOT_FAR_ORE))
@@ -718,6 +963,268 @@ class Player:
     def _finish_far_support_if_needed(self) -> None:
         if self.hivemind.my_index == 2 and not self.far_support_done:
             self.far_support_done = True
+
+    # ------------------------------------------------------------------
+    # Attack phase (turn 400+): siege sentinels + harvester feed belts
+    # ------------------------------------------------------------------
+
+    def _sentinel_facing(self, ct: Controller, sentinel_pos: Position) -> Direction:
+        if self.enemy_core_pos is None:
+            self._read_enemy_core(ct)
+        if self.enemy_core_pos is None:
+            return Direction.EAST
+        return facing_8way(sentinel_pos, self.enemy_core_pos)
+
+    def _count_our_sentinels(self, ct: Controller) -> int:
+        my_team = ct.get_team()
+        count = 0
+        for info in self.hivemind.local_map.values():
+            ent = info.get("entity")
+            if (
+                ent
+                and ent.get("type") == EntityType.SENTINEL
+                and ent.get("team") == my_team
+            ):
+                count += 1
+        return count
+
+    def _published_siege_sites(self, ct: Controller) -> list[Position]:
+        sites: list[Position] = []
+        for slot in (SLOT_SIEGE_A, SLOT_SIEGE_B):
+            p = unpack_pos(ct.read_store(slot))
+            if p is not None:
+                sites.append(p)
+        return sites
+
+    def _publish_siege_site(self, ct: Controller, pos: Position) -> None:
+        for slot in (SLOT_SIEGE_A, SLOT_SIEGE_B):
+            if unpack_pos(ct.read_store(slot)) is None:
+                ct.write_store(slot, pack_pos(pos))
+                return
+        # Both filled — overwrite slot chosen by builder index
+        slot = SLOT_SIEGE_A if self.hivemind.my_index % 4 == 1 else SLOT_SIEGE_B
+        ct.write_store(slot, pack_pos(pos))
+
+    def _siege_preferred_side(self) -> int:
+        """0=N 1=NE 2=E 3=SE 4=S 5=SW 6=W 7=NW — staggered by odd builder index."""
+        idx = self.hivemind.my_index
+        if idx <= 0:
+            return 0
+        return ((idx - 1) // 2) % 8
+
+    def _siege_cand_side(self, cand: Position, enemy: Position) -> int:
+        """Classify candidate into one of 8 sides around the 2x2 core center."""
+        center_x = enemy.x + 0.5
+        center_y = enemy.y + 0.5
+        dx = cand.x - center_x
+        dy = cand.y - center_y
+        # atan2-like octant: y down is south in grid
+        ax, ay = abs(dx), abs(dy)
+        if ay * 2 < ax:
+            return 2 if dx > 0 else 6  # E / W
+        if ax * 2 < ay:
+            return 4 if dy > 0 else 0  # S / N
+        if dx > 0 and dy < 0:
+            return 1  # NE
+        if dx > 0 and dy > 0:
+            return 3  # SE
+        if dx < 0 and dy > 0:
+            return 5  # SW
+        return 7  # NW
+
+    def _pick_siege_site(self, ct: Controller) -> Position | None:
+        """Siege tile in sentinel range; each builder prefers a different side."""
+        if self.enemy_core_pos is None:
+            return None
+        enemy = self.enemy_core_pos
+        cx, cy = enemy.x, enemy.y
+        footprint = _core_footprint(enemy)
+        published = {(p.x, p.y) for p in self._published_siege_sites(ct)}
+        best: Position | None = None
+        best_score = float("inf")
+        ally = self.core_pos
+        my_team = ct.get_team()
+        prefer = self._siege_preferred_side()
+
+        ring: list[Position] = []
+        for d in (5, 4, 3):
+            for dx in (0, 1):
+                ring.append(Position(cx + dx, cy - d))
+                ring.append(Position(cx + dx, cy + 1 + d))
+            for dy in (0, 1):
+                ring.append(Position(cx - d, cy + dy))
+                ring.append(Position(cx + 1 + d, cy + dy))
+            ring.append(Position(cx - d, cy - d))
+            ring.append(Position(cx + 1 + d, cy - d))
+            ring.append(Position(cx - d, cy + 1 + d))
+            ring.append(Position(cx + 1 + d, cy + 1 + d))
+
+        seen: set[tuple[int, int]] = set()
+        for cand in ring:
+            key = (cand.x, cand.y)
+            if key in seen:
+                continue
+            seen.add(key)
+            if not in_bounds(ct, cand):
+                continue
+            if key in published:
+                continue
+            dist = min(cand.distance_squared(t) for t in footprint)
+            if dist < SENTINEL_PLACE_MIN_SQ or dist > SENTINEL_RANGE_SQ:
+                continue
+            ent = self.hivemind.local_map.get(key, {}).get("entity")
+            if (
+                ent
+                and ent.get("type") == EntityType.SENTINEL
+                and ent.get("team") == my_team
+            ):
+                continue
+            if ct.is_in_vision(cand):
+                if not ct.is_tile_empty(cand):
+                    continue
+                if ct.get_tile_env(cand) != Environment.EMPTY:
+                    continue
+            side = self._siege_cand_side(cand, enemy)
+            # Prefer own side strongly; fall back to other sides if blocked
+            side_pen = 0 if side == prefer else (1000 + 50 * min((side - prefer) % 8, (prefer - side) % 8))
+            ally_d = cand.distance_squared(ally) if ally is not None else 0
+            score = side_pen + ally_d + (SENTINEL_RANGE_SQ - dist)
+            if score < best_score:
+                best_score = score
+                best = cand
+        return best
+
+    def _run_siege_builder(self, ct: Controller) -> None:
+        """Odd builders: place sentinels facing enemy core near max range."""
+        if self.enemy_core_pos is None:
+            return
+        if self._count_our_sentinels(ct) >= MAX_SIEGE_SENTINELS:
+            self.siege_done = True
+            return
+
+        site = self._pick_siege_site(ct)
+        if site is None:
+            # Stay put / hold last target — do not swarm the enemy core
+            return
+
+        self.target = site
+        pos = ct.get_position()
+        if abs(pos.x - site.x) + abs(pos.y - site.y) != 1:
+            return
+        if ct.get_action_cooldown() != 0:
+            return
+
+        facing = facing_8way(site, self.enemy_core_pos)
+        if ct.can_build_sentinel(site, facing):
+            ct.build_sentinel(site, facing)
+            self._publish_siege_site(ct, site)
+            # Slot 4 may still show packed far-ore this round (writes lag 1 turn).
+            count = ct.read_store(SLOT_SENTINEL_COUNT)
+            if count > MAX_SIEGE_SENTINELS:
+                ct.write_store(SLOT_SENTINEL_COUNT, 1)
+            elif count < MAX_SIEGE_SENTINELS:
+                ct.write_store(SLOT_SENTINEL_COUNT, count + 1)
+            # Keep placing until cap; even builders handle feed in the meantime
+            if self._count_our_sentinels(ct) >= MAX_SIEGE_SENTINELS:
+                self._start_sentinel_feed(ct, site)
+
+    def _nearest_feed_harvester(
+        self, ct: Controller, near: Position | None = None
+    ) -> Position | None:
+        """Closest harvester on a known ore (any team — enemy steal-feed is fine)."""
+        origin = near if near is not None else ct.get_position()
+        best: Position | None = None
+        best_dist = float("inf")
+
+        map_id = self.hivemind.map_id
+        if map_id > 0:
+            for ox, oy in ORE_LOCATIONS.get(map_id, []):
+                ent = self.hivemind.local_map.get((ox, oy), {}).get("entity")
+                if not ent or ent.get("type") != EntityType.HARVESTER:
+                    continue
+                hpos = Position(ox, oy)
+                d = origin.distance_squared(hpos)
+                if d < best_dist:
+                    best_dist = d
+                    best = hpos
+
+        for tile in ct.get_nearby_tiles():
+            if ct.get_tile_env(tile) != Environment.ORE_TITANIUM:
+                continue
+            bid = ct.get_tile_building_id(tile)
+            if bid is None:
+                continue
+            if ct.get_entity_type(bid) != EntityType.HARVESTER:
+                continue
+            d = origin.distance_squared(tile)
+            if d < best_dist:
+                best_dist = d
+                best = tile
+
+        return best
+
+    def _known_siege_sentinels(self, ct: Controller) -> list[Position]:
+        """Published sites plus allied sentinels from HiveMind vision."""
+        sites: list[Position] = []
+        seen: set[tuple[int, int]] = set()
+        for p in self._published_siege_sites(ct):
+            key = (p.x, p.y)
+            if key not in seen:
+                seen.add(key)
+                sites.append(p)
+        my_team = ct.get_team()
+        for (x, y), info in self.hivemind.local_map.items():
+            ent = info.get("entity")
+            if (
+                not ent
+                or ent.get("type") != EntityType.SENTINEL
+                or ent.get("team") != my_team
+            ):
+                continue
+            key = (x, y)
+            if key in seen:
+                continue
+            seen.add(key)
+            sites.append(Position(x, y))
+        return sites
+
+    def _start_sentinel_feed(self, ct: Controller, sentinel: Position) -> None:
+        """Inbound feed from nearest ore harvester unless sentinel already fed."""
+        facing = self._sentinel_facing(ct, sentinel)
+        if sentinel_has_inbound_belt(ct, sentinel, facing):
+            return
+        harvester = self._nearest_feed_harvester(ct, near=sentinel)
+        if harvester is None:
+            harvester = self._nearest_feed_harvester(ct)
+        if harvester is None:
+            return
+        # Prefer inbound (destroy/replace) so Ti actually enters the turret
+        self._enter_relay_to_sentinel(harvester, sentinel)
+
+    def _run_feed_builder(self, ct: Controller) -> None:
+        """Even builders: inbound belts to sentinels that lack a feed-facing belt."""
+        sites = self._known_siege_sentinels(ct)
+        if not sites:
+            site = self._pick_siege_site(ct)
+            if site is not None:
+                self.target = site
+            return
+
+        pos = ct.get_position()
+        unfed: list[Position] = []
+        for s in sites:
+            facing = self._sentinel_facing(ct, s)
+            # Out of vision: treat as needing a check — still candidate
+            if ct.is_in_vision(s) and sentinel_has_inbound_belt(ct, s, facing):
+                continue
+            unfed.append(s)
+
+        if not unfed:
+            return
+
+        sentinel = min(unfed, key=lambda s: pos.distance_squared(s))
+        self.target = sentinel
+        self._start_sentinel_feed(ct, sentinel)
 
     def _try_build_harvester(self, ct: Controller) -> bool:
         ti = ct.get_global_resources()
@@ -1055,12 +1562,15 @@ class Player:
         self.relay_mode = "to_core"
         self.relay_origin = None
         self.relay_ore = None
+        self.relay_sentinel = None
         self.relay_stuck = 0
         self.relay_path = None
 
     def _complete_relay(self, ct: Controller) -> None:
-        credits = ct.read_store(SLOT_SPAWN_CREDITS)
-        ct.write_store(SLOT_SPAWN_CREDITS, credits + 1)
+        # Spawn credits only for classic harvester→core inbound
+        if self.relay_mode == "to_core":
+            credits = ct.read_store(SLOT_SPAWN_CREDITS)
+            ct.write_store(SLOT_SPAWN_CREDITS, credits + 1)
         if self.relay_origin is not None:
             orphan = unpack_pos(ct.read_store(SLOT_ORPHAN_RELAY))
             if (
@@ -1095,18 +1605,32 @@ class Player:
         return abs(pos.x - ore.x) + abs(pos.y - ore.y) <= 1
 
     def _relay_toward_core(self, ct: Controller) -> None:
-        """Walk a committed BFS belt path (inbound to core or outbound to ore).
+        """Walk a committed BFS belt path (core/ore/sentinel feed modes).
 
         Enemy belts on the path are cleared via stand-and-fire, then we lay ours.
         If relay_origin leaves vision, advance it to the last built path tile and
-        keep finishing the path. Outbound never destroy/replaces allied belts.
+        keep finishing the path. Outbound modes never destroy/replace allied belts.
+        Inbound to_core / to_sentinel may destroy+rebuild wrong facing.
         """
-        if self.core_pos is None or self.relay_origin is None:
+        if self.relay_origin is None:
             self._abort_relay(ct)
             return
 
         to_ore = self.relay_mode == "to_ore"
+        to_sentinel = self.relay_mode == "to_sentinel"
+        from_sentinel = self.relay_mode == "from_sentinel"
+        to_core = self.relay_mode == "to_core"
+
+        if to_core and self.core_pos is None:
+            self._abort_relay(ct)
+            return
         if to_ore and self.relay_ore is None:
+            self._abort_relay(ct)
+            return
+        if (to_sentinel or from_sentinel) and self.relay_sentinel is None:
+            self._abort_relay(ct)
+            return
+        if from_sentinel and self.relay_ore is None:
             self._abort_relay(ct)
             return
 
@@ -1115,9 +1639,21 @@ class Player:
         origin_visible = ct.is_in_vision(self.relay_origin)
         path = self.relay_path
         work_from = 0
-        require_facing = not to_ore
-        allow_destroy = not to_ore
-        face_reverse = to_ore  # outbound path is core→ore; belts face toward core
+
+        # Inbound (to_core / to_sentinel): require facing + allow destroy.
+        # Outbound (to_ore / from_sentinel): join/build only.
+        require_facing = to_core or to_sentinel
+        allow_destroy = to_core or to_sentinel
+        face_reverse = to_ore or from_sentinel
+        into_core = to_core or to_ore
+        if to_sentinel or from_sentinel:
+            assert self.relay_sentinel is not None
+            face_target = self.relay_sentinel
+            facing = self._sentinel_facing(ct, self.relay_sentinel)
+        else:
+            assert self.core_pos is not None
+            face_target = self.core_pos
+            facing = Direction.NORTH  # unused
 
         # Fog fallback: origin left vision — advance to last successfully built belt.
         if not origin_visible:
@@ -1125,9 +1661,10 @@ class Player:
                 last_i = last_built_path_index(
                     ct,
                     path,
-                    self.core_pos,
+                    face_target,
                     reverse=face_reverse,
                     require_facing=require_facing,
+                    into_core=into_core,
                 )
                 if last_i is not None:
                     self.relay_origin = path[last_i]
@@ -1158,7 +1695,30 @@ class Player:
                     self.relay_ore,
                     ore_blocked=ore_blocked,
                 )
+            elif to_sentinel:
+                assert self.relay_sentinel is not None
+                path = plan_conveyor_path_to_sentinel(
+                    ct,
+                    self.relay_origin,
+                    self.relay_sentinel,
+                    facing,
+                    ore_blocked=ore_blocked,
+                )
+            elif from_sentinel:
+                assert self.relay_sentinel is not None
+                assert self.relay_ore is not None
+                path = plan_conveyor_path_from_sentinel(
+                    ct,
+                    self.relay_sentinel,
+                    self.relay_ore,
+                    facing,
+                    ore_blocked=ore_blocked,
+                )
+                if path:
+                    # Origin for fog tracking is first path tile (feed neighbor)
+                    self.relay_origin = path[0]
             else:
+                assert self.core_pos is not None
                 path = plan_conveyor_path_to_core(
                     ct, self.relay_origin, self.core_pos, ore_blocked=ore_blocked
                 )
@@ -1171,10 +1731,11 @@ class Player:
         idx = first_incomplete_index(
             ct,
             path,
-            self.core_pos,
+            face_target,
             start=work_from,
             reverse=face_reverse,
             require_facing=require_facing,
+            into_core=into_core,
         )
         if idx is None:
             if to_ore:
@@ -1203,7 +1764,11 @@ class Player:
 
         tile = path[idx]
         travel_dir = path_travel_dir(
-            path, idx, self.core_pos, reverse=face_reverse
+            path,
+            idx,
+            face_target,
+            reverse=face_reverse,
+            into_core=into_core,
         )
 
         # Clear enemy belts before we can join/lay our own
@@ -1377,5 +1942,24 @@ class Player:
 
     def _run_gunner(self, ct: Controller) -> None:
         target = ct.get_gunner_target()
-        if target is not None and ct.can_fire(target):
-            ct.fire(target)
+        if target is None or not ct.can_fire(target):
+            return
+        bot = ct.get_tile_builder_bot_id(target)
+        victim = bot if bot is not None else ct.get_tile_building_id(target)
+        if victim is None or ct.get_team(victim) == ct.get_team():
+            return
+        ct.fire(target)
+
+    def _run_sentinel(self, ct: Controller) -> None:
+        """Fire along facing line at the first enemy (skip friendlies)."""
+        for tile in ct.get_attackable_tiles():
+            if not ct.can_fire(tile):
+                continue
+            bot = ct.get_tile_builder_bot_id(tile)
+            victim = bot if bot is not None else ct.get_tile_building_id(tile)
+            if victim is None:
+                continue
+            if ct.get_team(victim) == ct.get_team():
+                continue
+            ct.fire(tile)
+            return
