@@ -6,7 +6,8 @@ Wrong-facing allied belts are destroyed and rebuilt; enemy belts are cleared
 via stand-and-fire.
 
 At turn 80, even builders abort economy and place sentinels around the enemy
-core (see attack.py). Odd builders keep mining.
+core (see attack.py). Odd builders keep mining. Indices 6+ defend the core
+(see defence.py).
 
 Store slots:
   0–1                  Free
@@ -25,6 +26,7 @@ import random
 from collections import deque
 
 from attack import run_attack_builder, run_sentinel, should_attack, top_up_ammo
+from defence import is_defender, run_defender
 from fcode import Controller, Direction, EntityType, Environment, Position
 from features import ORE_LOCATIONS
 from hivemind import CoreState, HiveMind, unpack_cores
@@ -35,7 +37,9 @@ CARDINALS = [Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST]
 SLOT_HARVESTER_COUNT = 2
 SLOT_PACKED_CORES = 15
 
-MAX_BUILDERS = 5
+MAX_BUILDERS_EARLY = 5
+MAX_BUILDERS = 9
+SPAWN_INTERVAL = 100
 BFS_MAX_ITERS = 400
 
 
@@ -378,6 +382,17 @@ class Player:
 
         if self.num_spawned >= MAX_BUILDERS:
             return
+
+        round_n = ct.get_current_round()
+        can_rush = self.num_spawned < MAX_BUILDERS_EARLY
+        can_interval = (
+            self.num_spawned >= MAX_BUILDERS_EARLY
+            and round_n > 0
+            and round_n % SPAWN_INTERVAL == 0
+        )
+        if not can_rush and not can_interval:
+            return
+
         ti = ct.get_global_resources()
         if ti < ct.get_builder_bot_cost():
             return
@@ -408,6 +423,15 @@ class Player:
         else:
             self.stuck = 0
         self.last_pos = pos
+
+        if is_defender(self.hivemind.my_index):
+            self._clear_relay()
+            self.ore_site = None
+            hold = run_defender(ct, core_pos=self.core_pos)
+            if hold is not None:
+                self.target = hold
+            self._move_toward_target(ct, retarget=False)
+            return
 
         if should_attack(
             ct.get_current_round(),

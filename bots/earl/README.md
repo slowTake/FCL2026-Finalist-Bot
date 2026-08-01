@@ -2,7 +2,7 @@
 
 Starter economy loop + HiveMind (`components/` symlinks) + **inbound steal-relay**
 belts to the core. Mid-game: even builders place sentinels; core tops ammo;
-sentinels fire (`attack.py`).
+sentinels fire (`attack.py`). Late spawns defend the core (`defence.py`).
 
 ## Store slots
 
@@ -28,6 +28,9 @@ Builders spawn on an apron tile around the full **2×2 core footprint**
 enemy core** when known (ASSUMED/KNOWN from slot 15); otherwise closest to
 **map center**. Tries candidates via `hivemind.spawn_builder` / `can_spawn`.
 
+**Schedule:** rush the first **5** as soon as Ti allows, then spawn **one more
+every 100 turns** up to a hard cap of **9** (turns 100 / 200 / 300 / 400).
+
 From turn ≥ 80 the core also tops team ammo to `20 × max(1, living sentinels)`
 via `convert_ammo` (before the spawn-cap early return), reading slot 3.
 
@@ -35,20 +38,23 @@ via `convert_ammo` (before the spawn-cap early return), reading slot 3.
 
 Each turn (`_run_builder`), after HiveMind `tick` and stuck tracking:
 
-0. **Attack gate** (turn ≥ 80, even `my_index`, enemy core known) → abort any
+0. **Defender gate** (`my_index >= 6`) → `defence.py`: heal adjacent friendlies,
+   else fire adjacent enemies (prefer builders); linger on the core apron.
+   No ore / relay / siege. Gunners deferred.
+1. **Attack gate** (turn ≥ 80, even `my_index`, enemy core known) → abort any
    relay/ore task; place up to 5 sentinels around the enemy core at max range
    (`attack.py`). Sync sentinel count to slot 3. Then move toward the chosen
-   site and return. Odd builders skip this and keep the economy loop below.
-1. **If `in_relay`** → only run inbound relay (`_relay_toward_core`); return.
-2. **Ore-site task** (`_try_ore_site_task`) — sticky `ore_site` via `_pick_ore_site`:
+   site and return. Odd builders (1–5) skip this and keep the economy loop below.
+2. **If `in_relay`** → only run inbound relay (`_relay_toward_core`); return.
+3. **Ore-site task** (`_try_ore_site_task`) — sticky `ore_site` via `_pick_ore_site`:
    - Empty → step off if on tile; adjacent → build harvester, then enter inbound relay.
    - Any harvester (ally or enemy) → enter inbound relay (steal / claim).
    - Enemy belt on ore → stand on tile and `fire`.
    - Allied belt on ore → adjacent `destroy`, then treat as empty next turns.
    - Blocked → skip ore, pick another.
-3. **If relay just started** → run `_relay_toward_core`; return.
-4. **Heal** adjacent damaged friendlies (if action free).
-5. **Move** toward `ore_site` / `_pick_target` (no pave-while-walking).
+4. **If relay just started** → run `_relay_toward_core`; return.
+5. **Heal** adjacent damaged friendlies (if action free).
+6. **Move** toward `ore_site` / `_pick_target` (no pave-while-walking).
 
 ### Mid-game attack (`attack.py`)
 
