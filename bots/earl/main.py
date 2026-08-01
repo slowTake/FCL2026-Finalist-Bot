@@ -250,11 +250,7 @@ def path_travel_dir(
     return facing_into_core(tile, core_pos)
 
 
-def ensure_belt_on_path(
-    ct: Controller,
-    tile: Position,
-    travel_dir: Direction,
-) -> str:
+def ensure_belt_on_path( ct: Controller, tile: Position, travel_dir: Direction ) -> str:
     """Join correct allied facing; destroy+rebuild wrong-facing; else build."""
     if travel_dir == Direction.CENTRE:
         return "failed"
@@ -280,7 +276,6 @@ def ensure_belt_on_path(
         ct.build_conveyor(tile, travel_dir)
         return "built"
     return "failed"
-
 
 def belt_faces(ct: Controller, tile: Position, expected: Direction) -> bool:
     bid = _allied_belt_id(ct, tile)
@@ -547,6 +542,17 @@ class Player:
     # Inbound relay
     # ------------------------------------------------------------------
 
+# test on maps hive & sweden & vase
+
+# relays not being completed on larger map/longer conveyor
+# perhaps 10 tiles away
+# check if enemy conveyor is going our way
+# problem with obstacles, perhaps missing loop
+# check for loops perhaps
+
+# adjust vision logic, checking ahead needs to check if tile is passable, if so is it a conveyor
+# if tile not passable then is it a bot, if so then hold a turn
+
     def _enter_relay(self, harvester_pos: Position) -> None:
         self.in_relay = True
         self.relay_origin = harvester_pos
@@ -573,12 +579,7 @@ class Player:
             return set()
         return set(ORE_LOCATIONS[map_id])
 
-    def _relay_path_ok(
-        self,
-        ct: Controller,
-        path: list[Position],
-        ore_blocked: set[tuple[int, int]],
-    ) -> bool:
+    def _relay_path_ok(self, ct: Controller, path: list[Position], ore_blocked: set[tuple[int, int]] ) -> bool:
         for tile in path:
             if _allied_belt_id(ct, tile) is not None:
                 continue
@@ -589,9 +590,7 @@ class Player:
     def _adjacent_to_ore(self, pos: Position, ore: Position) -> bool:
         return abs(pos.x - ore.x) + abs(pos.y - ore.y) <= 1
 
-    def _direction_candidates(
-        self, ct: Controller, pos: Position, target: Position
-    ) -> list[Direction]:
+    def _direction_candidates( self, ct: Controller, pos: Position, target: Position ) -> list[Direction]:
         desired = nearest_cardinal(pos.direction_to(target))
         if desired == Direction.CENTRE:
             return []
@@ -612,9 +611,14 @@ class Player:
 
         # Raise watermark from currently visible correctly facing belts.
         if path is not None:
-            vis = last_built_path_index(ct, path, self.core_pos)
-            if vis is not None:
-                self.relay_built_to = max(self.relay_built_to, vis)
+            contig = self.relay_built_to
+            while contig + 1 < len(path):
+                next_i = contig + 1
+                want = path_travel_dir(path, next_i, self.core_pos)
+                if not belt_faces(ct, path[next_i], want):
+                    break
+                contig = next_i
+            self.relay_built_to = max(self.relay_built_to, contig)
 
         if not origin_visible:
             if path:
@@ -643,9 +647,7 @@ class Player:
                 self.relay_built_to = -1
 
         if path is None:
-            path = plan_conveyor_path_to_core(
-                ct, self.relay_origin, self.core_pos, ore_blocked=ore_blocked
-            )
+            path = plan_conveyor_path_to_core( ct, self.relay_origin, self.core_pos, ore_blocked=ore_blocked )
             self.relay_path = path
             self.relay_built_to = -1
         if path is None:
@@ -712,14 +714,15 @@ class Player:
                 return
             self.relay_stuck = 0
             self.relay_built_to = max(self.relay_built_to, idx)
-            if ct.get_move_cooldown() == 0:
-                step = nearest_cardinal(pos.direction_to(tile))
-                if step != Direction.CENTRE and ct.can_move(step):
-                    ct.move(step)
+            if result in ("built", "joined") and ct.get_move_cooldown() == 0:
+                 step = nearest_cardinal(pos.direction_to(tile))
+                 if step != Direction.CENTRE and ct.can_move(step):
+                     ct.move(step)
             return
 
         if ct.get_move_cooldown() != 0:
             return
+
         progressed = False
         for d in self._direction_candidates(ct, pos, tile):
             if self._try_move(ct, d):
