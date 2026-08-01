@@ -5,15 +5,18 @@ steal any harvester), then pave a committed conveyor path back to the core.
 Wrong-facing allied belts are destroyed and rebuilt; enemy belts are cleared
 via stand-and-fire.
 
-Even builders (raiders) abort economy once the enemy core is known (see
-attack.py): push the enemy, stand-fire belts on the way, gunners from turn 30
-facing into the enemy core, then a 40-turn gunner/sentinel loop. Odd economy builders (1, 3, 5)
-keep mining; idle ore recheck every 50 turns. Indices 6+ defend the core from spawn.
+Even builders (raiders) abort economy once the enemy core is known. Active
+order is ACTIVE_RAID_ORDER: "phalanx" (home apron + wing gunners; pre-600
+odds → raiders at 300, pre-600 evens at 600 fire-and-forget; post-600 odds
+→ economy, post-600 evens → phalanx) or "raiders" (belt raid →
+gunner/sentinel siege loop in attack.py). Odd economy
+builders (1, 3, 5) keep mining; idle ore recheck every 50 turns. Indices 6+
+defend the core from spawn.
 
 Store slots:
   0–1                  Free
   2  SLOT_HARVESTER_COUNT Total harvesters built by the team
-  3  SLOT_SENTINEL_COUNT  Living siege sentinels (attack.py)
+  3  SLOT_SENTINEL_COUNT  Living phalanx wing gunners or siege sentinels (ammo)
   4–6                  Free
   7–15                 HiveMind-owned — never write from Player
 
@@ -34,13 +37,22 @@ def _custom_print(*args, **kwargs):
 builtins.print = _custom_print
 
 from attack import (
+    GUNNER_TURN,
     is_raider,
     run_attack_builder,
     run_gunner,
     run_sentinel,
     top_up_ammo,
 )
-from defence import is_defender, run_defender
+from defence import (
+    PHALANX_GUNNER_TURN,
+    available_sides,
+    core_under_turret_threat,
+    is_defender,
+    run_defender,
+    run_phalanx,
+    side_depth1_tiles,
+)
 from fcode import (
     Controller,
     Direction,
@@ -56,16 +68,77 @@ from pathing import astar, astar_from_seeds, manhattan
 DIRECTIONS = [d for d in Direction if d != Direction.CENTRE]
 CARDINALS = [Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST]
 
+# "phalanx" = home apron + wing gunners; "raiders" = offensive siege task list.
+ACTIVE_RAID_ORDER = "phalanx"
+PHALANX_ODD_TO_RAIDERS_TURN = 300
+PHALANX_EVEN_TO_RAIDERS_TURN = 600
+
 SLOT_HARVESTER_COUNT = 2
 SLOT_PACKED_CORES = 15
 
 MAX_BUILDERS_EARLY = 5
 MAX_BUILDERS = 9
+MAX_BUILDERS_THREAT = 15
 FIRST_INTERVAL_SPAWN = 10
 SPAWN_INTERVAL = 25
 PATH_MAX_ITERS = 2000
 ORE_RECHECK_INTERVAL = 50
-MERGE_SAVE_MIN = 2
+MERGE_SAVE_MIN = 8
+# Do not join onto allied belts this close to the core (apron / near-core funnel).
+MERGE_MIN_CORE_CHEB = 4
+
+
+def _chebyshev_to_core_footprint(pos: Position, core_pos: Position) -> int:
+    return min(
+        max(abs(pos.x - t.x), abs(pos.y - t.y)) for t in _core_footprint(core_pos)
+    )
+
+
+def effective_raid_order(
+    round_n: int, my_index: int = 0, spawn_round: int | None = None
+) -> str:
+    """Under phalanx: pre-600 cohort raids; post-600 odds economy, evens phalanx."""
+    if ACTIVE_RAID_ORDER != "phalanx":
+        return ACTIVE_RAID_ORDER
+    spawned_before_600 = (
+        spawn_round is None or spawn_round < PHALANX_EVEN_TO_RAIDERS_TURN
+    )
+    if my_index % 2 == 1:
+        if spawned_before_600 and round_n >= PHALANX_ODD_TO_RAIDERS_TURN:
+            return "raiders"
+        return "phalanx"
+    if not spawned_before_600:
+        return "phalanx"
+    if round_n >= PHALANX_EVEN_TO_RAIDERS_TURN:
+        return "raiders"
+    return "phalanx"
+
+
+def home_phalanx_active(round_n: int) -> bool:
+    """True while home phalanx role is active (new evens refill after 600)."""
+    del round_n
+    return ACTIVE_RAID_ORDER == "phalanx"
+
+
+def on_raid_tasklist(
+    my_index: int,
+    enemy_core: Position | None,
+    round_n: int,
+    spawn_round: int | None = None,
+) -> bool:
+    """Who runs phalanx or raiders this turn (enemy core must be known)."""
+    if enemy_core is None or my_index <= 0:
+        return False
+    if ACTIVE_RAID_ORDER != "phalanx":
+        return is_raider(my_index, enemy_core)
+    spawned_before_600 = (
+        spawn_round is None or spawn_round < PHALANX_EVEN_TO_RAIDERS_TURN
+    )
+    # Pre-600 odds raid from 300 (sticky). Post-600 odds stay off (economy).
+    if my_index % 2 == 1:
+        return spawned_before_600 and round_n >= PHALANX_ODD_TO_RAIDERS_TURN
+    # Evens always on the raid path (phalanx or raiders by spawn cohort).
+    return True
 
 
 def nearest_cardinal(d: Direction) -> Direction:
@@ -254,7 +327,25 @@ def plan_conveyor_path_to_core(
     core_pos: Position,
     *,
     ore_blocked: set[tuple[int, int]] | None = None,
+    my_index: int = 0,
 ) -> list[Position] | None:
+    """Path to a core-adjacent tile; stagger preferred entry side by builder index."""
+    preferred = _preferred_entry_tiles(ct, core_pos, my_index)
+    if preferred:
+        want = {(t.x, t.y) for t in preferred}
+
+        def preferred_goal(p: Position) -> bool:
+            return (p.x, p.y) in want and is_core_adjacent(ct, p, core_pos)
+
+        path = plan_conveyor_path(
+            ct,
+            start,
+            is_goal=preferred_goal,
+            ore_blocked=ore_blocked,
+            heuristic_to=core_pos,
+        )
+        if path is not None:
+            return path
     return plan_conveyor_path(
         ct,
         start,
@@ -264,8 +355,26 @@ def plan_conveyor_path_to_core(
     )
 
 
-def is_merge_goal(ct: Controller, pos: Position, *, origin: Position) -> bool:
-    """Visible allied belt that is not the relay origin or its cardinal neighbors."""
+def _preferred_entry_tiles(
+    ct: Controller, core_pos: Position, my_index: int
+) -> list[Position]:
+    """Depth-1 apron tiles on a side staggered by builder index."""
+    sides = available_sides(ct, core_pos)
+    if not sides:
+        return []
+    idx = max(my_index, 1) - 1
+    side = sides[idx % len(sides)]
+    return [t for t in side_depth1_tiles(core_pos, side) if in_bounds(ct, t)]
+
+
+def is_merge_goal(
+    ct: Controller,
+    pos: Position,
+    *,
+    origin: Position,
+    core_pos: Position,
+) -> bool:
+    """Visible allied belt far enough from core; not origin or its neighbors."""
     if _allied_belt_id(ct, pos) is None:
         return False
     if pos.x == origin.x and pos.y == origin.y:
@@ -274,6 +383,8 @@ def is_merge_goal(ct: Controller, pos: Position, *, origin: Position) -> bool:
         n = origin.add(d)
         if pos.x == n.x and pos.y == n.y:
             return False
+    if _chebyshev_to_core_footprint(pos, core_pos) < MERGE_MIN_CORE_CHEB:
+        return False
     return True
 
 
@@ -289,7 +400,9 @@ def plan_conveyor_path_to_merge(
     return plan_conveyor_path(
         ct,
         start,
-        is_goal=lambda p: is_merge_goal(ct, p, origin=origin),
+        is_goal=lambda p: is_merge_goal(
+            ct, p, origin=origin, core_pos=core_pos
+        ),
         ore_blocked=ore_blocked,
         heuristic_to=core_pos,
     )
@@ -302,10 +415,15 @@ def pick_relay_path(
     *,
     origin: Position,
     ore_blocked: set[tuple[int, int]] | None = None,
+    my_index: int = 0,
 ) -> tuple[list[Position] | None, bool]:
     """Prefer a merge spur when it saves at least MERGE_SAVE_MIN tiles vs core."""
     core_path = plan_conveyor_path_to_core(
-        ct, start, core_pos, ore_blocked=ore_blocked
+        ct,
+        start,
+        core_pos,
+        ore_blocked=ore_blocked,
+        my_index=my_index,
     )
     merge_path = plan_conveyor_path_to_merge(
         ct, start, core_pos, origin=origin, ore_blocked=ore_blocked
@@ -430,6 +548,7 @@ class Player:
         self.relay_stuck = 0
         self.relay_built_to = -1  # highest path index known complete this relay
         self.relay_merging = False
+        self.spawn_round: int | None = None
 
     def run(self, ct: Controller) -> None:
         try:
@@ -452,15 +571,25 @@ class Player:
 
     def _run_core(self, ct: Controller) -> None:
         # Ammo before spawn early-return so top-up continues after builder cap.
-        top_up_ammo(ct)
+        round_n = ct.get_current_round()
+        phalanx_home = home_phalanx_active(round_n)
+        ammo_turn = (
+            PHALANX_GUNNER_TURN if phalanx_home else GUNNER_TURN
+        )
+        top_up_ammo(ct, min_turn=ammo_turn)
 
         living = self._count_living_builders(ct)
-        if living >= MAX_BUILDERS:
+        threat = phalanx_home and core_under_turret_threat(ct)
+        # Lifetime safety net — living can undercount raiders out of vision.
+        if self.num_spawned >= MAX_BUILDERS_THREAT:
+            return
+        if living >= MAX_BUILDERS_THREAT:
+            return
+        if living >= MAX_BUILDERS and not threat:
             return
         if ct.get_unit_count() >= GameConstants.MAX_TEAM_UNITS:
             return
 
-        round_n = ct.get_current_round()
         can_rush = self.num_spawned < MAX_BUILDERS_EARLY
         can_interval = (
             self.num_spawned >= MAX_BUILDERS_EARLY
@@ -468,10 +597,13 @@ class Player:
             and round_n >= FIRST_INTERVAL_SPAWN
             and (round_n - FIRST_INTERVAL_SPAWN) % SPAWN_INTERVAL == 0
         )
+        # Replace deaths back up to 9 living (after the initial 9 have been spawned).
         can_replenish = (
             self.num_spawned >= MAX_BUILDERS and living < MAX_BUILDERS
         )
-        if not can_rush and not can_interval and not can_replenish:
+        # Turret threat: ASAP up to 15 living for home defence.
+        can_threat_spawn = threat and living < MAX_BUILDERS_THREAT
+        if not can_rush and not can_interval and not can_replenish and not can_threat_spawn:
             return
 
         ti = ct.get_global_resources()
@@ -538,6 +670,45 @@ class Player:
             self.stuck = 0
         self.last_pos = pos
 
+        # Raid path: pre-600 odds → raiders from 300; pre-600 evens phalanx
+        # then raiders at 600 (fire-and-forget). Post-600: odds economy, evens phalanx.
+        round_n = ct.get_current_round()
+        if self.spawn_round is None:
+            self.spawn_round = round_n
+        if on_raid_tasklist(
+            self.hivemind.my_index,
+            self.enemy_core_pos,
+            round_n,
+            self.spawn_round,
+        ):
+            enemy = self.enemy_core_pos
+            assert enemy is not None
+            self._clear_relay()
+            self.ore_site = None
+            order = effective_raid_order(
+                round_n, self.hivemind.my_index, self.spawn_round
+            )
+            if order == "phalanx":
+                site = run_phalanx(
+                    ct,
+                    my_index=self.hivemind.my_index,
+                    local_map=self.hivemind.local_map,
+                    enemy_core=enemy,
+                    ally_core=self.core_pos,
+                )
+            else:
+                site = run_attack_builder(
+                    ct,
+                    my_index=self.hivemind.my_index,
+                    local_map=self.hivemind.local_map,
+                    enemy_core=enemy,
+                    ally_core=self.core_pos,
+                )
+            if site is not None:
+                self.target = site
+            self._move_toward_target(ct, retarget=False)
+            return
+
         if is_defender(my_index):
             self._clear_relay()
             self.ore_site = None
@@ -572,7 +743,6 @@ class Player:
             self._relay_toward_core(ct)
             return
 
-        round_n = ct.get_current_round()
         if round_n - self.last_ore_recheck_round >= ORE_RECHECK_INTERVAL:
             self.skipped_ores.clear()
             self.ore_site = None
@@ -921,6 +1091,7 @@ class Player:
                 self.core_pos,
                 origin=self.relay_origin,
                 ore_blocked=ore_blocked,
+                my_index=self.hivemind.my_index,
             )
             self.relay_path = path
             self.relay_merging = merging

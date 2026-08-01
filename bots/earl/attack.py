@@ -1,12 +1,20 @@
 """Raider attack role, ammo top-up, and turret fire for earl.
 
-Raiders (even my_index, enemy core known):
+RAIDERS task list (even my_index, enemy core known) — select via
+ACTIVE_RAID_ORDER = "raiders" in main.py:
   - Before GUNNER_TURN: push the enemy core; stand-fire enemy belts on the way.
   - From GUNNER_TURN: repeating RAID_LOOP — first GUNNER_PHASE_LEN turns place
-    gunners, remainder place siege sentinels, then loop.
+    gunners, remainder place siege sentinels; when placement is idle (at cap),
+    hunt enemy gunners / sentinels / harvesters / belts in vision.
 
-Core tops ammo to 5 + 20 × max(1, n) from GUNNER_TURN.
-Gunners fire core → builders → harvesters → belts; sentinels omit belts.
+Default ACTIVE_RAID_ORDER is "phalanx" (home apron + wing gunners in defence.py).
+
+Core tops ammo to 5 + 20 × max(1, n) from a caller-chosen min_turn
+(default GUNNER_TURN; phalanx uses turn 10).
+Turret fire: core first; else gunner → sentinel → builder (then harvester;
+gunners also belts). Gunners rotate toward core or combat targets in vision
+(gunner/sentinel/builder) when off the current fire line; sentinels stay
+fixed-facing.
 """
 
 from __future__ import annotations
@@ -34,15 +42,39 @@ _CARDINALS = frozenset(
 # Fire priority: lower = better
 _FIRE_PRIORITY = {
     EntityType.CORE: 1,
-    EntityType.BUILDER_BOT: 2,
-    EntityType.HARVESTER: 3,
+    EntityType.GUNNER: 2,
+    EntityType.SENTINEL: 3,
+    EntityType.BUILDER_BOT: 4,
+    EntityType.HARVESTER: 5,
 }
 
-_GUNNER_FIRE_PRIORITY = {
-    **_FIRE_PRIORITY,
-    EntityType.CONVEYOR: 4,
-    EntityType.SPLITTER: 4,
+_COMBAT_TYPES = (
+    EntityType.GUNNER,
+    EntityType.SENTINEL,
+    EntityType.BUILDER_BOT,
+)
+
+# Rotate onto combat threats when hittable (turrets before builders).
+_COMBAT_ROTATE_TYPES = (
+    EntityType.GUNNER,
+    EntityType.SENTINEL,
+    EntityType.BUILDER_BOT,
+)
+
+_COMBAT_FIRE_PRIORITY = {
+    EntityType.GUNNER: 2,
+    EntityType.SENTINEL: 3,
+    EntityType.BUILDER_BOT: 4,
 }
+
+_GUNNER_FALLBACK_FIRE_PRIORITY = {
+    EntityType.HARVESTER: 5,
+    EntityType.CONVEYOR: 6,
+    EntityType.SPLITTER: 6,
+}
+
+_FACE_DIRS = tuple(d for d in Direction if d != Direction.CENTRE)
+GUNNER_RANGE_SQ = 13
 
 
 def _core_footprint(core_pos: Position) -> list[Position]:
@@ -390,9 +422,10 @@ def ammo_target(n: int) -> int:
     return AMMO_FLOOR_BONUS + AMMO_PER_SENTINEL * max(1, living)
 
 
-def top_up_ammo(ct: Controller) -> None:
-    """Core: top ammo from GUNNER_TURN onward."""
-    if ct.get_current_round() < GUNNER_TURN:
+def top_up_ammo(ct: Controller, *, min_turn: int | None = None) -> None:
+    """Core: top ammo from min_turn (default GUNNER_TURN) onward."""
+    start = GUNNER_TURN if min_turn is None else min_turn
+    if ct.get_current_round() < start:
         return
     n = ct.read_store(SLOT_SENTINEL_COUNT)
     target = ammo_target(n)
@@ -404,9 +437,15 @@ def top_up_ammo(ct: Controller) -> None:
         ct.convert_ammo(amount)
 
 
-def _fire_best(
+def _tile_victim(ct: Controller, tile: Position) -> int | None:
+    bot = ct.get_tile_builder_bot_id(tile)
+    return bot if bot is not None else ct.get_tile_building_id(tile)
+
+
+def _try_fire_priority(
     ct: Controller, priority: dict[EntityType, int]
-) -> None:
+) -> bool:
+    """Fire best enemy currently on the attack line. True if fired."""
     my_team = ct.get_team()
     best_tile: Position | None = None
     best_pri = 99
@@ -414,14 +453,10 @@ def _fire_best(
     for tile in ct.get_attackable_tiles():
         if not ct.can_fire(tile):
             continue
-        bot = ct.get_tile_builder_bot_id(tile)
-        victim = bot if bot is not None else ct.get_tile_building_id(tile)
-        if victim is None:
+        victim = _tile_victim(ct, tile)
+        if victim is None or ct.get_team(victim) == my_team:
             continue
-        if ct.get_team(victim) == my_team:
-            continue
-        etype = ct.get_entity_type(victim)
-        pri = priority.get(etype)
+        pri = priority.get(ct.get_entity_type(victim))
         if pri is None:
             continue
         if pri < best_pri:
@@ -430,18 +465,140 @@ def _fire_best(
             if pri == 1:
                 break
 
-    if best_tile is not None:
-        ct.fire(best_tile)
+    if best_tile is None:
+        return False
+    ct.fire(best_tile)
+    return True
+
+
+def _enemy_core_tiles(ct: Controller) -> list[Position]:
+    """Enemy core footprint tiles currently in vision."""
+    my_team = ct.get_team()
+    tiles: list[Position] = []
+    for eid in ct.get_nearby_entities():
+        if ct.get_entity_type(eid) != EntityType.CORE:
+            continue
+        if ct.get_team(eid) == my_team:
+            continue
+        core = ct.get_position(eid)
+        for t in _core_footprint(core):
+            if ct.is_in_vision(t):
+                tiles.append(t)
+    return tiles
+
+
+def _iter_nearby_enemy_ids(ct: Controller):
+    """Entities + buildings in vision (sentinels show up as both)."""
+    seen: set[int] = set()
+    for eid in ct.get_nearby_entities():
+        seen.add(eid)
+        yield eid
+    for eid in ct.get_nearby_buildings():
+        if eid not in seen:
+            yield eid
+
+
+def _best_vision_target(
+    ct: Controller,
+    priority: dict[EntityType, int],
+    types: tuple[EntityType, ...],
+    *,
+    must_hit: bool = False,
+) -> Position | None:
+    """Best enemy of given types in vision: priority then nearer.
+
+    If must_hit, only consider tiles a gunner could hit after some rotate.
+    """
+    my_team = ct.get_team()
+    pos = ct.get_position()
+    best: Position | None = None
+    best_pri = 99
+    best_dist = 10**9
+
+    for eid in _iter_nearby_enemy_ids(ct):
+        if ct.get_team(eid) == my_team:
+            continue
+        etype = ct.get_entity_type(eid)
+        if etype not in types:
+            continue
+        pri = priority.get(etype)
+        if pri is None:
+            continue
+        tile = ct.get_position(eid)
+        if must_hit and _gunner_facing_to_hit(ct, tile) is None:
+            continue
+        dist = pos.distance_squared(tile)
+        if pri < best_pri or (pri == best_pri and dist < best_dist):
+            best_pri = pri
+            best_dist = dist
+            best = tile
+    return best
+
+
+def _gunner_facing_to_hit(ct: Controller, tile: Position) -> Direction | None:
+    """Facing that lets this gunner hit tile, prefer compass aim then any of 8."""
+    pos = ct.get_position()
+    preferred = facing_8way(pos, tile)
+    ordered = (preferred,) + tuple(d for d in _FACE_DIRS if d != preferred)
+    for facing in ordered:
+        if ct.can_fire_from(pos, facing, EntityType.GUNNER, tile):
+            return facing
+    return None
+
+
+def _try_rotate_toward(ct: Controller, tile: Position) -> bool:
+    """Gunner-only: rotate only to a facing that can hit tile."""
+    facing = _gunner_facing_to_hit(ct, tile)
+    if facing is None:
+        return False
+    if facing == ct.get_direction():
+        return False
+    if not ct.can_rotate(facing):
+        return False
+    ct.rotate(facing)
+    return True
+
+
+def _try_rotate_toward_core(ct: Controller) -> bool:
+    """Rotate toward a vision core tile that would be hittable after rotate."""
+    best: Position | None = None
+    best_dist = 10**9
+    pos = ct.get_position()
+    for tile in _enemy_core_tiles(ct):
+        if _gunner_facing_to_hit(ct, tile) is None:
+            continue
+        dist = pos.distance_squared(tile)
+        if dist < best_dist:
+            best_dist = dist
+            best = tile
+    return best is not None and _try_rotate_toward(ct, best)
+
+
+def _try_rotate_toward_combat(ct: Controller) -> bool:
+    """Rotate onto nearest hittable enemy gunner/sentinel/builder."""
+    target = _best_vision_target(
+        ct, _COMBAT_FIRE_PRIORITY, _COMBAT_ROTATE_TYPES, must_hit=True
+    )
+    return target is not None and _try_rotate_toward(ct, target)
 
 
 def run_sentinel(ct: Controller) -> None:
-    """Fire at best enemy on the attack line: core > builder > harvester."""
-    _fire_best(ct, _FIRE_PRIORITY)
+    """Fire on facing line: core > gunner > sentinel > builder > harvester."""
+    _try_fire_priority(ct, _FIRE_PRIORITY)
 
 
 def run_gunner(ct: Controller) -> None:
-    """Fire: core > builder > harvester > belt."""
-    _fire_best(ct, _GUNNER_FIRE_PRIORITY)
+    """Fire core/combat on line; rotate to turrets before re-aiming at core."""
+    if _try_fire_priority(ct, {EntityType.CORE: 1}):
+        return
+    if _try_fire_priority(ct, _COMBAT_FIRE_PRIORITY):
+        return
+    # Home / harvester gunners: turn onto enemy sentinels/gunners first.
+    if _try_rotate_toward_combat(ct):
+        return
+    if _try_rotate_toward_core(ct):
+        return
+    _try_fire_priority(ct, _GUNNER_FALLBACK_FIRE_PRIORITY)
 
 
 def _run_belt_raid(
@@ -517,6 +674,116 @@ def _run_sentinel_phase(
     return site
 
 
+_HUNT_PRIORITY = {
+    EntityType.GUNNER: 1,
+    EntityType.SENTINEL: 2,
+    EntityType.HARVESTER: 3,
+}
+
+
+def _pick_raid_hunt_target(ct: Controller) -> Position | None:
+    """Nearest vision target: gunner > sentinel > harvester > enemy belt."""
+    my_team = ct.get_team()
+    pos = ct.get_position()
+    best: Position | None = None
+    best_pri = 99
+    best_dist = 10**9
+
+    for eid in ct.get_nearby_entities():
+        if ct.get_team(eid) == my_team:
+            continue
+        etype = ct.get_entity_type(eid)
+        pri = _HUNT_PRIORITY.get(etype)
+        if pri is None:
+            continue
+        tile = ct.get_position(eid)
+        dist = pos.distance_squared(tile)
+        if pri < best_pri or (pri == best_pri and dist < best_dist):
+            best_pri = pri
+            best_dist = dist
+            best = tile
+
+    if best is not None:
+        return best
+    return _pick_enemy_belt_target(ct)
+
+
+def _try_adjacent_raid_fire(ct: Controller, tile: Position) -> bool:
+    """Fire an orthogonally adjacent enemy building/bot tile."""
+    if ct.get_action_cooldown() != 0:
+        return False
+    pos = ct.get_position()
+    if abs(pos.x - tile.x) + abs(pos.y - tile.y) != 1:
+        return False
+    if not ct.can_fire(tile):
+        return False
+    ct.fire(tile)
+    return True
+
+
+def _run_raid_hunt(
+    ct: Controller, *, enemy_core: Position
+) -> Position | None:
+    """Attack gunners / sentinels / harvesters / belts in vision; else push core."""
+    if _try_stand_fire_belt(ct):
+        return ct.get_position()
+
+    target = _pick_raid_hunt_target(ct)
+    if target is None:
+        return enemy_core
+
+    if _enemy_belt_at(ct, target):
+        return target
+
+    if _try_adjacent_raid_fire(ct, target):
+        return target
+    return target
+
+
+# Named phases for the offensive raid order (turn-gated in run_raiders_tasklist).
+RAIDERS = (
+    "belt_raid",
+    "place_gunners",
+    "place_siege_sentinels",
+    "hunt_vision",
+)
+
+
+def run_raiders_tasklist(
+    ct: Controller,
+    *,
+    my_index: int,
+    local_map: dict,
+    enemy_core: Position,
+    ally_core: Position | None,
+) -> Position | None:
+    """RAIDERS: belt raid → gunner/sentinel loop; hunt when placement idle."""
+    round_n = ct.get_current_round()
+    if round_n < GUNNER_TURN:
+        return _run_belt_raid(ct, enemy_core=enemy_core)
+    cycle_t = (round_n - GUNNER_TURN) % RAID_LOOP
+    if cycle_t < GUNNER_PHASE_LEN:
+        site = _run_gunner_phase(
+            ct,
+            my_index=my_index,
+            local_map=local_map,
+            enemy_core=enemy_core,
+        )
+        if site is not None:
+            return site
+        return _run_raid_hunt(ct, enemy_core=enemy_core)
+    site = _run_sentinel_phase(
+        ct,
+        my_index=my_index,
+        local_map=local_map,
+        enemy_core=enemy_core,
+        ally_core=ally_core,
+    )
+    if site is not None:
+        return site
+    return _run_raid_hunt(ct, enemy_core=enemy_core)
+
+
 def run_attack_builder(
     ct: Controller,
     *,
@@ -525,19 +792,8 @@ def run_attack_builder(
     enemy_core: Position,
     ally_core: Position | None,
 ) -> Position | None:
-    """Belt raid, then looping gunner → sentinel phases. None if idle."""
-    round_n = ct.get_current_round()
-    if round_n < GUNNER_TURN:
-        return _run_belt_raid(ct, enemy_core=enemy_core)
-    cycle_t = (round_n - GUNNER_TURN) % RAID_LOOP
-    if cycle_t < GUNNER_PHASE_LEN:
-        return _run_gunner_phase(
-            ct,
-            my_index=my_index,
-            local_map=local_map,
-            enemy_core=enemy_core,
-        )
-    return _run_sentinel_phase(
+    """Thin wrapper over the RAIDERS task list."""
+    return run_raiders_tasklist(
         ct,
         my_index=my_index,
         local_map=local_map,
