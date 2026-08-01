@@ -26,7 +26,15 @@ Core spawns builders toward enemy core (else map center).
 
 from __future__ import annotations
 
+import builtins
 import random
+
+DEBUG = True
+_original_print = builtins.print
+def _custom_print(*args, **kwargs):
+    if DEBUG:
+        _original_print(*args, **kwargs)
+builtins.print = _custom_print
 
 from attack import (
     GUNNER_TURN,
@@ -645,6 +653,17 @@ class Player:
         if self.enemy_core_pos is None:
             self._read_enemy_core(ct)
 
+        my_index = self.hivemind.my_index
+        role = "unknown"
+        if is_defender(my_index): role = "defender"
+        elif is_raider(my_index, self.enemy_core_pos): role = "raider"
+        else: role = "economy"
+        
+        print(f"[{my_index}] START {role} at {pos} | relay={self.in_relay} | target={self.target}")
+        self._do_run_builder(ct, my_index, pos)
+        print(f"[{my_index}] END {role} at {ct.get_position()} | relay={self.in_relay} | target={self.target}")
+
+    def _do_run_builder(self, ct: Controller, my_index: int, pos: Position) -> None:
         if self.last_pos == pos:
             self.stuck += 1
         else:
@@ -690,17 +709,34 @@ class Player:
             self._move_toward_target(ct, retarget=False)
             return
 
-        if is_defender(self.hivemind.my_index):
+        if is_defender(my_index):
             self._clear_relay()
             self.ore_site = None
             hold = run_defender(
                 ct,
                 core_pos=self.core_pos,
-                my_index=self.hivemind.my_index,
+                my_index=my_index,
             )
             if hold is not None:
                 self.target = hold
-                self._move_toward_target(ct, retarget=False)
+            self._move_toward_target(ct, retarget=False)
+            return
+
+        if is_raider(my_index, self.enemy_core_pos):
+            enemy = self.enemy_core_pos
+            assert enemy is not None
+            self._clear_relay()
+            self.ore_site = None
+            site = run_attack_builder(
+                ct,
+                my_index=my_index,
+                local_map=self.hivemind.local_map,
+                enemy_core=enemy,
+                ally_core=self.core_pos,
+            )
+            if site is not None:
+                self.target = site
+            self._move_toward_target(ct, retarget=False)
             return
 
         if self.in_relay:
