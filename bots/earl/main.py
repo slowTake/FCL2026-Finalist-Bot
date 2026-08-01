@@ -11,7 +11,8 @@ core (see attack.py). Odd builders keep mining.
 Store slots:
   0–1                  Free
   2  SLOT_HARVESTER_COUNT Total harvesters built by the team
-  3–6                  Free
+  3  SLOT_SENTINEL_COUNT  Living siege sentinels (attack.py)
+  4–6                  Free
   7–15                 HiveMind-owned — never write from Player
 
 Ally core from slot 15 via unpack_cores. Ore from ORE_LOCATIONS / local_map.
@@ -23,7 +24,7 @@ from __future__ import annotations
 import random
 from collections import deque
 
-from attack import run_attack_builder, should_attack
+from attack import run_attack_builder, run_sentinel, should_attack, top_up_ammo
 from fcode import Controller, Direction, EntityType, Environment, Position
 from features import ORE_LOCATIONS
 from hivemind import CoreState, HiveMind, unpack_cores
@@ -350,6 +351,8 @@ class Player:
                 self._run_builder(ct)
             elif etype == EntityType.GUNNER:
                 self._run_gunner(ct)
+            elif etype == EntityType.SENTINEL:
+                run_sentinel(ct)
         except Exception:
             return
 
@@ -358,6 +361,9 @@ class Player:
     # ------------------------------------------------------------------
 
     def _run_core(self, ct: Controller) -> None:
+        # Ammo before spawn early-return so top-up continues after builder cap.
+        top_up_ammo(ct)
+
         if self.num_spawned >= MAX_BUILDERS:
             return
         ti = ct.get_global_resources()

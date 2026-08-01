@@ -1,7 +1,8 @@
-"""Mid-game sentinel placement for earl.
+"""Mid-game sentinel placement, ammo top-up, and fire for earl.
 
 Even builders (my_index even, > 0) place sentinels around the enemy core at
-max range once ATTACK_TURN is reached. No feed belts / ammo — placement only.
+max range once ATTACK_TURN is reached. Core tops ammo to 20 × max(1, n);
+sentinels fire at enemy core → builders → harvesters.
 """
 
 from __future__ import annotations
@@ -12,7 +13,15 @@ ATTACK_TURN = 80
 MAX_SIEGE_SENTINELS = 5
 SENTINEL_RANGE_SQ = 32
 SENTINEL_PLACE_MIN_SQ = 16  # d=4 → 16
+AMMO_PER_SENTINEL = 20
+SLOT_SENTINEL_COUNT = 3
 
+# Fire priority: lower = better
+_FIRE_PRIORITY = {
+    EntityType.CORE: 1,
+    EntityType.BUILDER_BOT: 2,
+    EntityType.HARVESTER: 3,
+}
 
 def _core_footprint(core_pos: Position) -> list[Position]:
     return [
@@ -163,6 +172,65 @@ def build_sentinel(
     return True
 
 
+def sync_sentinel_count(ct: Controller, local_map: dict) -> int:
+    """Write living ally sentinel count to store for core ammo top-up."""
+    n = min(
+        count_our_sentinels(local_map, ct.get_team()),
+        MAX_SIEGE_SENTINELS,
+    )
+    ct.write_store(SLOT_SENTINEL_COUNT, n)
+    return n
+
+
+def ammo_target(n: int) -> int:
+    """Team ammo floor: 20 × max(1, living sentinels), capped at siege max."""
+    living = max(0, min(n, MAX_SIEGE_SENTINELS))
+    return AMMO_PER_SENTINEL * max(1, living)
+
+
+def top_up_ammo(ct: Controller) -> None:
+    """Core: top ammo to 20 × max(1, n) from turn ATTACK_TURN onward."""
+    if ct.get_current_round() < ATTACK_TURN:
+        return
+    n = ct.read_store(SLOT_SENTINEL_COUNT)
+    target = ammo_target(n)
+    ammo = ct.get_global_ammo()
+    if ammo >= target:
+        return
+    amount = min(target - ammo, ct.get_global_resources())
+    if amount > 0 and ct.can_convert_ammo(amount):
+        ct.convert_ammo(amount)
+
+
+def run_sentinel(ct: Controller) -> None:
+    """Fire at best enemy on the attack line: core > builder > harvester."""
+    my_team = ct.get_team()
+    best_tile: Position | None = None
+    best_pri = 99
+
+    for tile in ct.get_attackable_tiles():
+        if not ct.can_fire(tile):
+            continue
+        bot = ct.get_tile_builder_bot_id(tile)
+        victim = bot if bot is not None else ct.get_tile_building_id(tile)
+        if victim is None:
+            continue
+        if ct.get_team(victim) == my_team:
+            continue
+        etype = ct.get_entity_type(victim)
+        pri = _FIRE_PRIORITY.get(etype)
+        if pri is None:
+            continue
+        if pri < best_pri:
+            best_pri = pri
+            best_tile = tile
+            if pri == 1:
+                break
+
+    if best_tile is not None:
+        ct.fire(best_tile)
+
+
 def run_attack_builder(
     ct: Controller,
     *,
@@ -172,6 +240,8 @@ def run_attack_builder(
     ally_core: Position | None,
 ) -> Position | None:
     """Pick/build a siege site. Returns target for movement, or None if idle."""
+    sync_sentinel_count(ct, local_map)
+
     if count_our_sentinels(local_map, ct.get_team()) >= MAX_SIEGE_SENTINELS:
         return None
 
@@ -187,6 +257,9 @@ def run_attack_builder(
 
     pos = ct.get_position()
     if abs(pos.x - site.x) + abs(pos.y - site.y) == 1:
-        build_sentinel(ct, site, enemy_core)
+        if build_sentinel(ct, site, enemy_core):
+            # Reflect the new turret immediately for same-turn store readers.
+            n = min(ct.read_store(SLOT_SENTINEL_COUNT) + 1, MAX_SIEGE_SENTINELS)
+            ct.write_store(SLOT_SENTINEL_COUNT, n)
 
     return site
