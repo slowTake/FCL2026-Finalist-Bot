@@ -24,7 +24,6 @@ Core spawns builders toward enemy core (else map center).
 from __future__ import annotations
 
 import random
-from collections import deque
 
 from attack import (
     is_raider,
@@ -44,6 +43,7 @@ from fcode import (
 )
 from features import ORE_LOCATIONS
 from hivemind import CoreState, HiveMind, unpack_cores
+from pathing import astar, astar_from_seeds, manhattan
 
 DIRECTIONS = [d for d in Direction if d != Direction.CENTRE]
 CARDINALS = [Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST]
@@ -55,8 +55,8 @@ MAX_BUILDERS_EARLY = 5
 MAX_BUILDERS = 9
 FIRST_INTERVAL_SPAWN = 10
 SPAWN_INTERVAL = 25
+PATH_MAX_ITERS = 800
 ORE_RECHECK_INTERVAL = 50
-BFS_MAX_ITERS = 400
 
 
 def nearest_cardinal(d: Direction) -> Direction:
@@ -209,10 +209,8 @@ def plan_conveyor_path(
     *,
     is_goal,
     ore_blocked: set[tuple[int, int]] | None = None,
+    heuristic_to: Position | None = None,
 ) -> list[Position] | None:
-    w = ct.get_map_width()
-    h = ct.get_map_height()
-
     def ok(p: Position) -> bool:
         return is_layable_or_join(ct, p, ore_blocked=ore_blocked)
 
@@ -227,43 +225,18 @@ def plan_conveyor_path(
     if not seeds:
         return None
 
-    parent: dict[tuple[int, int], tuple[int, int] | None] = {}
-    q: deque[Position] = deque()
-    for s in seeds:
-        key = (s.x, s.y)
-        if key in parent:
-            continue
-        parent[key] = None
-        q.append(s)
+    def h(p: Position) -> int:
+        if heuristic_to is None:
+            return 0
+        return manhattan(p, heuristic_to)
 
-    goal: Position | None = None
-    while q:
-        cur = q.popleft()
-        if is_goal(cur):
-            goal = cur
-            break
-        for d in CARDINALS:
-            nxt = cur.add(d)
-            if not (0 <= nxt.x < w and 0 <= nxt.y < h):
-                continue
-            nkey = (nxt.x, nxt.y)
-            if nkey in parent:
-                continue
-            if not ok(nxt):
-                continue
-            parent[nkey] = (cur.x, cur.y)
-            q.append(nxt)
-
-    if goal is None:
-        return None
-
-    path_rev: list[Position] = []
-    key: tuple[int, int] | None = (goal.x, goal.y)
-    while key is not None:
-        path_rev.append(Position(key[0], key[1]))
-        key = parent[key]
-    path_rev.reverse()
-    return path_rev
+    return astar_from_seeds(
+        seeds,
+        is_passable=ok,
+        is_goal=is_goal,
+        heuristic=h,
+        max_iters=PATH_MAX_ITERS,
+    )
 
 
 def plan_conveyor_path_to_core(
@@ -278,6 +251,7 @@ def plan_conveyor_path_to_core(
         start,
         is_goal=lambda p: is_core_adjacent(ct, p, core_pos),
         ore_blocked=ore_blocked,
+        heuristic_to=core_pos,
     )
 
 
@@ -732,6 +706,18 @@ class Player:
     def _adjacent_to_ore(self, pos: Position, ore: Position) -> bool:
         return abs(pos.x - ore.x) + abs(pos.y - ore.y) <= 1
 
+    def _walk_passable(self, ct: Controller, pos: Position) -> bool:
+        if not in_bounds(ct, pos):
+            return False
+        if ct.is_in_vision(pos):
+            return ct.is_tile_passable(pos)
+        entry = self.hivemind.local_map.get((pos.x, pos.y))
+        if entry is None:
+            return True
+        if "passable" not in entry:
+            return True
+        return bool(entry["passable"])
+
     def _direction_candidates(
         self, ct: Controller, pos: Position, target: Position
     ) -> list[Direction]:
@@ -742,6 +728,47 @@ class Player:
         remaining = [d for d in DIRECTIONS if d not in primary]
         random.shuffle(remaining)
         return primary + remaining
+
+    def _greedy_move_toward(self, ct: Controller, target: Position) -> bool:
+        pos = ct.get_position()
+        for d in self._direction_candidates(ct, pos, target):
+            if self._try_move(ct, d):
+                return True
+        return False
+
+    def _astar_move_toward(self, ct: Controller, target: Position) -> bool:
+        """A* first step toward target; False if no path or move failed."""
+        pos = ct.get_position()
+        if manhattan(pos, target) < 2:
+            return False
+
+        def walk_ok(p: Position) -> bool:
+            if p.x == target.x and p.y == target.y:
+                return True
+            return self._walk_passable(ct, p)
+
+        path = astar(
+            pos,
+            target,
+            is_passable=walk_ok,
+            max_iters=PATH_MAX_ITERS,
+        )
+        if path is None or len(path) < 2:
+            return False
+        step = path[1]
+        # Don't step onto an impassable goal — stop adjacent via greedy instead
+        if step.x == target.x and step.y == target.y and not self._walk_passable(
+            ct, step
+        ):
+            return self._greedy_move_toward(ct, target)
+        d = nearest_cardinal(pos.direction_to(step))
+        return self._try_move(ct, d)
+
+    def _move_toward_pos(self, ct: Controller, target: Position) -> bool:
+        """Prefer A* when far; greedy fallback."""
+        if self._astar_move_toward(ct, target):
+            return True
+        return self._greedy_move_toward(ct, target)
 
     def _relay_toward_core(self, ct: Controller) -> None:
         if self.core_pos is None or self.relay_origin is None:
@@ -818,12 +845,7 @@ class Player:
                 return
             if ct.get_move_cooldown() != 0:
                 return
-            progressed = False
-            for d in self._direction_candidates(ct, pos, tile):
-                if self._try_move(ct, d):
-                    progressed = True
-                    break
-            if progressed:
+            if self._move_toward_pos(ct, tile):
                 self.relay_stuck = 0
             else:
                 self.relay_stuck += 1
@@ -863,12 +885,7 @@ class Player:
 
         if ct.get_move_cooldown() != 0:
             return
-        progressed = False
-        for d in self._direction_candidates(ct, pos, tile):
-            if self._try_move(ct, d):
-                progressed = True
-                break
-        if progressed:
+        if self._move_toward_pos(ct, tile):
             self.relay_stuck = 0
         else:
             self.relay_stuck += 1
@@ -893,20 +910,10 @@ class Player:
         if self.target is None:
             return
 
-        desired = pos.direction_to(self.target)
-        if desired == Direction.CENTRE:
+        if pos.x == self.target.x and pos.y == self.target.y:
             return
 
-        primary = [desired, desired.rotate_left(), desired.rotate_right()]
-        for d in primary:
-            if self._try_move(ct, d):
-                return
-        remaining = [d for d in DIRECTIONS if d not in primary]
-        random.shuffle(remaining)
-        for d in remaining:
-            if self._try_move(ct, d):
-                return
-
+        self._move_toward_pos(ct, self.target)
     def _try_move(self, ct: Controller, d: Direction) -> bool:
         if d == Direction.CENTRE:
             return False

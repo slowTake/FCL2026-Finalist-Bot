@@ -108,9 +108,15 @@ Examples: gunners 30–49, sentinels 50–69, gunners 70–89, …
   → 2nd, …). Stops everyone racing the same node. Unregistered index `0` falls
   back to nearest.
 
+### Pathfinding (`pathing.py`)
+
+Builder walks and inbound conveyor routes use **A\*** (cardinal grid). Walks
+treat fog as optimistic passable and fall back to greedy step selection if A\*
+finds no path. Relays search layable/joinable tiles toward the ally core.
+
 ### Inbound relay
 
-After building or claiming a harvester, BFS a conveyor path to an **ally**
+After building or claiming a harvester, A\* a conveyor path to an **ally**
 core-adjacent tile (`is_core_adjacent` requires our team). Belts face toward the
 ally core. Wrong-facing allied belts are destroyed and rebuilt; enemy belts are
 cleared via stand-and-fire, then replaced. Completing or aborting the path
