@@ -1,10 +1,10 @@
 # earl
 
 Starter economy loop + HiveMind (`components/` symlinks) + **inbound steal-relay**
-belts to the core. **Raiders** (even builders): push enemy → clear belts on the
-way → gunners @30 (face into enemy core) → sentinels @80 (`attack.py`). Builders
-1/5 home-defend at mid-game; late spawns defend (`defence.py`). Core tops ammo
-from turn 30.
+belts to the **ally** core only. **Raiders** (even builders): push enemy → clear
+belts on the way → gunners @30 (face into enemy core) → sentinels @80
+(`attack.py`). Builders 1/3/5 stay on economy (idle ore recheck every 50 turns);
+late spawns 6+ defend (`defence.py`). Core tops ammo from turn 30.
 
 ## Store slots
 
@@ -31,7 +31,8 @@ enemy core** when known (ASSUMED/KNOWN from slot 15); otherwise closest to
 **map center**. Tries candidates via `hivemind.spawn_builder` / `can_spawn`.
 
 **Schedule:** rush the first **5** as soon as Ti allows, then spawn **one more
-every 100 turns** up to a hard cap of **9** (turns 100 / 200 / 300 / 400).
+every 25 turns** starting at turn **20**, up to a hard cap of **9** (turns
+20 / 45 / 70 / 95). If the rush finishes after turn 20, take the next slot.
 
 From turn ≥ 30 the core tops team ammo to `5 + 20 × max(1, living sentinels)`
 via `convert_ammo` (before the spawn-cap early return), reading slot 3.
@@ -40,23 +41,25 @@ via `convert_ammo` (before the spawn-cap early return), reading slot 3.
 
 Each turn (`_run_builder`), after HiveMind `tick` and stuck tracking:
 
-0. **Defender gate** (`my_index >= 6` always, or indices `1`/`5` when turn ≥ 80)
-   → `defence.py`: heal adjacent friendlies, else fire adjacent enemies (prefer
-   builders); linger on the core apron. No ore / relay / siege. Gunners deferred.
+0. **Defender gate** (`my_index >= 6`) → `defence.py`: heal adjacent friendlies,
+   else fire adjacent enemies (prefer builders); linger on the core apron. No
+   ore / relay / siege. Gunners deferred.
 1. **Raider gate** (even `my_index`, enemy core known, any turn) → abort any
    relay/ore task; run `attack.py` phases below; move toward the chosen site and
-   return. Builders 1/5 defend at mid-game (gate 0); builder 3 keeps the economy
-   loop below.
-2. **If `in_relay`** → only run inbound relay (`_relay_toward_core`); return.
-3. **Ore-site task** (`_try_ore_site_task`) — sticky `ore_site` via `_pick_ore_site`:
+   return. Odd builders (1/3/5) keep the economy loop below.
+2. **Idle ore recheck** (not in relay, every 50 turns): clear `skipped_ores` /
+   `ore_site` and allow ally-harvester candidates so broken inbound belts can be
+   rebuilt. Does not abort a live relay.
+3. **If `in_relay`** → only run inbound relay (`_relay_toward_core`); return.
+4. **Ore-site task** (`_try_ore_site_task`) — sticky `ore_site` via `_pick_ore_site`:
    - Empty → step off if on tile; adjacent → build harvester, then enter inbound relay.
-   - Any harvester (ally or enemy) → enter inbound relay (steal / claim).
+   - Any harvester (ally or enemy) → enter inbound relay (steal / claim / re-relay).
    - Enemy belt on ore → stand on tile and `fire`.
    - Allied belt on ore → adjacent `destroy`, then treat as empty next turns.
    - Blocked → skip ore, pick another.
-4. **If relay just started** → run `_relay_toward_core`; return.
-5. **Heal** adjacent damaged friendlies (if action free).
-6. **Move** toward `ore_site` / `_pick_target` (no pave-while-walking).
+5. **If relay just started** → run `_relay_toward_core`; return.
+6. **Heal** adjacent damaged friendlies (if action free).
+7. **Move** toward `ore_site` / `_pick_target` (no pave-while-walking).
 
 ### Raiders (`attack.py`)
 
@@ -82,7 +85,8 @@ Three phases once the enemy core is known (`my_index` even, > 0):
 
 - Known sites from `ORE_LOCATIONS` once the map is fingerprinted.
 - Prefer empty ore, then enemy/unknown harvester (steal).
-- Skip our harvesters and locally finished sites (`skipped_ores`).
+- Skip our harvesters and locally finished sites (`skipped_ores`), except on
+  idle recheck when ally harvesters are allowed so inbound relays can be fixed.
 - **Builder stagger:** each builder uses HiveMind `my_index` and takes the
   `(my_index - 1) % n`-th nearest eligible ore (builder 1 → nearest, builder 2
   → 2nd, …). Stops everyone racing the same node. Unregistered index `0` falls
@@ -90,10 +94,11 @@ Three phases once the enemy core is known (`my_index` even, > 0):
 
 ### Inbound relay
 
-After building or claiming a harvester, BFS a conveyor path to a core-adjacent
-tile. Belts face toward the core. Wrong-facing allied belts are destroyed and
-rebuilt; enemy belts are cleared via stand-and-fire, then replaced. Completing
-or aborting the path clears relay state; builder then picks a new ore.
+After building or claiming a harvester, BFS a conveyor path to an **ally**
+core-adjacent tile (`is_core_adjacent` requires our team). Belts face toward the
+ally core. Wrong-facing allied belts are destroyed and rebuilt; enemy belts are
+cleared via stand-and-fire, then replaced. Completing or aborting the path
+clears relay state; builder then picks a new ore.
 
 ## Run
 

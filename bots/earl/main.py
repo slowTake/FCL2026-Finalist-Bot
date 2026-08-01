@@ -7,9 +7,8 @@ via stand-and-fire.
 
 Even builders (raiders) abort economy once the enemy core is known (see
 attack.py): push the enemy, stand-fire belts on the way, gunners from turn 30
-facing into the enemy core, sentinels from turn 80. Builders 1 and 5 return home
-to defend at turn 80 (see defence.py); builder 3 keeps mining. Indices 6+ defend
-the core from spawn.
+facing into the enemy core, sentinels from turn 80. Odd economy builders (1, 3, 5)
+keep mining; idle ore recheck every 50 turns. Indices 6+ defend the core from spawn.
 
 Store slots:
   0–1                  Free
@@ -47,7 +46,9 @@ SLOT_PACKED_CORES = 15
 
 MAX_BUILDERS_EARLY = 5
 MAX_BUILDERS = 9
-SPAWN_INTERVAL = 100
+FIRST_INTERVAL_SPAWN = 20
+SPAWN_INTERVAL = 25
+ORE_RECHECK_INTERVAL = 50
 BFS_MAX_ITERS = 400
 
 
@@ -109,7 +110,11 @@ def is_core_adjacent(
             continue
         if ct.is_in_vision(neighbor):
             bid = ct.get_tile_building_id(neighbor)
-            if bid is not None and ct.get_entity_type(bid) == EntityType.CORE:
+            if (
+                bid is not None
+                and ct.get_entity_type(bid) == EntityType.CORE
+                and ct.get_team(bid) == ct.get_team()
+            ):
                 return True
     if core_pos is None:
         return False
@@ -358,6 +363,8 @@ class Player:
 
         self.ore_site: Position | None = None
         self.skipped_ores: set[tuple[int, int]] = set()
+        self.last_ore_recheck_round = 0
+        self.ore_recheck_allow_ally = False
 
         self.in_relay = False
         self.relay_origin: Position | None = None
@@ -395,8 +402,8 @@ class Player:
         can_rush = self.num_spawned < MAX_BUILDERS_EARLY
         can_interval = (
             self.num_spawned >= MAX_BUILDERS_EARLY
-            and round_n > 0
-            and round_n % SPAWN_INTERVAL == 0
+            and round_n >= FIRST_INTERVAL_SPAWN
+            and (round_n - FIRST_INTERVAL_SPAWN) % SPAWN_INTERVAL == 0
         )
         if not can_rush and not can_interval:
             return
@@ -432,7 +439,7 @@ class Player:
             self.stuck = 0
         self.last_pos = pos
 
-        if is_defender(self.hivemind.my_index, ct.get_current_round()):
+        if is_defender(self.hivemind.my_index):
             self._clear_relay()
             self.ore_site = None
             hold = run_defender(ct, core_pos=self.core_pos)
@@ -461,6 +468,13 @@ class Player:
         if self.in_relay:
             self._relay_toward_core(ct)
             return
+
+        round_n = ct.get_current_round()
+        if round_n - self.last_ore_recheck_round >= ORE_RECHECK_INTERVAL:
+            self.skipped_ores.clear()
+            self.ore_site = None
+            self.last_ore_recheck_round = round_n
+            self.ore_recheck_allow_ally = True
 
         if not self.in_relay:
             self._try_ore_site_task(ct)
@@ -583,14 +597,19 @@ class Player:
     def _pick_ore_site(self, ct: Controller, pos: Position) -> Position | None:
         """Nth-nearest known ore by builder index: prefer empty, then steal.
 
-        Builder my_index N takes candidates[(N-1) % len]; unregistered (0) → nearest.
+        On idle recheck, fall back to ally harvesters so inbound belts can be
+        rebuilt. Builder my_index N takes candidates[(N-1) % len]; 0 → nearest.
         """
         map_id = self.hivemind.map_id
         if map_id <= 0:
+            self.ore_recheck_allow_ally = False
             return None
         my_team = ct.get_team()
+        allow_ally = self.ore_recheck_allow_ally
+        self.ore_recheck_allow_ally = False
         empty: list[tuple[int, Position]] = []
         steal: list[tuple[int, Position]] = []
+        ally: list[tuple[int, Position]] = []
 
         for ox, oy in ORE_LOCATIONS.get(map_id, []):
             if (ox, oy) in self.skipped_ores:
@@ -602,6 +621,9 @@ class Player:
                 and ent.get("type") == EntityType.HARVESTER
                 and ent.get("team") == my_team
             ):
+                if allow_ally:
+                    ore_pos = Position(ox, oy)
+                    ally.append((pos.distance_squared(ore_pos), ore_pos))
                 continue
             # Synced blocked tile with no entity — treat as already claimed
             if not ent and tile_info.get("passable") is False:
@@ -615,6 +637,8 @@ class Player:
                 empty.append((d, ore_pos))
 
         candidates = empty if empty else steal
+        if not candidates and allow_ally:
+            candidates = ally
         if not candidates:
             return None
         candidates.sort(key=lambda t: t[0])

@@ -1,29 +1,20 @@
 """Core defence role for earl builders.
 
-Late spawns (indices >= DEFENDER_MIN_INDEX) and mid-game converts (1, 5 from
-ATTACK_TURN) stay near the ally core: heal friendlies, then fire adjacent
-enemies. Gunner building is deferred.
+Late spawns (indices >= DEFENDER_MIN_INDEX) stay near the ally core: heal
+friendlies, then fire adjacent enemies. Gunner building is deferred.
 """
 
 from __future__ import annotations
 
-from attack import ATTACK_TURN
-from fcode import Controller, Direction, EntityType, Position
+from fcode import Controller, Direction, Position
 
 DEFENDER_MIN_INDEX = 6  # indices 6..9
-MIDGAME_DEFENDER_INDICES = frozenset({1, 5})
 
 CARDINALS = [Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST]
 
 
-def is_defender(my_index: int, round_n: int | None = None) -> bool:
-    if my_index >= DEFENDER_MIN_INDEX:
-        return True
-    return (
-        my_index in MIDGAME_DEFENDER_INDICES
-        and round_n is not None
-        and round_n >= ATTACK_TURN
-    )
+def is_defender(my_index: int) -> bool:
+    return my_index >= DEFENDER_MIN_INDEX
 
 
 def _core_footprint(core_pos: Position) -> list[Position]:
