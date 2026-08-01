@@ -1,7 +1,8 @@
 # earl
 
 Starter economy loop + HiveMind (`components/` symlinks) + **inbound steal-relay**
-belts to the core.
+belts to the core. Mid-game: even builders place sentinels; core tops ammo;
+sentinels fire (`attack.py`). Late spawns defend the core (`defence.py`).
 
 ## Store slots
 
@@ -9,7 +10,8 @@ belts to the core.
 |------|-------|---------|
 | 0–1 | — | Free |
 | 2 | Player | `SLOT_HARVESTER_COUNT` — total harvesters we built |
-| 3–6 | — | Free |
+| 3 | Player | `SLOT_SENTINEL_COUNT` — living siege sentinels (for ammo top-up) |
+| 4–6 | — | Free |
 | 7 | HiveMind | Builder registry count (spawn increments; builders read as `my_index`) |
 | 8–9 | HiveMind | Packed enemy intel (up to 4 targets) |
 | 10–12 | HiveMind | Packed vision grid (passable bitmask broadcast) |
@@ -21,24 +23,49 @@ Never write 7–15 from Player. Ally core is read from slot 15.
 
 ## Core spawn
 
-Builders spawn on the adjacent tile **closest to the enemy core** when known
-(ASSUMED/KNOWN from slot 15); otherwise closest to **map center**. Tries dirs
-sorted by spawn-tile distance to that goal via `hivemind.spawn_builder`.
+Builders spawn on an apron tile around the full **2×2 core footprint**
+(not just neighbors of the NW tile), preferring the tile **closest to the
+enemy core** when known (ASSUMED/KNOWN from slot 15); otherwise closest to
+**map center**. Tries candidates via `hivemind.spawn_builder` / `can_spawn`.
+
+**Schedule:** rush the first **5** as soon as Ti allows, then spawn **one more
+every 100 turns** up to a hard cap of **9** (turns 100 / 200 / 300 / 400).
+
+From turn ≥ 80 the core also tops team ammo to `20 × max(1, living sentinels)`
+via `convert_ammo` (before the spawn-cap early return), reading slot 3.
 
 ## Builder task order
 
 Each turn (`_run_builder`), after HiveMind `tick` and stuck tracking:
 
-1. **If `in_relay`** → only run inbound relay (`_relay_toward_core`); return.
-2. **Ore-site task** (`_try_ore_site_task`) — sticky `ore_site` via `_pick_ore_site`:
+0. **Defender gate** (`my_index >= 6`) → `defence.py`: heal adjacent friendlies,
+   else fire adjacent enemies (prefer builders); linger on the core apron.
+   No ore / relay / siege. Gunners deferred.
+1. **Attack gate** (turn ≥ 80, even `my_index`, enemy core known) → abort any
+   relay/ore task; place up to 5 sentinels around the enemy core at max range
+   (`attack.py`). Sync sentinel count to slot 3. Then move toward the chosen
+   site and return. Odd builders (1–5) skip this and keep the economy loop below.
+2. **If `in_relay`** → only run inbound relay (`_relay_toward_core`); return.
+3. **Ore-site task** (`_try_ore_site_task`) — sticky `ore_site` via `_pick_ore_site`:
    - Empty → step off if on tile; adjacent → build harvester, then enter inbound relay.
    - Any harvester (ally or enemy) → enter inbound relay (steal / claim).
    - Enemy belt on ore → stand on tile and `fire`.
    - Allied belt on ore → adjacent `destroy`, then treat as empty next turns.
    - Blocked → skip ore, pick another.
-3. **If relay just started** → run `_relay_toward_core`; return.
-4. **Heal** adjacent damaged friendlies (if action free).
-5. **Move** toward `ore_site` / `_pick_target` (no pave-while-walking).
+4. **If relay just started** → run `_relay_toward_core`; return.
+5. **Heal** adjacent damaged friendlies (if action free).
+6. **Move** toward `ore_site` / `_pick_target` (no pave-while-walking).
+
+### Mid-game attack (`attack.py`)
+
+- Trigger: `round >= 80`, `my_index % 2 == 0`, enemy core from slot 15.
+- Cap: 5 ally sentinels (counted via HiveMind `local_map`; written to slot 3).
+- Placement: ring tiles at r² 16–32 from the 2×2 enemy core; builders side-stagger
+  by index so they don’t pile on the same tile. Face sentinels at the enemy core.
+- **Ammo:** core keeps pool at `20 × max(1, n)` (prestock 20 at mid-game, then
+  +20 per living sentinel, up to 100). Sentinels cost 10 ammo/shot.
+- **Fire:** each sentinel fires every turn when able — priority enemy **core**,
+  then **builders**, then **harvesters**. After the cap, even builders idle.
 
 ### Ore targeting
 
