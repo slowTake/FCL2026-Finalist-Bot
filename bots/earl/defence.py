@@ -1,15 +1,22 @@
 """Core defence role for earl builders.
 
-Late spawns (indices >= DEFENDER_MIN_INDEX) stay near the ally core: lay a
-2-deep inward conveyor apron + diagonal barriers, heal friendlies, then fire
-adjacent enemies. Gunner building is deferred.
+Late spawns (indices >= DEFENDER_MIN_INDEX) stay near the ally core: hunt
+enemy gunners in vision, heal, fire, then lay a per-side inward apron +
+corner barrier. Gunner building is deferred.
 """
 
 from __future__ import annotations
 
 from fcode import Controller, Direction, EntityType, Position
 
-DEFENDER_MIN_INDEX = 6  # indices 6..9
+DEFENDER_MIN_INDEX = 6  # indices 6+
+
+# Cardinal sides around the core, assignment order N → E → S → W
+SIDE_N = 0
+SIDE_E = 1
+SIDE_S = 2
+SIDE_W = 3
+SIDE_ORDER = (SIDE_N, SIDE_E, SIDE_S, SIDE_W)
 
 CARDINALS = [Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST]
 DIRECTIONS = [d for d in Direction if d != Direction.CENTRE]
@@ -55,7 +62,6 @@ def _belt_faces(ct: Controller, tile: Position, expected: Direction) -> bool:
 
 def _has_allied_barrier(ct: Controller, pos: Position) -> bool:
     if not ct.is_in_vision(pos):
-        # Fog: treat as still pending so we walk nearer and re-check.
         return False
     bid = ct.get_tile_building_id(pos)
     if bid is None:
@@ -66,54 +72,86 @@ def _has_allied_barrier(ct: Controller, pos: Position) -> bool:
     )
 
 
-def apron_conveyor_specs(
-    core_pos: Position, my_index: int
+def side_conveyor_specs(
+    core_pos: Position, side: int
 ) -> list[tuple[Position, Direction]]:
-    """2-wide × 2-deep inward apron strips. Even → N+E; odd → S+W."""
+    """2-wide × 2-deep inward strip for one cardinal side."""
     cx, cy = core_pos.x, core_pos.y
     tiles: list[tuple[Position, Direction]] = []
     for depth in (1, 2):
-        if my_index % 2 == 0:
+        if side == SIDE_N:
             for dx in (0, 1):
                 tiles.append((Position(cx + dx, cy - depth), Direction.SOUTH))
+        elif side == SIDE_E:
             for dy in (0, 1):
                 tiles.append((Position(cx + 1 + depth, cy + dy), Direction.WEST))
-        else:
+        elif side == SIDE_S:
             for dx in (0, 1):
                 tiles.append((Position(cx + dx, cy + 1 + depth), Direction.NORTH))
+        elif side == SIDE_W:
             for dy in (0, 1):
                 tiles.append((Position(cx - depth, cy + dy), Direction.EAST))
     return tiles
 
 
-def apron_barrier_tiles(core_pos: Position, my_index: int) -> list[Position]:
-    """Depth-1 diagonal barriers. Even → NW+NE; odd → SW+SE."""
+def side_barrier_tile(core_pos: Position, side: int) -> Position:
+    """Depth-1 diagonal on the clockwise corner of the side."""
     cx, cy = core_pos.x, core_pos.y
-    if my_index % 2 == 0:
-        return [
-            Position(cx - 1, cy - 1),  # NW
-            Position(cx + 2, cy - 1),  # NE
-        ]
-    return [
-        Position(cx - 1, cy + 2),  # SW
-        Position(cx + 2, cy + 2),  # SE
-    ]
+    if side == SIDE_N:
+        return Position(cx - 1, cy - 1)  # NW
+    if side == SIDE_E:
+        return Position(cx + 2, cy - 1)  # NE
+    if side == SIDE_S:
+        return Position(cx + 2, cy + 2)  # SE
+    return Position(cx - 1, cy + 2)  # SW
+
+
+def side_depth1_tiles(core_pos: Position, side: int) -> list[Position]:
+    return [t for t, _ in side_conveyor_specs(core_pos, side)[:2]]
+
+
+def available_sides(ct: Controller, core_pos: Position) -> list[int]:
+    """Sides with at least one in-bounds depth-1 apron tile (corner → often 2)."""
+    out: list[int] = []
+    for side in SIDE_ORDER:
+        if any(_in_bounds(ct, t) for t in side_depth1_tiles(core_pos, side)):
+            out.append(side)
+    return out
+
+
+def assigned_side(ct: Controller, core_pos: Position, my_index: int) -> int | None:
+    sides = available_sides(ct, core_pos)
+    if not sides:
+        return None
+    return sides[(my_index - DEFENDER_MIN_INDEX) % len(sides)]
+
+
+def apron_conveyor_specs(
+    core_pos: Position, side: int
+) -> list[tuple[Position, Direction]]:
+    return side_conveyor_specs(core_pos, side)
+
+
+def apron_barrier_tiles(core_pos: Position, side: int) -> list[Position]:
+    return [side_barrier_tile(core_pos, side)]
 
 
 def try_make_apron(
-    ct: Controller, *, core_pos: Position, my_index: int
+    ct: Controller, *, core_pos: Position, side: int
 ) -> bool:
-    """Lay owned apron conveyors + barriers. True if built or moved this turn."""
+    """Lay this side's apron conveyors + barrier. True if built or moved."""
     pending: list[Position] = []
+    conveyor_specs = apron_conveyor_specs(core_pos, side)
+    barriers = apron_barrier_tiles(core_pos, side)
 
-    for tile, facing in apron_conveyor_specs(core_pos, my_index):
+    for tile, facing in conveyor_specs:
         if not _in_bounds(ct, tile):
             continue
         if _belt_faces(ct, tile, facing):
             continue
         pending.append(tile)
 
-    for tile in apron_barrier_tiles(core_pos, my_index):
+    for tile in barriers:
         if not _in_bounds(ct, tile):
             continue
         if _has_allied_barrier(ct, tile):
@@ -125,7 +163,6 @@ def try_make_apron(
 
     pos = ct.get_position()
 
-    # Standing on a pending tile — step off so we can build adjacent next turn
     for tile in pending:
         if pos.x == tile.x and pos.y == tile.y:
             if ct.get_move_cooldown() == 0:
@@ -133,11 +170,10 @@ def try_make_apron(
                     if ct.can_move(d):
                         ct.move(d)
                         return True
-            return True  # occupied the turn intent (cannot leave yet)
+            return True
 
-    # Try adjacent builds; skip tiles that are not buildable
     if ct.get_action_cooldown() == 0:
-        for tile, facing in apron_conveyor_specs(core_pos, my_index):
+        for tile, facing in conveyor_specs:
             if not _in_bounds(ct, tile):
                 continue
             if _belt_faces(ct, tile, facing):
@@ -147,7 +183,7 @@ def try_make_apron(
             if ct.can_build_conveyor(tile, facing):
                 ct.build_conveyor(tile, facing)
                 return True
-        for tile in apron_barrier_tiles(core_pos, my_index):
+        for tile in barriers:
             if not _in_bounds(ct, tile):
                 continue
             if _has_allied_barrier(ct, tile):
@@ -158,7 +194,6 @@ def try_make_apron(
                 ct.build_barrier(tile)
                 return True
 
-    # Nothing built — walk toward nearest pending tile
     if ct.get_move_cooldown() != 0:
         return False
     goal = min(pending, key=lambda t: pos.distance_squared(t))
@@ -178,44 +213,71 @@ def try_make_apron(
     return False
 
 
-def _defence_hold_target(ct: Controller, core_pos: Position) -> Position:
-    """Prefer an empty apron tile; fall back to core NW so mover walks adjacent."""
+def _defence_hold_target(
+    ct: Controller, core_pos: Position, side: int | None
+) -> Position:
+    """Prefer empty depth-1 tile on assigned side; else any side apron; else core."""
     pos = ct.get_position()
-    footprint = {(t.x, t.y) for t in _core_footprint(core_pos)}
+    candidates: list[Position] = []
+    if side is not None:
+        candidates.extend(side_depth1_tiles(core_pos, side))
+        for tile, _ in side_conveyor_specs(core_pos, side):
+            if tile not in candidates:
+                candidates.append(tile)
+    else:
+        for s in SIDE_ORDER:
+            candidates.extend(side_depth1_tiles(core_pos, s))
+
     best: Position | None = None
     best_dist = float("inf")
-    w, h = ct.get_map_width(), ct.get_map_height()
-
-    for tile in _core_footprint(core_pos):
-        for d in CARDINALS:
-            cand = tile.add(d)
-            key = (cand.x, cand.y)
-            if key in footprint:
+    for cand in candidates:
+        if not _in_bounds(ct, cand):
+            continue
+        if ct.is_in_vision(cand) and not ct.is_tile_empty(cand):
+            if pos.x != cand.x or pos.y != cand.y:
                 continue
-            if not (0 <= cand.x < w and 0 <= cand.y < h):
-                continue
-            if ct.is_in_vision(cand) and not ct.is_tile_empty(cand):
-                # Still a valid linger spot if we're already on it
-                if pos.x != cand.x or pos.y != cand.y:
-                    continue
-            dist = pos.distance_squared(cand)
-            if dist < best_dist:
-                best_dist = dist
-                best = cand
+        dist = pos.distance_squared(cand)
+        if dist < best_dist:
+            best_dist = dist
+            best = cand
     return best if best is not None else core_pos
+
+
+def _nearest_enemy_gunner(ct: Controller) -> Position | None:
+    my_team = ct.get_team()
+    pos = ct.get_position()
+    best: Position | None = None
+    best_dist = float("inf")
+    for eid in ct.get_nearby_entities():
+        if ct.get_entity_type(eid) != EntityType.GUNNER:
+            continue
+        if ct.get_team(eid) == my_team:
+            continue
+        gpos = ct.get_position(eid)
+        d = pos.distance_squared(gpos)
+        if d < best_dist:
+            best_dist = d
+            best = gpos
+    return best
+
+
+def _try_fire_tile(ct: Controller, tile: Position) -> bool:
+    if ct.get_action_cooldown() != 0:
+        return False
+    if abs(ct.get_position().x - tile.x) + abs(ct.get_position().y - tile.y) != 1:
+        return False
+    if not ct.can_fire(tile):
+        return False
+    ct.fire(tile)
+    return True
 
 
 def _try_heal(ct: Controller) -> bool:
     if ct.get_action_cooldown() != 0:
         return False
     pos = ct.get_position()
-    for d in Direction:
-        if d == Direction.CENTRE:
-            continue
+    for d in CARDINALS:
         check = pos.add(d)
-        # Heal is orthogonal-only for builders
-        if d not in CARDINALS:
-            continue
         if ct.can_heal(check):
             ct.heal(check)
             return True
@@ -257,15 +319,34 @@ def _try_adjacent_fire(ct: Controller) -> bool:
 def run_defender(
     ct: Controller, *, core_pos: Position | None, my_index: int
 ) -> Position | None:
-    """Apron first; else heal/fire and return linger target. None if turn used."""
-    if core_pos is not None and try_make_apron(
-        ct, core_pos=core_pos, my_index=my_index
+    """Gunner hunt → heal → fire → side apron → linger. None if move already used."""
+    side: int | None = None
+    if core_pos is not None:
+        side = assigned_side(ct, core_pos, my_index)
+
+    gunner = _nearest_enemy_gunner(ct)
+    if gunner is not None:
+        if _try_fire_tile(ct, gunner):
+            if core_pos is None:
+                return None
+            return _defence_hold_target(ct, core_pos, side)
+        return gunner
+
+    if _try_heal(ct):
+        if core_pos is None:
+            return None
+        return _defence_hold_target(ct, core_pos, side)
+
+    if _try_adjacent_fire(ct):
+        if core_pos is None:
+            return None
+        return _defence_hold_target(ct, core_pos, side)
+
+    if core_pos is not None and side is not None and try_make_apron(
+        ct, core_pos=core_pos, side=side
     ):
         return None
 
-    if not _try_heal(ct):
-        _try_adjacent_fire(ct)
-
     if core_pos is None:
         return None
-    return _defence_hold_target(ct, core_pos)
+    return _defence_hold_target(ct, core_pos, side)
