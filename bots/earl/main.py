@@ -23,7 +23,15 @@ Core spawns builders toward enemy core (else map center).
 
 from __future__ import annotations
 
+import builtins
 import random
+
+DEBUG = True
+_original_print = builtins.print
+def _custom_print(*args, **kwargs):
+    if DEBUG:
+        _original_print(*args, **kwargs)
+builtins.print = _custom_print
 
 from attack import (
     is_raider,
