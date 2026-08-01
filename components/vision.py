@@ -64,3 +64,32 @@ def unpack_intel_slot(slot_val: int):
     t0 = unpack_target((slot_val >> 14) & 0x3FFF)
     t1 = unpack_target(slot_val & 0x3FFF)
     return t0, t1
+
+def pack_infra(deltas: list[tuple[int, int, int]]) -> tuple[int, int, int, int, int]:
+    val = 0
+    for i in range(11):
+        if i < len(deltas):
+            x, y, t = deltas[i]
+        else:
+            x, y, t = 0, 0, 15
+        chunk = (x & 31) | ((y & 31) << 5) | ((t & 15) << 10)
+        val |= (chunk << (i * 14))
+    
+    s0 = (val >> 0) & 0xFFFFFFFF
+    s1 = (val >> 32) & 0xFFFFFFFF
+    s2 = (val >> 64) & 0xFFFFFFFF
+    s3 = (val >> 96) & 0xFFFFFFFF
+    s4 = (val >> 128) & 0xFFFFFFFF
+    return s0, s1, s2, s3, s4
+
+def unpack_infra(s0: int, s1: int, s2: int, s3: int, s4: int) -> list[tuple[int, int, int]]:
+    val = s0 | (s1 << 32) | (s2 << 64) | (s3 << 96) | (s4 << 128)
+    deltas = []
+    for i in range(11):
+        chunk = (val >> (i * 14)) & 0x3FFF
+        t = (chunk >> 10) & 15
+        if t != 15:
+            x = chunk & 31
+            y = (chunk >> 5) & 31
+            deltas.append((x, y, t))
+    return deltas

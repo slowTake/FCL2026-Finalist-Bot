@@ -5,10 +5,16 @@ steal any harvester), then pave a committed conveyor path back to the core.
 Wrong-facing allied belts are destroyed and rebuilt; enemy belts are cleared
 via stand-and-fire.
 
+Even builders (raiders) abort economy once the enemy core is known (see
+attack.py): push the enemy, stand-fire belts on the way, gunners from turn 30
+facing into the enemy core, then a 40-turn gunner/sentinel loop. Odd economy builders (1, 3, 5)
+keep mining; idle ore recheck every 50 turns. Indices 6+ defend the core from spawn.
+
 Store slots:
   0–1                  Free
   2  SLOT_HARVESTER_COUNT Total harvesters built by the team
-  3–6                  Free
+  3  SLOT_SENTINEL_COUNT  Living siege sentinels (attack.py)
+  4–6                  Free
   7–15                 HiveMind-owned — never write from Player
 
 Ally core from slot 15 via unpack_cores. Ore from ORE_LOCATIONS / local_map.
@@ -18,11 +24,26 @@ Core spawns builders toward enemy core (else map center).
 from __future__ import annotations
 
 import random
-from collections import deque
 
-from fcode import Controller, Direction, EntityType, Environment, Position
+from attack import (
+    is_raider,
+    run_attack_builder,
+    run_gunner,
+    run_sentinel,
+    top_up_ammo,
+)
+from defence import is_defender, run_defender
+from fcode import (
+    Controller,
+    Direction,
+    EntityType,
+    Environment,
+    GameConstants,
+    Position,
+)
 from features import ORE_LOCATIONS
 from hivemind import CoreState, HiveMind, unpack_cores
+from pathing import astar, astar_from_seeds, manhattan
 
 DIRECTIONS = [d for d in Direction if d != Direction.CENTRE]
 CARDINALS = [Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST]
@@ -30,8 +51,13 @@ CARDINALS = [Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST]
 SLOT_HARVESTER_COUNT = 2
 SLOT_PACKED_CORES = 15
 
-MAX_BUILDERS = 5
-BFS_MAX_ITERS = 400
+MAX_BUILDERS_EARLY = 5
+MAX_BUILDERS = 9
+FIRST_INTERVAL_SPAWN = 10
+SPAWN_INTERVAL = 25
+PATH_MAX_ITERS = 2000
+ORE_RECHECK_INTERVAL = 50
+MERGE_SAVE_MIN = 2
 
 
 def nearest_cardinal(d: Direction) -> Direction:
@@ -52,14 +78,26 @@ def in_bounds(ct: Controller, pos: Position) -> bool:
     return 0 <= pos.x < ct.get_map_width() and 0 <= pos.y < ct.get_map_height()
 
 
-def spawn_dirs_toward(
+def spawn_sites_toward(
     ct: Controller, core_pos: Position, goal: Position
-) -> list[Direction]:
-    """Prefer spawn tiles closer to goal (enemy core or map center)."""
-    return sorted(
-        DIRECTIONS,
-        key=lambda d: core_pos.add(d).distance_squared(goal),
-    )
+) -> list[Position]:
+    """Apron tiles around the full 2x2 core, closest to goal first."""
+    footprint = _core_footprint(core_pos)
+    footprint_keys = {(t.x, t.y) for t in footprint}
+    sites: list[Position] = []
+    seen: set[tuple[int, int]] = set()
+    for tile in footprint:
+        for d in DIRECTIONS:
+            cand = tile.add(d)
+            key = (cand.x, cand.y)
+            if key in seen or key in footprint_keys:
+                continue
+            if not in_bounds(ct, cand):
+                continue
+            seen.add(key)
+            sites.append(cand)
+    sites.sort(key=lambda p: p.distance_squared(goal))
+    return sites
 
 
 def _core_footprint(core_pos: Position) -> list[Position]:
@@ -80,7 +118,11 @@ def is_core_adjacent(
             continue
         if ct.is_in_vision(neighbor):
             bid = ct.get_tile_building_id(neighbor)
-            if bid is not None and ct.get_entity_type(bid) == EntityType.CORE:
+            if (
+                bid is not None
+                and ct.get_entity_type(bid) == EntityType.CORE
+                and ct.get_team(bid) == ct.get_team()
+            ):
                 return True
     if core_pos is None:
         return False
@@ -168,10 +210,8 @@ def plan_conveyor_path(
     *,
     is_goal,
     ore_blocked: set[tuple[int, int]] | None = None,
+    heuristic_to: Position | None = None,
 ) -> list[Position] | None:
-    w = ct.get_map_width()
-    h = ct.get_map_height()
-
     def ok(p: Position) -> bool:
         return is_layable_or_join(ct, p, ore_blocked=ore_blocked)
 
@@ -186,43 +226,18 @@ def plan_conveyor_path(
     if not seeds:
         return None
 
-    parent: dict[tuple[int, int], tuple[int, int] | None] = {}
-    q: deque[Position] = deque()
-    for s in seeds:
-        key = (s.x, s.y)
-        if key in parent:
-            continue
-        parent[key] = None
-        q.append(s)
+    def h(p: Position) -> int:
+        if heuristic_to is None:
+            return 0
+        return manhattan(p, heuristic_to)
 
-    goal: Position | None = None
-    while q:
-        cur = q.popleft()
-        if is_goal(cur):
-            goal = cur
-            break
-        for d in CARDINALS:
-            nxt = cur.add(d)
-            if not (0 <= nxt.x < w and 0 <= nxt.y < h):
-                continue
-            nkey = (nxt.x, nxt.y)
-            if nkey in parent:
-                continue
-            if not ok(nxt):
-                continue
-            parent[nkey] = (cur.x, cur.y)
-            q.append(nxt)
-
-    if goal is None:
-        return None
-
-    path_rev: list[Position] = []
-    key: tuple[int, int] | None = (goal.x, goal.y)
-    while key is not None:
-        path_rev.append(Position(key[0], key[1]))
-        key = parent[key]
-    path_rev.reverse()
-    return path_rev
+    return astar_from_seeds(
+        seeds,
+        is_passable=ok,
+        is_goal=is_goal,
+        heuristic=h,
+        max_iters=PATH_MAX_ITERS,
+    )
 
 
 def plan_conveyor_path_to_core(
@@ -237,7 +252,63 @@ def plan_conveyor_path_to_core(
         start,
         is_goal=lambda p: is_core_adjacent(ct, p, core_pos),
         ore_blocked=ore_blocked,
+        heuristic_to=core_pos,
     )
+
+
+def is_merge_goal(ct: Controller, pos: Position, *, origin: Position) -> bool:
+    """Visible allied belt that is not the relay origin or its cardinal neighbors."""
+    if _allied_belt_id(ct, pos) is None:
+        return False
+    if pos.x == origin.x and pos.y == origin.y:
+        return False
+    for d in CARDINALS:
+        n = origin.add(d)
+        if pos.x == n.x and pos.y == n.y:
+            return False
+    return True
+
+
+def plan_conveyor_path_to_merge(
+    ct: Controller,
+    start: Position,
+    core_pos: Position,
+    *,
+    origin: Position,
+    ore_blocked: set[tuple[int, int]] | None = None,
+) -> list[Position] | None:
+    """Shortest layable path onto a visible allied belt (join target inclusive)."""
+    return plan_conveyor_path(
+        ct,
+        start,
+        is_goal=lambda p: is_merge_goal(ct, p, origin=origin),
+        ore_blocked=ore_blocked,
+        heuristic_to=core_pos,
+    )
+
+
+def pick_relay_path(
+    ct: Controller,
+    start: Position,
+    core_pos: Position,
+    *,
+    origin: Position,
+    ore_blocked: set[tuple[int, int]] | None = None,
+) -> tuple[list[Position] | None, bool]:
+    """Prefer a merge spur when it saves at least MERGE_SAVE_MIN tiles vs core."""
+    core_path = plan_conveyor_path_to_core(
+        ct, start, core_pos, ore_blocked=ore_blocked
+    )
+    merge_path = plan_conveyor_path_to_merge(
+        ct, start, core_pos, origin=origin, ore_blocked=ore_blocked
+    )
+    if merge_path is not None and core_path is not None:
+        if len(merge_path) <= len(core_path) - MERGE_SAVE_MIN:
+            return merge_path, True
+        return core_path, False
+    if merge_path is not None:
+        return merge_path, True
+    return core_path, False
 
 
 def path_travel_dir(
@@ -290,25 +361,43 @@ def first_incomplete_index(
     core_pos: Position,
     *,
     start: int = 0,
+    end: int | None = None,
 ) -> int | None:
-    for i in range(max(0, start), len(path)):
+    """First incomplete index in [start, end). end=None means full path."""
+    limit = len(path) if end is None else min(end, len(path))
+    for i in range(max(0, start), limit):
         want = path_travel_dir(path, i, core_pos)
         if not belt_faces(ct, path[i], want):
             return i
     return None
 
 
-def last_built_path_index(
+def extend_relay_built_to(
     ct: Controller,
     path: list[Position],
     core_pos: Position,
-) -> int | None:
-    last: int | None = None
-    for i, tile in enumerate(path):
+    built_to: int,
+    *,
+    end: int | None = None,
+) -> int:
+    """Advance watermark only through contiguous correct belts in vision.
+
+    Never skips fog or gaps — a later visible correct belt must not mark
+    unfinished mid-path tiles complete. end caps the scan (merge spurs omit
+    the join belt).
+    """
+    limit = len(path) if end is None else min(end, len(path))
+    i = max(-1, built_to) + 1
+    while i < limit:
+        tile = path[i]
+        if not ct.is_in_vision(tile):
+            break
         want = path_travel_dir(path, i, core_pos)
-        if belt_faces(ct, tile, want):
-            last = i
-    return last
+        if not belt_faces(ct, tile, want):
+            break
+        built_to = i
+        i += 1
+    return built_to
 
 
 class Player:
@@ -320,15 +409,19 @@ class Player:
         self.last_pos: Position | None = None
         self.stuck = 0
         self.core_pos: Position | None = None
+        self.enemy_core_pos: Position | None = None
 
         self.ore_site: Position | None = None
         self.skipped_ores: set[tuple[int, int]] = set()
+        self.last_ore_recheck_round = 0
+        self.ore_recheck_allow_ally = False
 
         self.in_relay = False
         self.relay_origin: Position | None = None
         self.relay_path: list[Position] | None = None
         self.relay_stuck = 0
         self.relay_built_to = -1  # highest path index known complete this relay
+        self.relay_merging = False
 
     def run(self, ct: Controller) -> None:
         try:
@@ -340,6 +433,8 @@ class Player:
                 self._run_builder(ct)
             elif etype == EntityType.GUNNER:
                 self._run_gunner(ct)
+            elif etype == EntityType.SENTINEL:
+                run_sentinel(ct)
         except Exception:
             return
 
@@ -348,8 +443,29 @@ class Player:
     # ------------------------------------------------------------------
 
     def _run_core(self, ct: Controller) -> None:
-        if self.num_spawned >= MAX_BUILDERS:
+        # Ammo before spawn early-return so top-up continues after builder cap.
+        top_up_ammo(ct)
+
+        living = self._count_living_builders(ct)
+        if living >= MAX_BUILDERS:
             return
+        if ct.get_unit_count() >= GameConstants.MAX_TEAM_UNITS:
+            return
+
+        round_n = ct.get_current_round()
+        can_rush = self.num_spawned < MAX_BUILDERS_EARLY
+        can_interval = (
+            self.num_spawned >= MAX_BUILDERS_EARLY
+            and self.num_spawned < MAX_BUILDERS
+            and round_n >= FIRST_INTERVAL_SPAWN
+            and (round_n - FIRST_INTERVAL_SPAWN) % SPAWN_INTERVAL == 0
+        )
+        can_replenish = (
+            self.num_spawned >= MAX_BUILDERS and living < MAX_BUILDERS
+        )
+        if not can_rush and not can_interval and not can_replenish:
+            return
+
         ti = ct.get_global_resources()
         if ti < ct.get_builder_bot_cost():
             return
@@ -359,10 +475,32 @@ class Player:
             goal = Position(enemy[1], enemy[2])
         else:
             goal = Position(ct.get_map_width() // 2, ct.get_map_height() // 2)
-        for d in spawn_dirs_toward(ct, pos, goal):
-            if self.hivemind.spawn_builder(ct, pos.add(d)):
+        for spawn_pos in spawn_sites_toward(ct, pos, goal):
+            if self.hivemind.spawn_builder(ct, spawn_pos):
                 self.num_spawned += 1
                 return
+
+    def _count_living_builders(self, ct: Controller) -> int:
+        """Ally builders known via local_map, plus any in core vision."""
+        my_team = ct.get_team()
+        seen: set[tuple[int, int]] = set()
+        for (x, y), info in self.hivemind.local_map.items():
+            ent = info.get("entity")
+            if not ent:
+                continue
+            if ent.get("type") != EntityType.BUILDER_BOT:
+                continue
+            if ent.get("team") != my_team:
+                continue
+            seen.add((x, y))
+        for eid in ct.get_nearby_entities():
+            if ct.get_entity_type(eid) != EntityType.BUILDER_BOT:
+                continue
+            if ct.get_team(eid) != my_team:
+                continue
+            p = ct.get_position(eid)
+            seen.add((p.x, p.y))
+        return len(seen)
 
     # ------------------------------------------------------------------
     # Builder
@@ -372,6 +510,8 @@ class Player:
         pos = ct.get_position()
         if self.core_pos is None:
             self._read_core_pos(ct)
+        if self.enemy_core_pos is None:
+            self._read_enemy_core(ct)
 
         if self.last_pos == pos:
             self.stuck += 1
@@ -379,9 +519,46 @@ class Player:
             self.stuck = 0
         self.last_pos = pos
 
+        if is_defender(self.hivemind.my_index):
+            self._clear_relay()
+            self.ore_site = None
+            hold = run_defender(
+                ct,
+                core_pos=self.core_pos,
+                my_index=self.hivemind.my_index,
+            )
+            if hold is not None:
+                self.target = hold
+                self._move_toward_target(ct, retarget=False)
+            return
+
+        if is_raider(self.hivemind.my_index, self.enemy_core_pos):
+            enemy = self.enemy_core_pos
+            assert enemy is not None
+            self._clear_relay()
+            self.ore_site = None
+            site = run_attack_builder(
+                ct,
+                my_index=self.hivemind.my_index,
+                local_map=self.hivemind.local_map,
+                enemy_core=enemy,
+                ally_core=self.core_pos,
+            )
+            if site is not None:
+                self.target = site
+            self._move_toward_target(ct, retarget=False)
+            return
+
         if self.in_relay:
             self._relay_toward_core(ct)
             return
+
+        round_n = ct.get_current_round()
+        if round_n - self.last_ore_recheck_round >= ORE_RECHECK_INTERVAL:
+            self.skipped_ores.clear()
+            self.ore_site = None
+            self.last_ore_recheck_round = round_n
+            self.ore_recheck_allow_ally = True
 
         if not self.in_relay:
             self._try_ore_site_task(ct)
@@ -399,6 +576,11 @@ class Player:
         ally, _ = unpack_cores(ct.read_store(SLOT_PACKED_CORES))
         if ally[0] != CoreState.UNKNOWN:
             self.core_pos = Position(ally[1], ally[2])
+
+    def _read_enemy_core(self, ct: Controller) -> None:
+        _, enemy = unpack_cores(ct.read_store(SLOT_PACKED_CORES))
+        if enemy[0] != CoreState.UNKNOWN:
+            self.enemy_core_pos = Position(enemy[1], enemy[2])
 
     def _try_heal(self, ct: Controller) -> None:
         pos = ct.get_position()
@@ -499,14 +681,19 @@ class Player:
     def _pick_ore_site(self, ct: Controller, pos: Position) -> Position | None:
         """Nth-nearest known ore by builder index: prefer empty, then steal.
 
-        Builder my_index N takes candidates[(N-1) % len]; unregistered (0) → nearest.
+        On idle recheck, fall back to ally harvesters so inbound belts can be
+        rebuilt. Builder my_index N takes candidates[(N-1) % len]; 0 → nearest.
         """
         map_id = self.hivemind.map_id
         if map_id <= 0:
+            self.ore_recheck_allow_ally = False
             return None
         my_team = ct.get_team()
+        allow_ally = self.ore_recheck_allow_ally
+        self.ore_recheck_allow_ally = False
         empty: list[tuple[int, Position]] = []
         steal: list[tuple[int, Position]] = []
+        ally: list[tuple[int, Position]] = []
 
         for ox, oy in ORE_LOCATIONS.get(map_id, []):
             if (ox, oy) in self.skipped_ores:
@@ -518,6 +705,9 @@ class Player:
                 and ent.get("type") == EntityType.HARVESTER
                 and ent.get("team") == my_team
             ):
+                if allow_ally:
+                    ore_pos = Position(ox, oy)
+                    ally.append((pos.distance_squared(ore_pos), ore_pos))
                 continue
             # Synced blocked tile with no entity — treat as already claimed
             if not ent and tile_info.get("passable") is False:
@@ -531,6 +721,8 @@ class Player:
                 empty.append((d, ore_pos))
 
         candidates = empty if empty else steal
+        if not candidates and allow_ally:
+            candidates = ally
         if not candidates:
             return None
         candidates.sort(key=lambda t: t[0])
@@ -559,6 +751,7 @@ class Player:
         self.relay_stuck = 0
         self.relay_path = None
         self.relay_built_to = -1
+        self.relay_merging = False
         self.target = self.core_pos
         self.ore_site = None
         self.skipped_ores.add((harvester_pos.x, harvester_pos.y))
@@ -569,6 +762,7 @@ class Player:
         self.relay_path = None
         self.relay_stuck = 0
         self.relay_built_to = -1
+        self.relay_merging = False
 
     def _abort_relay(self) -> None:
         self._clear_relay()
@@ -590,7 +784,21 @@ class Player:
     def _adjacent_to_ore(self, pos: Position, ore: Position) -> bool:
         return abs(pos.x - ore.x) + abs(pos.y - ore.y) <= 1
 
-    def _direction_candidates( self, ct: Controller, pos: Position, target: Position ) -> list[Direction]:
+    def _walk_passable(self, ct: Controller, pos: Position) -> bool:
+        if not in_bounds(ct, pos):
+            return False
+        if ct.is_in_vision(pos):
+            return ct.is_tile_passable(pos)
+        entry = self.hivemind.local_map.get((pos.x, pos.y))
+        if entry is None:
+            return True
+        if "passable" not in entry:
+            return True
+        return bool(entry["passable"])
+
+    def _direction_candidates(
+        self, ct: Controller, pos: Position, target: Position
+    ) -> list[Direction]:
         desired = nearest_cardinal(pos.direction_to(target))
         if desired == Direction.CENTRE:
             return []
@@ -598,6 +806,47 @@ class Player:
         remaining = [d for d in DIRECTIONS if d not in primary]
         random.shuffle(remaining)
         return primary + remaining
+
+    def _greedy_move_toward(self, ct: Controller, target: Position) -> bool:
+        pos = ct.get_position()
+        for d in self._direction_candidates(ct, pos, target):
+            if self._try_move(ct, d):
+                return True
+        return False
+
+    def _astar_move_toward(self, ct: Controller, target: Position) -> bool:
+        """A* first step toward target; False if no path or move failed."""
+        pos = ct.get_position()
+        if manhattan(pos, target) < 2:
+            return False
+
+        def walk_ok(p: Position) -> bool:
+            if p.x == target.x and p.y == target.y:
+                return True
+            return self._walk_passable(ct, p)
+
+        path = astar(
+            pos,
+            target,
+            is_passable=walk_ok,
+            max_iters=PATH_MAX_ITERS,
+        )
+        if path is None or len(path) < 2:
+            return False
+        step = path[1]
+        # Don't step onto an impassable goal — stop adjacent via greedy instead
+        if step.x == target.x and step.y == target.y and not self._walk_passable(
+            ct, step
+        ):
+            return self._greedy_move_toward(ct, target)
+        d = nearest_cardinal(pos.direction_to(step))
+        return self._try_move(ct, d)
+
+    def _move_toward_pos(self, ct: Controller, target: Position) -> bool:
+        """Prefer A* when far; greedy fallback."""
+        if self._astar_move_toward(ct, target):
+            return True
+        return self._greedy_move_toward(ct, target)
 
     def _relay_toward_core(self, ct: Controller) -> None:
         if self.core_pos is None or self.relay_origin is None:
@@ -608,8 +857,14 @@ class Player:
         pos = ct.get_position()
         origin_visible = ct.is_in_vision(self.relay_origin)
         path = self.relay_path
+        # Merge paths: build spur only; last tile is the existing join belt.
+        spur_end = (
+            len(path) - 1
+            if path is not None and self.relay_merging and len(path) > 0
+            else None
+        )
 
-        # Raise watermark from currently visible correctly facing belts.
+        # Raise watermark only through contiguous visible correct belts.
         if path is not None:
             contig = self.relay_built_to
             while contig + 1 < len(path):
@@ -625,16 +880,9 @@ class Player:
                 if self.relay_built_to >= 0:
                     self.relay_origin = path[self.relay_built_to]
                 else:
+                    # Stay anchored at the builder; do not invent watermark
+                    # progress from nearest path tile (false-completes relays).
                     self.relay_origin = pos
-                    best_i = 0
-                    best_d = float("inf")
-                    for i, tile in enumerate(path):
-                        d = pos.distance_squared(tile)
-                        if d < best_d:
-                            best_d = d
-                            best_i = i
-                    # Nearest tile is a progress hint when we have no watermark yet.
-                    self.relay_built_to = max(self.relay_built_to, best_i - 1)
             else:
                 self.relay_origin = pos
         else:
@@ -645,19 +893,41 @@ class Player:
                 path = None
                 self.relay_path = None
                 self.relay_built_to = -1
+                self.relay_merging = False
 
         if path is None:
-            path = plan_conveyor_path_to_core( ct, self.relay_origin, self.core_pos, ore_blocked=ore_blocked )
+            path, merging = pick_relay_path(
+                ct,
+                self.relay_origin,
+                self.core_pos,
+                origin=self.relay_origin,
+                ore_blocked=ore_blocked,
+            )
             self.relay_path = path
-            self.relay_built_to = -1
-        if path is None:
-            self._abort_relay()
-            return
+            self.relay_merging = merging
+            if path is None:
+                self._abort_relay()
+                return
+            spur_end = len(path) - 1 if merging and len(path) > 0 else None
+            # New path indices: re-derive contiguous prefix (e.g. reseed belt).
+            self.relay_built_to = extend_relay_built_to(
+                ct, path, self.core_pos, -1, end=spur_end
+            )
 
         # Never scan behind the high-water mark (fogged early tiles look incomplete).
         work_from = self.relay_built_to + 1
-        idx = first_incomplete_index(ct, path, self.core_pos, start=work_from)
+        idx = first_incomplete_index(
+            ct, path, self.core_pos, start=work_from, end=spur_end
+        )
         if idx is None:
+            if self.relay_merging:
+                join = path[-1]
+                if ct.is_in_vision(join) and _allied_belt_id(ct, join) is None:
+                    # Join target gone — replan next turn.
+                    self.relay_path = None
+                    self.relay_built_to = -1
+                    self.relay_merging = False
+                    return
             self._clear_relay()
             return
 
@@ -677,12 +947,7 @@ class Player:
                 return
             if ct.get_move_cooldown() != 0:
                 return
-            progressed = False
-            for d in self._direction_candidates(ct, pos, tile):
-                if self._try_move(ct, d):
-                    progressed = True
-                    break
-            if progressed:
+            if self._move_toward_pos(ct, tile):
                 self.relay_stuck = 0
             else:
                 self.relay_stuck += 1
@@ -739,33 +1004,24 @@ class Player:
     # Movement / targeting
     # ------------------------------------------------------------------
 
-    def _move_toward_target(self, ct: Controller) -> None:
+    def _move_toward_target(self, ct: Controller, *, retarget: bool = True) -> None:
         if ct.get_move_cooldown() != 0:
             return
 
         pos = ct.get_position()
-        if self.ore_site is not None:
-            self.target = self.ore_site
-        elif self.target is None or pos == self.target or self.stuck >= 3:
-            self.target = self._pick_target(ct)
-            self.stuck = 0
+        if retarget:
+            if self.ore_site is not None:
+                self.target = self.ore_site
+            elif self.target is None or pos == self.target or self.stuck >= 3:
+                self.target = self._pick_target(ct)
+                self.stuck = 0
         if self.target is None:
             return
 
-        desired = pos.direction_to(self.target)
-        if desired == Direction.CENTRE:
+        if pos.x == self.target.x and pos.y == self.target.y:
             return
 
-        primary = [desired, desired.rotate_left(), desired.rotate_right()]
-        for d in primary:
-            if self._try_move(ct, d):
-                return
-        remaining = [d for d in DIRECTIONS if d not in primary]
-        random.shuffle(remaining)
-        for d in remaining:
-            if self._try_move(ct, d):
-                return
-
+        self._move_toward_pos(ct, self.target)
     def _try_move(self, ct: Controller, d: Direction) -> bool:
         if d == Direction.CENTRE:
             return False
@@ -812,6 +1068,4 @@ class Player:
     # ------------------------------------------------------------------
 
     def _run_gunner(self, ct: Controller) -> None:
-        target = ct.get_gunner_target()
-        if target is not None and ct.can_fire(target):
-            ct.fire(target)
+        run_gunner(ct)

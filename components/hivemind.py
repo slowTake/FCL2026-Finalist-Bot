@@ -1,7 +1,7 @@
-from fcode import Controller, EntityType, Position, Environment
+from fcode import Controller, EntityType, Position, Environment, Direction
 from enum import IntEnum
 from features import KNOWN_MAPS, MAP_ID_TO_NAME, WALL_LOCATIONS, ORE_LOCATIONS
-from vision import pack_vision_grid, unpack_vision_grid, pack_intel_slot, unpack_intel_slot, INT_TO_ENTITY
+from vision import pack_vision_grid, unpack_vision_grid, pack_intel_slot, unpack_intel_slot, INT_TO_ENTITY, pack_infra, unpack_infra
 
 class CoreState(IntEnum):
     UNKNOWN = 0
@@ -29,6 +29,7 @@ class HiveMind:
         self.map_name = "UNKNOWN"
         self._map_detected = False
         self._walls_loaded = False
+        self.last_communicated_infra = {}
 
     def _detect_and_store_map(self, ct: Controller) -> None:
         if self._map_detected: return
@@ -225,15 +226,104 @@ class HiveMind:
         self._update_local_vision(ct)
 
         # 6. Execute Metronome & Sync Protocol
-        if self.global_turn % 2 == 0:
-            if is_core:
-                total_builders = ct.read_store(7)
-                if total_builders > 0:
-                    current = ct.read_store(13)
-                    next_broadcaster = (current % total_builders) + 1
-                    ct.write_store(13, next_broadcaster)
-            elif ct.get_entity_type() == EntityType.BUILDER_BOT:
-                if self.my_index == ct.read_store(13):
+        if is_core and self.global_turn % 2 == 1:
+            total_builders = ct.read_store(7)
+            if total_builders > 0:
+                current = ct.read_store(13)
+                if current == 0:
+                    current = 1
+                else:
+                    current = (current % total_builders) + 1
+                ct.write_store(13, current)
+
+        if not is_core and ct.get_entity_type() == EntityType.BUILDER_BOT:
+            if self.my_index == ct.read_store(13):
+                if self.global_turn % 2 == 0:
                     self._broadcast_vision(ct)
-        else:
-            self._sync_vision(ct)
+                else:
+                    self._broadcast_infrastructure(ct)
+
+        if self.global_turn > 0:
+            if self.global_turn % 2 == 1:
+                self._sync_vision(ct)
+            else:
+                self._sync_infrastructure(ct)
+
+    def _get_infra_type(self, entity_data: dict | None) -> int:
+        if not entity_data: return 0
+        etype = entity_data.get("type")
+        if etype == EntityType.HARVESTER: return 9
+        
+        d = entity_data.get("direction", Direction.NORTH)
+        offset = 0
+        if d == Direction.EAST: offset = 1
+        elif d == Direction.SOUTH: offset = 2
+        elif d == Direction.WEST: offset = 3
+        
+        if etype == EntityType.CONVEYOR: return 1 + offset
+        if etype == EntityType.SPLITTER: return 5 + offset
+        return 0
+
+    def _broadcast_infrastructure(self, ct: Controller):
+        pos = ct.get_position()
+        w = ct.get_map_width()
+        h = ct.get_map_height()
+        deltas = []
+        
+        for dy in range(-4, 5):
+            for dx in range(-4, 5):
+                if dx*dx + dy*dy > 16: continue
+                px = pos.x + dx
+                py = pos.y + dy
+                if 0 <= px < w and 0 <= py < h:
+                    pos_tuple = (px, py)
+                    ent = self.local_map.get(pos_tuple, {}).get("entity")
+                    
+                    if ent and ent.get("team") != ct.get_team():
+                        ent = None
+                        
+                    current_type = self._get_infra_type(ent)
+                    last_type = self.last_communicated_infra.get(pos_tuple, 0)
+                    
+                    if current_type != last_type:
+                        deltas.append((px, py, current_type))
+                        self.last_communicated_infra[pos_tuple] = current_type
+                        
+                    if len(deltas) >= 11:
+                        break
+            if len(deltas) >= 11:
+                break
+                
+        s0, s1, s2, s3, s4 = pack_infra(deltas)
+        ct.write_store(8, s0)
+        ct.write_store(9, s1)
+        ct.write_store(10, s2)
+        ct.write_store(11, s3)
+        ct.write_store(12, s4)
+
+    def _sync_infrastructure(self, ct: Controller):
+        s0 = ct.read_store(8)
+        s1 = ct.read_store(9)
+        s2 = ct.read_store(10)
+        s3 = ct.read_store(11)
+        s4 = ct.read_store(12)
+        
+        deltas = unpack_infra(s0, s1, s2, s3, s4)
+        for x, y, t in deltas:
+            pos_tuple = (x, y)
+            if pos_tuple not in self.local_map:
+                self.local_map[pos_tuple] = {}
+            
+            if t == 0:
+                if "entity" in self.local_map[pos_tuple] and self.local_map[pos_tuple]["entity"].get("team") == ct.get_team():
+                    del self.local_map[pos_tuple]["entity"]
+            elif t == 9:
+                self.local_map[pos_tuple]["entity"] = {"type": EntityType.HARVESTER, "team": ct.get_team()}
+            elif 1 <= t <= 4:
+                d = [Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST][t - 1]
+                self.local_map[pos_tuple]["entity"] = {"type": EntityType.CONVEYOR, "team": ct.get_team(), "direction": d}
+                self.local_map[pos_tuple]["passable"] = True
+            elif 5 <= t <= 8:
+                d = [Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST][t - 5]
+                self.local_map[pos_tuple]["entity"] = {"type": EntityType.SPLITTER, "team": ct.get_team(), "direction": d}
+                self.local_map[pos_tuple]["passable"] = True
