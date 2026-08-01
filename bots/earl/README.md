@@ -1,10 +1,14 @@
 # earl
 
 Starter economy loop + HiveMind (`components/` symlinks) + **inbound steal-relay**
-belts to the **ally** core only. **Raiders** (even builders): push enemy → clear
-belts on the way → looping gunners/sentinels every 40 turns from turn 30
-(`attack.py`). Builders 1/3/5 stay on economy (idle ore recheck every 50 turns);
-late spawns 6+ defend and lay a home apron (`defence.py`). Core tops ammo from turn 30.
+belts to the **ally** core only. **Even builders** run the active raid order
+(`ACTIVE_RAID_ORDER` in `main.py`): default **`phalanx`** (home apron + wing
+gunners in `defence.py`; pre-600 **odd** builders pivot to raiders at **300**,
+pre-600 **even** at **600**, fire-and-forget; post-600 odds → economy, post-600
+evens → phalanx); set to **`raiders`** for the old offensive belt-raid →
+gunner/sentinel siege loop (`attack.py`). Builders 1/3/5 stay on
+economy (idle ore recheck every 50 turns); late spawns 6+ defend and lay a home
+apron (`defence.py`). Core tops ammo from turn 10 (phalanx) or 30 (raiders).
 
 ## Store slots
 
@@ -12,7 +16,7 @@ late spawns 6+ defend and lay a home apron (`defence.py`). Core tops ammo from t
 |------|-------|---------|
 | 0–1 | — | Free |
 | 2 | Player | `SLOT_HARVESTER_COUNT` — total harvesters we built |
-| 3 | Player | `SLOT_SENTINEL_COUNT` — living siege sentinels (for ammo top-up) |
+| 3 | Player | `SLOT_SENTINEL_COUNT` — living phalanx wing gunners or siege sentinels (ammo) |
 | 4–6 | — | Free |
 | 7 | HiveMind | Builder registry count (spawn increments; builders read as `my_index`) |
 | 8–9 | HiveMind | Packed enemy intel (up to 4 targets) |
@@ -31,13 +35,15 @@ enemy core** when known (ASSUMED/KNOWN from slot 15); otherwise closest to
 **map center**. Tries candidates via `hivemind.spawn_builder` / `can_spawn`.
 
 **Schedule:** rush the first **5** as soon as Ti allows, then spawn **one more
-every 25 turns** starting at turn **10**, up to **9 living** (turns
-10 / 35 / 60 / 85). After the initial 9 have been spawned, **replenish ASAP**
-whenever living builders drop below 9. If the rush finishes after turn 10, take
-the next interval slot.
+every 25 turns** starting at turn **10**, up to **9** total spawned (turns
+10 / 35 / 60 / 85). After that, **replenish ASAP** whenever living builders
+drop below 9. Under turret threat, spawn ASAP up to **15 living** (hard
+lifetime `num_spawned` cap still **15** so vision undercount cannot run away).
+If the rush finishes after turn 10, take the next interval slot.
 
-From turn ≥ 30 the core tops team ammo to `5 + 20 × max(1, living sentinels)`
-via `convert_ammo` (before the living-cap early return), reading slot 3.
+From the ammo start turn the core tops team ammo to
+`5 + 20 × max(1, living count in slot 3)` via `convert_ammo` (before the
+living-cap early return). Phalanx starts at turn **10**; raiders at **30**.
 
 ## Builder task order
 
@@ -49,14 +55,14 @@ Each turn (`_run_builder`), after HiveMind `tick` and stuck tracking:
    1. **Enemy gunner in vision** — fire if orthogonally adjacent, else move
       toward it (skip the rest this turn).
    2. **Heal** adjacent friendlies.
-   3. **Fire** adjacent enemies (prefer builders).
-   4. **Apron** on assigned side only: 2-deep inward conveyors + clockwise
-      corner barrier (N→NW, E→NE, S→SE, W→SW); repair forever when missing.
+   3. **Fire** adjacent enemy buildings (not builder bots).
+   4. **Apron** on assigned side only: 3-deep inward conveyors (no barriers);
+      repair forever when missing.
    5. **Linger** on that side’s depth-1 strip.
-   No ore / relay / siege. Gunner building deferred.
+   No ore / relay / siege. Wing gunners are phalanx-only.
 1. **Raider gate** (even `my_index`, enemy core known, any turn) → abort any
-   relay/ore task; run `attack.py` phases below; move toward the chosen site and
-   return. Odd builders (1/3/5) keep the economy loop below.
+   relay/ore task; run `ACTIVE_RAID_ORDER` (`phalanx` or `raiders`); move toward
+   the chosen site and return. Odd builders (1/3/5) keep the economy loop below.
 2. **Idle ore recheck** (not in relay, every 50 turns): clear `skipped_ores` /
    `ore_site` and allow ally-harvester candidates so broken inbound belts can be
    rebuilt. Does not abort a live relay.
@@ -71,9 +77,51 @@ Each turn (`_run_builder`), after HiveMind `tick` and stuck tracking:
 6. **Heal** adjacent damaged friendlies (if action free).
 7. **Move** toward `ore_site` / `_pick_target` (no pave-while-walking).
 
-### Raiders (`attack.py`)
+### Phalanx (`defence.py`) — default (`ACTIVE_RAID_ORDER = "phalanx"`)
 
-Once the enemy core is known (`my_index` even, > 0):
+Even builders stay home once the enemy core is known:
+
+1. **Hunt turrets** — if an enemy gunner or sentinel is in vision, fire if
+   orthogonally adjacent, else move to attack it.
+2. **Place wing gunners** from turn **10**: fill **every in-bounds side**
+   (not only the approach). Depth rings fill before stacking (all sides get
+   depth-1 before approach depth-2); within a depth prefer the enemy approach
+   side. Up to **4 pads per flank** at depths 1–4; face toward the enemy;
+   sync living count to slot 3. Raiders stagger across missing pads.
+3. **Assist apron** on the enemy approach side: 3-deep inward conveyors (no
+   barriers).
+4. **Guard harvesters**: place **1 gunner** cardinally beside each ally harvester
+   within Chebyshev **15** of the core footprint (skip apron/core tiles; face
+   enemy). Stagger raiders across missing pads.
+5. **Clear economy** — if an enemy harvester is in vision, fire when adjacent
+   else move to it; else path onto the nearest enemy belt and stand-fire.
+6. **Soft idle** — repair missing apron / rebuild dead pads; otherwise linger on
+   the approach depth-1 strip.
+
+While an enemy gunner/sentinel is in **core vision**, the core keeps spawning
+extra builders past the normal 9 up to **15 living** (lifetime `num_spawned`
+hard-capped at 15). Even-index
+builders run phalanx (including 6+); odd late spawns still defend assigned sides
+until their pivot.
+
+**Pivot to raiders** (`run_attack_builder`) — fire-and-forget (no recall):
+- Round **300+**: pre-600 odd-index builders (1, 3, 5, 7, …)
+- Round **600+**: pre-600 even-index builders (2, 4, 6, …) leave phalanx
+
+**Post-600 home refill** (by spawn round):
+- New **odds** → economy (mine / defender gate)
+- New **evens** → phalanx forever
+
+Home wing gunners stay; threat-spawn and phalanx ammo stay active while
+`ACTIVE_RAID_ORDER = "phalanx"` (new evens keep the home role after 600).
+
+Gunner fire uses shared `run_gunner` (core → gunner → sentinel → builder →
+harvester → belts; rotates toward core/combat in vision).
+
+### Raiders (`attack.py`) — `ACTIVE_RAID_ORDER = "raiders"`
+
+Packaged as the `RAIDERS` task list (`run_raiders_tasklist` /
+`run_attack_builder`). Once the enemy core is known (`my_index` even, > 0):
 
 1. **Belt raid** (`round < 30`): head toward the enemy core; if an enemy
    conveyor/splitter is in vision, divert to the **nearest** one and stand-fire
@@ -83,19 +131,21 @@ Once the enemy core is known (`my_index` even, > 0):
      gunners on empty tiles at Chebyshev distance **1–3** from the enemy 2×2
      footprint (**prefer closer**); **face into the known enemy core** (nearest
      footprint tile; prefer cardinal aim); raiders side-stagger. Still stand-fire
-     if on a belt. Idle at cap until the next gunner window (or if turrets die,
-     rebuild).
+     if on a belt.
    - **Sentinels** (last **20** turns of each cycle): place up to **5** siege
      sentinels at r² 16–32 facing into the enemy core (prefer max range); if no
-     site fits, fall back to ~**3** tiles from the footprint; sync count to slot 3;
-     idle after cap.
+     site fits, fall back to ~**3** tiles from the footprint; sync count to slot 3.
+3. **Hunt vision** (when gunner/sentinel placement is idle at cap): attack the
+   nearest enemy **gunner → sentinel → harvester → belt** in vision (adjacent
+   fire for buildings; stand-fire for belts); else push the enemy core.
 
 Examples: gunners 30–49, sentinels 50–69, gunners 70–89, …
 
 - **Ammo:** from turn 30, core keeps pool at `5 + 20 × max(1, n)` (prestock 25,
   then +20 per living sentinel). Turrets use global ammo.
-- **Gunner fire:** core → builders → harvesters → belts (conveyor/splitter).
-- **Sentinel fire:** core → builders → harvesters.
+- **Gunner fire:** core → gunner → sentinel → builder → harvester → belts.
+  Rotates toward core or combat targets in vision when off the fire line.
+- **Sentinel fire:** core → gunner → sentinel → builder → harvester (fixed facing).
 
 ### Ore targeting
 
@@ -117,14 +167,17 @@ finds no path. Relays search layable/joinable tiles toward the ally core.
 ### Inbound relay
 
 After building or claiming a harvester, A\* a conveyor path to an **ally**
-core-adjacent tile (`is_core_adjacent` requires our team). If a path onto a
-**visible allied belt** is at least 2 tiles shorter, prefer that merge spur
-instead (build up to the join; do not rebuild the existing network). Belts face
-toward the next hop / ally core. Wrong-facing allied belts on the spur are
-destroyed and rebuilt; enemy belts are cleared via stand-and-fire, then
-replaced. Progress uses a contiguous vision watermark (`relay_built_to`) so
-fogged mid-path gaps are not skipped. Completing or aborting the path clears
-relay state; builder then picks a new ore.
+core-adjacent tile (`is_core_adjacent` requires our team). Entry side is
+**staggered by builder index** across in-bounds core faces (depth-1), falling
+back to any core-adjacent tile if that face is unreachable. If a path onto a
+**visible allied belt** at least Chebyshev **4** from the core is at least
+**8** tiles shorter than the core path, prefer that merge spur instead (build
+up to the join; do not rebuild the existing network). Near-core / apron belts
+are not merge targets. Belts face toward the next hop / ally core. Wrong-facing
+allied belts on the spur are destroyed and rebuilt; enemy belts are cleared via
+stand-and-fire, then replaced. Progress uses a contiguous vision watermark
+(`relay_built_to`) so fogged mid-path gaps are not skipped. Completing or
+aborting the path clears relay state; builder then picks a new ore.
 
 ## Run
 
