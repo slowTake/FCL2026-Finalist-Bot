@@ -57,6 +57,7 @@ FIRST_INTERVAL_SPAWN = 10
 SPAWN_INTERVAL = 25
 PATH_MAX_ITERS = 2000
 ORE_RECHECK_INTERVAL = 50
+MERGE_SAVE_MIN = 2
 
 
 def nearest_cardinal(d: Direction) -> Direction:
@@ -255,6 +256,61 @@ def plan_conveyor_path_to_core(
     )
 
 
+def is_merge_goal(ct: Controller, pos: Position, *, origin: Position) -> bool:
+    """Visible allied belt that is not the relay origin or its cardinal neighbors."""
+    if _allied_belt_id(ct, pos) is None:
+        return False
+    if pos.x == origin.x and pos.y == origin.y:
+        return False
+    for d in CARDINALS:
+        n = origin.add(d)
+        if pos.x == n.x and pos.y == n.y:
+            return False
+    return True
+
+
+def plan_conveyor_path_to_merge(
+    ct: Controller,
+    start: Position,
+    core_pos: Position,
+    *,
+    origin: Position,
+    ore_blocked: set[tuple[int, int]] | None = None,
+) -> list[Position] | None:
+    """Shortest layable path onto a visible allied belt (join target inclusive)."""
+    return plan_conveyor_path(
+        ct,
+        start,
+        is_goal=lambda p: is_merge_goal(ct, p, origin=origin),
+        ore_blocked=ore_blocked,
+        heuristic_to=core_pos,
+    )
+
+
+def pick_relay_path(
+    ct: Controller,
+    start: Position,
+    core_pos: Position,
+    *,
+    origin: Position,
+    ore_blocked: set[tuple[int, int]] | None = None,
+) -> tuple[list[Position] | None, bool]:
+    """Prefer a merge spur when it saves at least MERGE_SAVE_MIN tiles vs core."""
+    core_path = plan_conveyor_path_to_core(
+        ct, start, core_pos, ore_blocked=ore_blocked
+    )
+    merge_path = plan_conveyor_path_to_merge(
+        ct, start, core_pos, origin=origin, ore_blocked=ore_blocked
+    )
+    if merge_path is not None and core_path is not None:
+        if len(merge_path) <= len(core_path) - MERGE_SAVE_MIN:
+            return merge_path, True
+        return core_path, False
+    if merge_path is not None:
+        return merge_path, True
+    return core_path, False
+
+
 def path_travel_dir(
     path: list[Position], index: int, core_pos: Position
 ) -> Direction:
@@ -310,8 +366,11 @@ def first_incomplete_index(
     core_pos: Position,
     *,
     start: int = 0,
+    end: int | None = None,
 ) -> int | None:
-    for i in range(max(0, start), len(path)):
+    """First incomplete index in [start, end). end=None means full path."""
+    limit = len(path) if end is None else min(end, len(path))
+    for i in range(max(0, start), limit):
         want = path_travel_dir(path, i, core_pos)
         if not belt_faces(ct, path[i], want):
             return i
@@ -323,14 +382,18 @@ def extend_relay_built_to(
     path: list[Position],
     core_pos: Position,
     built_to: int,
+    *,
+    end: int | None = None,
 ) -> int:
     """Advance watermark only through contiguous correct belts in vision.
 
     Never skips fog or gaps — a later visible correct belt must not mark
-    unfinished mid-path tiles complete.
+    unfinished mid-path tiles complete. end caps the scan (merge spurs omit
+    the join belt).
     """
+    limit = len(path) if end is None else min(end, len(path))
     i = max(-1, built_to) + 1
-    while i < len(path):
+    while i < limit:
         tile = path[i]
         if not ct.is_in_vision(tile):
             break
@@ -363,6 +426,7 @@ class Player:
         self.relay_path: list[Position] | None = None
         self.relay_stuck = 0
         self.relay_built_to = -1  # highest path index known complete this relay
+        self.relay_merging = False
 
     def run(self, ct: Controller) -> None:
         try:
@@ -681,6 +745,7 @@ class Player:
         self.relay_stuck = 0
         self.relay_path = None
         self.relay_built_to = -1
+        self.relay_merging = False
         self.target = self.core_pos
         self.ore_site = None
         self.skipped_ores.add((harvester_pos.x, harvester_pos.y))
@@ -691,6 +756,7 @@ class Player:
         self.relay_path = None
         self.relay_stuck = 0
         self.relay_built_to = -1
+        self.relay_merging = False
 
     def _abort_relay(self) -> None:
         self._clear_relay()
@@ -790,11 +856,21 @@ class Player:
         pos = ct.get_position()
         origin_visible = ct.is_in_vision(self.relay_origin)
         path = self.relay_path
+        # Merge paths: build spur only; last tile is the existing join belt.
+        spur_end = (
+            len(path) - 1
+            if path is not None and self.relay_merging and len(path) > 0
+            else None
+        )
 
         # Raise watermark only through contiguous visible correct belts.
         if path is not None:
             self.relay_built_to = extend_relay_built_to(
-                ct, path, self.core_pos, self.relay_built_to
+                ct,
+                path,
+                self.core_pos,
+                self.relay_built_to,
+                end=spur_end,
             )
 
         if not origin_visible:
@@ -815,24 +891,41 @@ class Player:
                 path = None
                 self.relay_path = None
                 self.relay_built_to = -1
+                self.relay_merging = False
 
         if path is None:
-            path = plan_conveyor_path_to_core(
-                ct, self.relay_origin, self.core_pos, ore_blocked=ore_blocked
+            path, merging = pick_relay_path(
+                ct,
+                self.relay_origin,
+                self.core_pos,
+                origin=self.relay_origin,
+                ore_blocked=ore_blocked,
             )
             self.relay_path = path
+            self.relay_merging = merging
             if path is None:
                 self._abort_relay()
                 return
+            spur_end = len(path) - 1 if merging and len(path) > 0 else None
             # New path indices: re-derive contiguous prefix (e.g. reseed belt).
             self.relay_built_to = extend_relay_built_to(
-                ct, path, self.core_pos, -1
+                ct, path, self.core_pos, -1, end=spur_end
             )
 
         # Never scan behind the high-water mark (fogged early tiles look incomplete).
         work_from = self.relay_built_to + 1
-        idx = first_incomplete_index(ct, path, self.core_pos, start=work_from)
+        idx = first_incomplete_index(
+            ct, path, self.core_pos, start=work_from, end=spur_end
+        )
         if idx is None:
+            if self.relay_merging:
+                join = path[-1]
+                if ct.is_in_vision(join) and _allied_belt_id(ct, join) is None:
+                    # Join target gone — replan next turn.
+                    self.relay_path = None
+                    self.relay_built_to = -1
+                    self.relay_merging = False
+                    return
             self._clear_relay()
             return
 
