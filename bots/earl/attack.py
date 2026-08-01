@@ -10,7 +10,9 @@ Default ACTIVE_RAID_ORDER is "phalanx" (home pads in defence.py).
 
 Core tops ammo to 5 + 20 × max(1, n) from a caller-chosen min_turn
 (default GUNNER_TURN; phalanx uses turn 20).
-Gunners fire core → builders → harvesters → belts; sentinels omit belts.
+Turret fire: core first; else gunner → sentinel → builder (then harvester;
+gunners also belts). Gunners rotate toward core or combat targets in vision
+when off the current fire line; sentinels stay fixed-facing.
 """
 
 from __future__ import annotations
@@ -38,14 +40,28 @@ _CARDINALS = frozenset(
 # Fire priority: lower = better
 _FIRE_PRIORITY = {
     EntityType.CORE: 1,
-    EntityType.BUILDER_BOT: 2,
-    EntityType.HARVESTER: 3,
+    EntityType.GUNNER: 2,
+    EntityType.SENTINEL: 3,
+    EntityType.BUILDER_BOT: 4,
+    EntityType.HARVESTER: 5,
 }
 
-_GUNNER_FIRE_PRIORITY = {
-    **_FIRE_PRIORITY,
-    EntityType.CONVEYOR: 4,
-    EntityType.SPLITTER: 4,
+_COMBAT_TYPES = (
+    EntityType.GUNNER,
+    EntityType.SENTINEL,
+    EntityType.BUILDER_BOT,
+)
+
+_COMBAT_FIRE_PRIORITY = {
+    EntityType.GUNNER: 2,
+    EntityType.SENTINEL: 3,
+    EntityType.BUILDER_BOT: 4,
+}
+
+_GUNNER_FALLBACK_FIRE_PRIORITY = {
+    EntityType.HARVESTER: 5,
+    EntityType.CONVEYOR: 6,
+    EntityType.SPLITTER: 6,
 }
 
 
@@ -409,9 +425,15 @@ def top_up_ammo(ct: Controller, *, min_turn: int | None = None) -> None:
         ct.convert_ammo(amount)
 
 
-def _fire_best(
+def _tile_victim(ct: Controller, tile: Position) -> int | None:
+    bot = ct.get_tile_builder_bot_id(tile)
+    return bot if bot is not None else ct.get_tile_building_id(tile)
+
+
+def _try_fire_priority(
     ct: Controller, priority: dict[EntityType, int]
-) -> None:
+) -> bool:
+    """Fire best enemy currently on the attack line. True if fired."""
     my_team = ct.get_team()
     best_tile: Position | None = None
     best_pri = 99
@@ -419,14 +441,10 @@ def _fire_best(
     for tile in ct.get_attackable_tiles():
         if not ct.can_fire(tile):
             continue
-        bot = ct.get_tile_builder_bot_id(tile)
-        victim = bot if bot is not None else ct.get_tile_building_id(tile)
-        if victim is None:
+        victim = _tile_victim(ct, tile)
+        if victim is None or ct.get_team(victim) == my_team:
             continue
-        if ct.get_team(victim) == my_team:
-            continue
-        etype = ct.get_entity_type(victim)
-        pri = priority.get(etype)
+        pri = priority.get(ct.get_entity_type(victim))
         if pri is None:
             continue
         if pri < best_pri:
@@ -435,18 +453,105 @@ def _fire_best(
             if pri == 1:
                 break
 
-    if best_tile is not None:
-        ct.fire(best_tile)
+    if best_tile is None:
+        return False
+    ct.fire(best_tile)
+    return True
+
+
+def _enemy_core_tiles(ct: Controller) -> list[Position]:
+    """Enemy core footprint tiles currently in vision."""
+    my_team = ct.get_team()
+    tiles: list[Position] = []
+    for eid in ct.get_nearby_entities():
+        if ct.get_entity_type(eid) != EntityType.CORE:
+            continue
+        if ct.get_team(eid) == my_team:
+            continue
+        core = ct.get_position(eid)
+        for t in _core_footprint(core):
+            if ct.is_in_vision(t):
+                tiles.append(t)
+    return tiles
+
+
+def _best_vision_target(
+    ct: Controller,
+    priority: dict[EntityType, int],
+    types: tuple[EntityType, ...],
+) -> Position | None:
+    """Best enemy of given types in vision: priority then nearer."""
+    my_team = ct.get_team()
+    pos = ct.get_position()
+    best: Position | None = None
+    best_pri = 99
+    best_dist = 10**9
+
+    for eid in ct.get_nearby_entities():
+        if ct.get_team(eid) == my_team:
+            continue
+        etype = ct.get_entity_type(eid)
+        if etype not in types:
+            continue
+        pri = priority.get(etype)
+        if pri is None:
+            continue
+        tile = ct.get_position(eid)
+        dist = pos.distance_squared(tile)
+        if pri < best_pri or (pri == best_pri and dist < best_dist):
+            best_pri = pri
+            best_dist = dist
+            best = tile
+    return best
+
+
+def _try_rotate_toward(ct: Controller, tile: Position) -> bool:
+    """Gunner-only: rotate to face tile if that facing can hit it."""
+    pos = ct.get_position()
+    facing = facing_8way(pos, tile)
+    if facing == ct.get_direction():
+        return False
+    if not ct.can_fire_from(pos, facing, EntityType.GUNNER, tile):
+        return False
+    if not ct.can_rotate(facing):
+        return False
+    ct.rotate(facing)
+    return True
+
+
+def _try_rotate_toward_core(ct: Controller) -> bool:
+    """Rotate toward a vision core tile that would be hittable after rotate."""
+    best: Position | None = None
+    best_dist = 10**9
+    pos = ct.get_position()
+    for tile in _enemy_core_tiles(ct):
+        facing = facing_8way(pos, tile)
+        if not ct.can_fire_from(pos, facing, EntityType.GUNNER, tile):
+            continue
+        dist = pos.distance_squared(tile)
+        if dist < best_dist:
+            best_dist = dist
+            best = tile
+    return best is not None and _try_rotate_toward(ct, best)
 
 
 def run_sentinel(ct: Controller) -> None:
-    """Fire at best enemy on the attack line: core > builder > harvester."""
-    _fire_best(ct, _FIRE_PRIORITY)
+    """Fire on facing line: core > gunner > sentinel > builder > harvester."""
+    _try_fire_priority(ct, _FIRE_PRIORITY)
 
 
 def run_gunner(ct: Controller) -> None:
-    """Fire: core > builder > harvester > belt."""
-    _fire_best(ct, _GUNNER_FIRE_PRIORITY)
+    """Fire core; else rotate to core; else combat line; else rotate to combat."""
+    if _try_fire_priority(ct, {EntityType.CORE: 1}):
+        return
+    if _try_rotate_toward_core(ct):
+        return
+    if _try_fire_priority(ct, _COMBAT_FIRE_PRIORITY):
+        return
+    target = _best_vision_target(ct, _COMBAT_FIRE_PRIORITY, _COMBAT_TYPES)
+    if target is not None and _try_rotate_toward(ct, target):
+        return
+    _try_fire_priority(ct, _GUNNER_FALLBACK_FIRE_PRIORITY)
 
 
 def _run_belt_raid(

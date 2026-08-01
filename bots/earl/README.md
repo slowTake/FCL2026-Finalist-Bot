@@ -86,7 +86,8 @@ Even builders stay home once the enemy core is known:
 3. **Soft idle** — repair missing apron / rebuild dead pads; otherwise linger on
    the approach depth-1 strip.
 
-Sentinel fire logic is unchanged (same `run_sentinel` as siege).
+Sentinel fire uses shared `run_sentinel` (core → gunner → sentinel → builder →
+harvester on the facing line; no rotate).
 
 ### Raiders (`attack.py`) — `ACTIVE_RAID_ORDER = "raiders"`
 
@@ -112,8 +113,9 @@ Examples: gunners 30–49, sentinels 50–69, gunners 70–89, …
 
 - **Ammo:** from turn 30, core keeps pool at `5 + 20 × max(1, n)` (prestock 25,
   then +20 per living sentinel). Turrets use global ammo.
-- **Gunner fire:** core → builders → harvesters → belts (conveyor/splitter).
-- **Sentinel fire:** core → builders → harvesters.
+- **Gunner fire:** core → gunner → sentinel → builder → harvester → belts.
+  Rotates toward core or combat targets in vision when off the fire line.
+- **Sentinel fire:** core → gunner → sentinel → builder → harvester (fixed facing).
 
 ### Ore targeting
 
