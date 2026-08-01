@@ -442,10 +442,14 @@ class Player:
         if is_defender(self.hivemind.my_index):
             self._clear_relay()
             self.ore_site = None
-            hold = run_defender(ct, core_pos=self.core_pos)
+            hold = run_defender(
+                ct,
+                core_pos=self.core_pos,
+                my_index=self.hivemind.my_index,
+            )
             if hold is not None:
                 self.target = hold
-            self._move_toward_target(ct, retarget=False)
+                self._move_toward_target(ct, retarget=False)
             return
 
         if is_raider(self.hivemind.my_index, self.enemy_core_pos):

@@ -4,7 +4,7 @@ Starter economy loop + HiveMind (`components/` symlinks) + **inbound steal-relay
 belts to the **ally** core only. **Raiders** (even builders): push enemy → clear
 belts on the way → looping gunners/sentinels every 40 turns from turn 30
 (`attack.py`). Builders 1/3/5 stay on economy (idle ore recheck every 50 turns);
-late spawns 6+ defend (`defence.py`). Core tops ammo from turn 30.
+late spawns 6+ defend and lay a home apron (`defence.py`). Core tops ammo from turn 30.
 
 ## Store slots
 
@@ -41,9 +41,13 @@ via `convert_ammo` (before the spawn-cap early return), reading slot 3.
 
 Each turn (`_run_builder`), after HiveMind `tick` and stuck tracking:
 
-0. **Defender gate** (`my_index >= 6`) → `defence.py`: heal adjacent friendlies,
-   else fire adjacent enemies (prefer builders); linger on the core apron. No
-   ore / relay / siege. Gunners deferred.
+0. **Defender gate** (`my_index >= 6`) → `defence.py`:
+   - **Apron first:** 2-deep inward conveyors + depth-1 diagonal barriers
+     (even index → N+E belts + NW/NE barriers; odd → S+W + SW/SE). Repair
+     forever when tiles are missing; consumes the turn when building/moving.
+   - Else heal adjacent friendlies, else fire adjacent enemies (prefer
+     builders); linger on the core apron. No ore / relay / siege. Gunners
+     deferred.
 1. **Raider gate** (even `my_index`, enemy core known, any turn) → abort any
    relay/ore task; run `attack.py` phases below; move toward the chosen site and
    return. Odd builders (1/3/5) keep the economy loop below.
@@ -71,11 +75,13 @@ Once the enemy core is known (`my_index` even, > 0):
 2. **Siege loop** (from turn 30, every **40** turns):
    - **Gunners** (first **20** turns of each cycle): place up to **3** ally
      gunners on empty tiles at Chebyshev distance **1–3** from the enemy 2×2
-     footprint; **face into the known enemy core** (nearest footprint tile;
-     prefer cardinal aim); raiders side-stagger. Still stand-fire if on a belt.
-     Idle at cap until the next gunner window (or if turrets die, rebuild).
+     footprint (**prefer closer**); **face into the known enemy core** (nearest
+     footprint tile; prefer cardinal aim); raiders side-stagger. Still stand-fire
+     if on a belt. Idle at cap until the next gunner window (or if turrets die,
+     rebuild).
    - **Sentinels** (last **20** turns of each cycle): place up to **5** siege
-     sentinels at r² 16–32 facing into the enemy core; sync count to slot 3;
+     sentinels at r² 16–32 facing into the enemy core (prefer max range); if no
+     site fits, fall back to ~**3** tiles from the footprint; sync count to slot 3;
      idle after cap.
 
 Examples: gunners 30–49, sentinels 50–69, gunners 70–89, …

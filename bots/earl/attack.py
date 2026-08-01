@@ -19,7 +19,8 @@ GUNNER_PHASE_LEN = 20  # first half of each loop
 MAX_CORE_GUNNERS = 3
 MAX_SIEGE_SENTINELS = 5
 SENTINEL_RANGE_SQ = 32
-SENTINEL_PLACE_MIN_SQ = 16  # d=4 → 16
+SENTINEL_PLACE_MIN_SQ = 16  # prefer d≈4+
+SENTINEL_PLACE_FALLBACK_MIN_SQ = 9  # allow d≈3 when nothing else fits
 GUNNER_PLACE_MIN = 1
 GUNNER_PLACE_MAX = 3
 AMMO_PER_SENTINEL = 20
@@ -190,7 +191,40 @@ def pick_siege_site(
     my_index: int,
     local_map: dict,
 ) -> Position | None:
-    """Ring tile in sentinel range; each raider prefers a different side."""
+    """Ring tile in sentinel range; each raider prefers a different side.
+
+    Prefers r² ≥ SENTINEL_PLACE_MIN_SQ; if none, falls back to
+    SENTINEL_PLACE_FALLBACK_MIN_SQ (~3 tiles from the footprint).
+    """
+    site = _pick_siege_site(
+        ct,
+        enemy_core=enemy_core,
+        ally_core=ally_core,
+        my_index=my_index,
+        local_map=local_map,
+        min_dist_sq=SENTINEL_PLACE_MIN_SQ,
+    )
+    if site is not None:
+        return site
+    return _pick_siege_site(
+        ct,
+        enemy_core=enemy_core,
+        ally_core=ally_core,
+        my_index=my_index,
+        local_map=local_map,
+        min_dist_sq=SENTINEL_PLACE_FALLBACK_MIN_SQ,
+    )
+
+
+def _pick_siege_site(
+    ct: Controller,
+    *,
+    enemy_core: Position,
+    ally_core: Position | None,
+    my_index: int,
+    local_map: dict,
+    min_dist_sq: int,
+) -> Position | None:
     cx, cy = enemy_core.x, enemy_core.y
     footprint = _core_footprint(enemy_core)
     best: Position | None = None
@@ -199,6 +233,7 @@ def pick_siege_site(
     prefer = siege_preferred_side(my_index)
     w, h = ct.get_map_width(), ct.get_map_height()
 
+    # Outer rings first (5..3); fallback min allows d=3 tiles through the filter.
     ring: list[Position] = []
     for d in (5, 4, 3):
         for dx in (0, 1):
@@ -221,7 +256,7 @@ def pick_siege_site(
         if not (0 <= cand.x < w and 0 <= cand.y < h):
             continue
         dist = min(cand.distance_squared(t) for t in footprint)
-        if dist < SENTINEL_PLACE_MIN_SQ or dist > SENTINEL_RANGE_SQ:
+        if dist < min_dist_sq or dist > SENTINEL_RANGE_SQ:
             continue
         ent = local_map.get(key, {}).get("entity")
         if (
@@ -242,6 +277,7 @@ def pick_siege_site(
             else (1000 + 50 * min((side - prefer) % 8, (prefer - side) % 8))
         )
         ally_d = cand.distance_squared(ally_core) if ally_core is not None else 0
+        # Prefer max range when available; closer only via fallback min.
         score = side_pen + ally_d + (SENTINEL_RANGE_SQ - dist)
         if score < best_score:
             best_score = score
@@ -256,7 +292,7 @@ def pick_gunner_site(
     my_index: int,
     local_map: dict,
 ) -> Position | None:
-    """Empty tile Chebyshev 1–3 from enemy footprint; prefer cardinal aim."""
+    """Empty tile Chebyshev 1–3 from enemy footprint; prefer closer + cardinal."""
     footprint = _core_footprint(enemy_core)
     fp_keys = {(t.x, t.y) for t in footprint}
     best: Position | None = None
@@ -298,7 +334,8 @@ def pick_gunner_site(
                 if side == prefer
                 else (1000 + 50 * min((side - prefer) % 8, (prefer - side) % 8))
             )
-            score = side_pen + diag_pen + pos.distance_squared(cand) + cheb
+            # Strongly prefer closer to the enemy core; builder distance is tiebreak only.
+            score = side_pen + diag_pen + cheb * 100 + pos.distance_squared(cand)
             if score < best_score:
                 best_score = score
                 best = cand
