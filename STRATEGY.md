@@ -30,7 +30,7 @@ Every Builder Bot should be in one explicit role (via the Store), not all runnin
 | Phase | Rounds (soft) | Goal |
 | --- | --- | --- |
 | Opening | 1–80 | Spawn a small builder force, scout nearest ore, place first Harvester + full chain to Core |
-| Mid | 80–400 | Grow to ~4–8 productive Harvesters, Splitters at Core, ammo + perimeter Gunners |
+| Mid | 80–400 | Grow to ~4–8 productive Harvesters, Splitters at Core, perimeter Gunners |
 | Late | 400–1000 | Sentinels on chokepoints, sabotage enemy conveyors, or push for Core kill; keep mining for tiebreak |
 
 Do **not** spam Builder Bots forever. Each one adds **+20%** to cost scale. Cheap, high-leverage builds first.
@@ -92,19 +92,11 @@ Track **delivered titanium** in your head (and in replays). If `mined` stays 0, 
 
 Gunners fire along facing; friendlies block the ray — don’t park Builders in the firing lane.
 
-### Ammo (critical starter gap)
-
-Unsupplied Gunners never fire. In **fcode 2.2**, ammo comes **only via conveyor feed** — `convert_ammo` was removed from the API (outdated in older tutorials).
 
 ### Ammo feed (fcode 2.2)
 
-- Route titanium stacks into a Gunner or Sentinel from **any side except the facing direction** (a Splitter side port works well).
-- A turret holds **at most one stack** and only accepts input when **completely empty**.
-- **Gunner:** 2 Ti per shot, reload 1.
-- **Sentinel:** 10 Ti per shot, reload 3.
-- Unfed turrets cannot fire — the starter bot builds Gunners but does not feed them.
-
-Practical ladder rule: **start conveyor feed once ≥1 Gunner exists; ramp feed when enemies are visible; starve ammo while you still need Harvesters.**
+- **Gunner:** 2 ammo per shot, reload 1.
+- **Sentinel:** 10 ammo per shot, reload 3.
 
 ### Builder combat tools
 
@@ -128,7 +120,7 @@ Suggested layout:
 | 5 | Threat flag / enemy-seen |
 | 6 | Next free Builder role ID |
 | 7–10 | Role assignments / claimed ore claims |
-| 11–15 | Raid target, ammo policy, reserved |
+| 11–15 | Raid target, reserved |
 
 ### Roles (fix “everyone piles the same ore”)
 
@@ -172,9 +164,9 @@ Maps are 8×8–30×30 and **symmetric**. Use that:
 **Close-quarter maps (sprint, duel)** — cores are only ~6–8 tiles apart; enemy bots reach your base in seconds:
 
 - Group `sprint.map26` (10×10) and `duel.map26` (12×12) together; classify at runtime via `width × height ≤ 144` (no map-name API) and publish profile to a store slot so all units agree.
-- Survival beats economy: enter `STAGE_DEFEND` at 1 harvester; lower push threshold (~250 rounds); build first splitter-fed gunner after 1 harvester, not 3.
-- **Harvester-flank gunner**: place a gunner on the tile beside a new harvester, facing the mirrored enemy core. Ore sits on the rush lane — harvester outputs to the adjacent gunner for immediate ammo without a core splitter ring.
-- Placement priority: (1) harvester-flank gunner at ore, (2) splitter-fed gunner at core, (3) fallback adjacent facing enemy.
+- Survival beats economy: enter `STAGE_DEFEND` at 1 harvester; lower push threshold (~250 rounds); build first gunner after 1 harvester, not 3.
+- **Harvester-flank gunner**: place a gunner on the tile beside a new harvester, facing the mirrored enemy core. Ore sits on the rush lane.
+- Placement priority: (1) harvester-flank gunner at ore, (2) gunner at core, (3) fallback adjacent facing enemy.
 - Turtle wins close fights because all builders help defense; on close-quarter maps Router should also place gunners near core.
 
 Keep a Stage enum driven by Store (`OPENING / EXPAND / DEFEND / PUSH`) so all units agree.
@@ -194,7 +186,7 @@ A bot that consistently beats mirror-starter and climbs ladder should:
 ### Mid
 
 - [ ] ≥3–5 Harvesters with **live** delivery (nonzero mined)
-- [ ] Ammo policy active; ≥2–4 Gunners covering approaches, fed via conveyors
+- [ ] ≥2–4 Gunners covering approaches
 - [ ] Heal priority on Core / Splitter / critical conveyors
 - [ ] Stop over-spawning Builders once roles are filled
 
@@ -203,14 +195,13 @@ A bot that consistently beats mirror-starter and climbs ladder should:
 - [ ] Sentinels on main approaches **or** Raiders cutting enemy chains
 - [ ] Optional: Launchers fling Raiders deep
 - [ ] If Core kill unlikely: maximize delivered Ti + protect Harvesters (tiebreak stack)
-- [ ] Never leave Gunners dry while fighting; never dump entire treasury into ammo while expand is behind
 
 ### Hard rules
 
 - [ ] `can_X` before `X` everywhere (avoid mid-match `GameError`)
 - [ ] Stay under 10 ms CPU / unit / turn (pathfinding must be bounded)
 - [ ] Stay under 50 units; cull idle Builders if needed
-- [ ] Don’t block your own Gunner rays
+
 
 ---
 
@@ -219,17 +210,16 @@ A bot that consistently beats mirror-starter and climbs ladder should:
 Current `bots/starter/main.py` is economy-first but incomplete:
 
 1. Incomplete conveyor chains → weak mined score  
-2. No ammo supply → Gunners are decoration  
-3. No roles → Builders collide and duplicate work  
-4. Random explore → slow first Harvester  
-5. No Sentinels / Launchers / sabotage  
+2. No roles → Builders collide and duplicate work  
+3. Random explore → slow first Harvester  
+4. No Sentinels / Launchers / sabotage  
 
 **Highest ROI upgrade order** (matches tutorial “where to go from here”):
 
 1. Full Harvester→Core chains + Splitter last-mile  
-2. Conveyor ammo feed from a Splitter side port the moment a Gunner exists  
-3. Store roles + ore claims  
-4. Real pathfinding  
+2. Store roles + ore claims  
+3. Real pathfinding  
+4. Gunners placed strategically at chokepoints  
 5. Heal + logistics sabotage  
 6. Sentinels / Launchers / map-specific layouts  
 
@@ -237,7 +227,7 @@ Current `bots/starter/main.py` is economy-first but incomplete:
 
 ## One-sentence strategy
 
-**Win the mined race with short, complete logistics and disciplined scale, keep turrets conveyor-fed so they actually shoot, assign Builders roles so they don’t trip over each other, then either snip the enemy’s conveyors or punch their Core — and if the clock hits 1000, leave with more delivered titanium and more living Harvesters than they do.**
+**Win the mined race with short, complete logistics and disciplined scale, place turrets at chokepoints to defend or raid, assign Builders roles so they don't trip over each other, then either snip the enemy's conveyors or punch their Core — and if the clock hits 1000, leave with more delivered titanium and more living Harvesters than they do.**
 
 ---
 
