@@ -5,6 +5,9 @@ steal any harvester), then pave a committed conveyor path back to the core.
 Wrong-facing allied belts are destroyed and rebuilt; enemy belts are cleared
 via stand-and-fire.
 
+At turn 80, even builders abort economy and place sentinels around the enemy
+core (see attack.py). Odd builders keep mining.
+
 Store slots:
   0–1                  Free
   2  SLOT_HARVESTER_COUNT Total harvesters built by the team
@@ -20,6 +23,7 @@ from __future__ import annotations
 import random
 from collections import deque
 
+from attack import run_attack_builder, should_attack
 from fcode import Controller, Direction, EntityType, Environment, Position
 from features import ORE_LOCATIONS
 from hivemind import CoreState, HiveMind, unpack_cores
@@ -325,6 +329,7 @@ class Player:
         self.last_pos: Position | None = None
         self.stuck = 0
         self.core_pos: Position | None = None
+        self.enemy_core_pos: Position | None = None
 
         self.ore_site: Position | None = None
         self.skipped_ores: set[tuple[int, int]] = set()
@@ -377,12 +382,35 @@ class Player:
         pos = ct.get_position()
         if self.core_pos is None:
             self._read_core_pos(ct)
+        if self.enemy_core_pos is None:
+            self._read_enemy_core(ct)
 
         if self.last_pos == pos:
             self.stuck += 1
         else:
             self.stuck = 0
         self.last_pos = pos
+
+        if should_attack(
+            ct.get_current_round(),
+            self.hivemind.my_index,
+            self.enemy_core_pos,
+        ):
+            enemy = self.enemy_core_pos
+            assert enemy is not None
+            self._clear_relay()
+            self.ore_site = None
+            site = run_attack_builder(
+                ct,
+                my_index=self.hivemind.my_index,
+                local_map=self.hivemind.local_map,
+                enemy_core=enemy,
+                ally_core=self.core_pos,
+            )
+            if site is not None:
+                self.target = site
+            self._move_toward_target(ct, retarget=False)
+            return
 
         if self.in_relay:
             self._relay_toward_core(ct)
@@ -404,6 +432,11 @@ class Player:
         ally, _ = unpack_cores(ct.read_store(SLOT_PACKED_CORES))
         if ally[0] != CoreState.UNKNOWN:
             self.core_pos = Position(ally[1], ally[2])
+
+    def _read_enemy_core(self, ct: Controller) -> None:
+        _, enemy = unpack_cores(ct.read_store(SLOT_PACKED_CORES))
+        if enemy[0] != CoreState.UNKNOWN:
+            self.enemy_core_pos = Position(enemy[1], enemy[2])
 
     def _try_heal(self, ct: Controller) -> None:
         pos = ct.get_position()
@@ -736,16 +769,17 @@ class Player:
     # Movement / targeting
     # ------------------------------------------------------------------
 
-    def _move_toward_target(self, ct: Controller) -> None:
+    def _move_toward_target(self, ct: Controller, *, retarget: bool = True) -> None:
         if ct.get_move_cooldown() != 0:
             return
 
         pos = ct.get_position()
-        if self.ore_site is not None:
-            self.target = self.ore_site
-        elif self.target is None or pos == self.target or self.stuck >= 3:
-            self.target = self._pick_target(ct)
-            self.stuck = 0
+        if retarget:
+            if self.ore_site is not None:
+                self.target = self.ore_site
+            elif self.target is None or pos == self.target or self.stuck >= 3:
+                self.target = self._pick_target(ct)
+                self.stuck = 0
         if self.target is None:
             return
 

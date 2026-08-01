@@ -1,7 +1,7 @@
 # earl
 
 Starter economy loop + HiveMind (`components/` symlinks) + **inbound steal-relay**
-belts to the core.
+belts to the core. Mid-game: even builders place sentinels (`attack.py`).
 
 ## Store slots
 
@@ -29,6 +29,10 @@ sorted by spawn-tile distance to that goal via `hivemind.spawn_builder`.
 
 Each turn (`_run_builder`), after HiveMind `tick` and stuck tracking:
 
+0. **Attack gate** (turn ≥ 80, even `my_index`, enemy core known) → abort any
+   relay/ore task; place up to 5 sentinels around the enemy core at max range
+   (`attack.py`). Then move toward the chosen site and return. Odd builders
+   skip this and keep the economy loop below.
 1. **If `in_relay`** → only run inbound relay (`_relay_toward_core`); return.
 2. **Ore-site task** (`_try_ore_site_task`) — sticky `ore_site` via `_pick_ore_site`:
    - Empty → step off if on tile; adjacent → build harvester, then enter inbound relay.
@@ -39,6 +43,15 @@ Each turn (`_run_builder`), after HiveMind `tick` and stuck tracking:
 3. **If relay just started** → run `_relay_toward_core`; return.
 4. **Heal** adjacent damaged friendlies (if action free).
 5. **Move** toward `ore_site` / `_pick_target` (no pave-while-walking).
+
+### Mid-game attack (`attack.py`)
+
+- Trigger: `round >= 80`, `my_index % 2 == 0`, enemy core from slot 15.
+- Cap: 5 ally sentinels (counted via HiveMind `local_map`).
+- Placement: ring tiles at r² 16–32 from the 2×2 enemy core; builders side-stagger
+  by index so they don’t pile on the same tile. Face sentinels at the enemy core.
+- No belt feed / ammo conversion yet — placement only. After the cap, even
+  builders idle.
 
 ### Ore targeting
 
