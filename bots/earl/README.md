@@ -31,23 +31,29 @@ enemy core** when known (ASSUMED/KNOWN from slot 15); otherwise closest to
 **map center**. Tries candidates via `hivemind.spawn_builder` / `can_spawn`.
 
 **Schedule:** rush the first **5** as soon as Ti allows, then spawn **one more
-every 25 turns** starting at turn **20**, up to a hard cap of **9** (turns
-20 / 45 / 70 / 95). If the rush finishes after turn 20, take the next slot.
+every 25 turns** starting at turn **10**, up to **9 living** (turns
+10 / 35 / 60 / 85). After the initial 9 have been spawned, **replenish ASAP**
+whenever living builders drop below 9. If the rush finishes after turn 10, take
+the next interval slot.
 
 From turn ≥ 30 the core tops team ammo to `5 + 20 × max(1, living sentinels)`
-via `convert_ammo` (before the spawn-cap early return), reading slot 3.
+via `convert_ammo` (before the living-cap early return), reading slot 3.
 
 ## Builder task order
 
 Each turn (`_run_builder`), after HiveMind `tick` and stuck tracking:
 
-0. **Defender gate** (`my_index >= 6`) → `defence.py`:
-   - **Apron first:** 2-deep inward conveyors + depth-1 diagonal barriers
-     (even index → N+E belts + NW/NE barriers; odd → S+W + SW/SE). Repair
-     forever when tiles are missing; consumes the turn when building/moving.
-   - Else heal adjacent friendlies, else fire adjacent enemies (prefer
-     builders); linger on the core apron. No ore / relay / siege. Gunners
-     deferred.
+0. **Defender gate** (`my_index >= 6`) → `defence.py`, each on an assigned
+   core side (`N→E→S→W`; in-bounds sides only — corner maps with 2 sides get
+   **two defenders per side** via `(index - 6) % len(sides)`):
+   1. **Enemy gunner in vision** — fire if orthogonally adjacent, else move
+      toward it (skip the rest this turn).
+   2. **Heal** adjacent friendlies.
+   3. **Fire** adjacent enemies (prefer builders).
+   4. **Apron** on assigned side only: 2-deep inward conveyors + clockwise
+      corner barrier (N→NW, E→NE, S→SE, W→SW); repair forever when missing.
+   5. **Linger** on that side’s depth-1 strip.
+   No ore / relay / siege. Gunner building deferred.
 1. **Raider gate** (even `my_index`, enemy core known, any turn) → abort any
    relay/ore task; run `attack.py` phases below; move toward the chosen site and
    return. Odd builders (1/3/5) keep the economy loop below.

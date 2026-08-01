@@ -34,7 +34,14 @@ from attack import (
     top_up_ammo,
 )
 from defence import is_defender, run_defender
-from fcode import Controller, Direction, EntityType, Environment, Position
+from fcode import (
+    Controller,
+    Direction,
+    EntityType,
+    Environment,
+    GameConstants,
+    Position,
+)
 from features import ORE_LOCATIONS
 from hivemind import CoreState, HiveMind, unpack_cores
 
@@ -46,7 +53,7 @@ SLOT_PACKED_CORES = 15
 
 MAX_BUILDERS_EARLY = 5
 MAX_BUILDERS = 9
-FIRST_INTERVAL_SPAWN = 20
+FIRST_INTERVAL_SPAWN = 10
 SPAWN_INTERVAL = 25
 ORE_RECHECK_INTERVAL = 50
 BFS_MAX_ITERS = 400
@@ -395,17 +402,24 @@ class Player:
         # Ammo before spawn early-return so top-up continues after builder cap.
         top_up_ammo(ct)
 
-        if self.num_spawned >= MAX_BUILDERS:
+        living = self._count_living_builders(ct)
+        if living >= MAX_BUILDERS:
+            return
+        if ct.get_unit_count() >= GameConstants.MAX_TEAM_UNITS:
             return
 
         round_n = ct.get_current_round()
         can_rush = self.num_spawned < MAX_BUILDERS_EARLY
         can_interval = (
             self.num_spawned >= MAX_BUILDERS_EARLY
+            and self.num_spawned < MAX_BUILDERS
             and round_n >= FIRST_INTERVAL_SPAWN
             and (round_n - FIRST_INTERVAL_SPAWN) % SPAWN_INTERVAL == 0
         )
-        if not can_rush and not can_interval:
+        can_replenish = (
+            self.num_spawned >= MAX_BUILDERS and living < MAX_BUILDERS
+        )
+        if not can_rush and not can_interval and not can_replenish:
             return
 
         ti = ct.get_global_resources()
@@ -421,6 +435,28 @@ class Player:
             if self.hivemind.spawn_builder(ct, spawn_pos):
                 self.num_spawned += 1
                 return
+
+    def _count_living_builders(self, ct: Controller) -> int:
+        """Ally builders known via local_map, plus any in core vision."""
+        my_team = ct.get_team()
+        seen: set[tuple[int, int]] = set()
+        for (x, y), info in self.hivemind.local_map.items():
+            ent = info.get("entity")
+            if not ent:
+                continue
+            if ent.get("type") != EntityType.BUILDER_BOT:
+                continue
+            if ent.get("team") != my_team:
+                continue
+            seen.add((x, y))
+        for eid in ct.get_nearby_entities():
+            if ct.get_entity_type(eid) != EntityType.BUILDER_BOT:
+                continue
+            if ct.get_team(eid) != my_team:
+                continue
+            p = ct.get_position(eid)
+            seen.add((p.x, p.y))
+        return len(seen)
 
     # ------------------------------------------------------------------
     # Builder
