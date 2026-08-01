@@ -2,7 +2,7 @@
 
 Starter economy loop + HiveMind (`components/` symlinks) + **inbound steal-relay**
 belts to the **ally** core only. **Raiders** (even builders): push enemy → clear
-belts on the way → gunners @30 (face into enemy core) → sentinels @80
+belts on the way → looping gunners/sentinels every 40 turns from turn 30
 (`attack.py`). Builders 1/3/5 stay on economy (idle ore recheck every 50 turns);
 late spawns 6+ defend (`defence.py`). Core tops ammo from turn 30.
 
@@ -63,18 +63,22 @@ Each turn (`_run_builder`), after HiveMind `tick` and stuck tracking:
 
 ### Raiders (`attack.py`)
 
-Three phases once the enemy core is known (`my_index` even, > 0):
+Once the enemy core is known (`my_index` even, > 0):
 
 1. **Belt raid** (`round < 30`): head toward the enemy core; if an enemy
    conveyor/splitter is in vision, divert to the **nearest** one and stand-fire
    (builders fire own tile only); then resume toward the core.
-2. **Gunners** (`30 ≤ round < 80`): place up to **3** ally gunners on empty tiles
-   at Chebyshev distance **1–3** from the enemy 2×2 footprint; **face into the
-   known enemy core** (nearest footprint tile; prefer cardinal aim); raiders
-   side-stagger. Still stand-fire if on a belt. After the cap, idle until
-   sentinel phase.
-3. **Sentinels** (`round ≥ 80`): place up to **5** siege sentinels at r² 16–32
-   facing into the enemy core; sync count to slot 3; idle after cap.
+2. **Siege loop** (from turn 30, every **40** turns):
+   - **Gunners** (first **20** turns of each cycle): place up to **3** ally
+     gunners on empty tiles at Chebyshev distance **1–3** from the enemy 2×2
+     footprint; **face into the known enemy core** (nearest footprint tile;
+     prefer cardinal aim); raiders side-stagger. Still stand-fire if on a belt.
+     Idle at cap until the next gunner window (or if turrets die, rebuild).
+   - **Sentinels** (last **20** turns of each cycle): place up to **5** siege
+     sentinels at r² 16–32 facing into the enemy core; sync count to slot 3;
+     idle after cap.
+
+Examples: gunners 30–49, sentinels 50–69, gunners 70–89, …
 
 - **Ammo:** from turn 30, core keeps pool at `5 + 20 × max(1, n)` (prestock 25,
   then +20 per living sentinel). Turrets use global ammo.

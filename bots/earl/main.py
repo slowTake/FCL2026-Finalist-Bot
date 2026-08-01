@@ -7,7 +7,7 @@ via stand-and-fire.
 
 Even builders (raiders) abort economy once the enemy core is known (see
 attack.py): push the enemy, stand-fire belts on the way, gunners from turn 30
-facing into the enemy core, sentinels from turn 80. Odd economy builders (1, 3, 5)
+facing into the enemy core, then a 40-turn gunner/sentinel loop. Odd economy builders (1, 3, 5)
 keep mining; idle ore recheck every 50 turns. Indices 6+ defend the core from spawn.
 
 Store slots:

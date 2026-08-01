@@ -1,9 +1,9 @@
 """Raider attack role, ammo top-up, and turret fire for earl.
 
 Raiders (even my_index, enemy core known):
-  - From spawn: push the enemy core; stand-fire any enemy belts seen on the way.
-  - From GUNNER_TURN: place up to MAX_CORE_GUNNERS facing into the enemy 2x2.
-  - From ATTACK_TURN: place siege sentinels at max range.
+  - Before GUNNER_TURN: push the enemy core; stand-fire enemy belts on the way.
+  - From GUNNER_TURN: repeating RAID_LOOP — first GUNNER_PHASE_LEN turns place
+    gunners, remainder place siege sentinels, then loop.
 
 Core tops ammo to 5 + 20 × max(1, n) from GUNNER_TURN.
 Gunners fire core → builders → harvesters → belts; sentinels omit belts.
@@ -14,7 +14,8 @@ from __future__ import annotations
 from fcode import Controller, Direction, EntityType, Environment, Position
 
 GUNNER_TURN = 30
-ATTACK_TURN = 80
+RAID_LOOP = 40
+GUNNER_PHASE_LEN = 20  # first half of each loop
 MAX_CORE_GUNNERS = 3
 MAX_SIEGE_SENTINELS = 5
 SENTINEL_RANGE_SQ = 32
@@ -487,21 +488,22 @@ def run_attack_builder(
     enemy_core: Position,
     ally_core: Position | None,
 ) -> Position | None:
-    """Raid → gunners → sentinels. Returns move target, or None if idle."""
+    """Belt raid, then looping gunner → sentinel phases. None if idle."""
     round_n = ct.get_current_round()
-    if round_n >= ATTACK_TURN:
-        return _run_sentinel_phase(
-            ct,
-            my_index=my_index,
-            local_map=local_map,
-            enemy_core=enemy_core,
-            ally_core=ally_core,
-        )
-    if round_n >= GUNNER_TURN:
+    if round_n < GUNNER_TURN:
+        return _run_belt_raid(ct, enemy_core=enemy_core)
+    cycle_t = (round_n - GUNNER_TURN) % RAID_LOOP
+    if cycle_t < GUNNER_PHASE_LEN:
         return _run_gunner_phase(
             ct,
             my_index=my_index,
             local_map=local_map,
             enemy_core=enemy_core,
         )
-    return _run_belt_raid(ct, enemy_core=enemy_core)
+    return _run_sentinel_phase(
+        ct,
+        my_index=my_index,
+        local_map=local_map,
+        enemy_core=enemy_core,
+        ally_core=ally_core,
+    )
