@@ -4,10 +4,10 @@ Starter economy loop + HiveMind (`components/` symlinks) + **inbound steal-relay
 belts to the **ally** core only. **Even builders** run the active raid order
 (`ACTIVE_RAID_ORDER` in `main.py`): default **`phalanx`** (home apron + wing
 gunners in `defence.py`; **odd** builders pivot to raiders at round **300**,
-**even** at **400**); set to **`raiders`** for the old offensive belt-raid →
+**even** at **600**); set to **`raiders`** for the old offensive belt-raid →
 gunner/sentinel siege loop (`attack.py`). Builders 1/3/5 stay on
 economy (idle ore recheck every 50 turns); late spawns 6+ defend and lay a home
-apron (`defence.py`). Core tops ammo from turn 20 (phalanx) or 30 (raiders).
+apron (`defence.py`). Core tops ammo from turn 10 (phalanx) or 30 (raiders).
 
 ## Store slots
 
@@ -41,7 +41,7 @@ the next interval slot.
 
 From the ammo start turn the core tops team ammo to
 `5 + 20 × max(1, living count in slot 3)` via `convert_ammo` (before the
-living-cap early return). Phalanx starts at turn **20**; raiders at **30**.
+living-cap early return). Phalanx starts at turn **10**; raiders at **30**.
 
 ## Builder task order
 
@@ -53,7 +53,7 @@ Each turn (`_run_builder`), after HiveMind `tick` and stuck tracking:
    1. **Enemy gunner in vision** — fire if orthogonally adjacent, else move
       toward it (skip the rest this turn).
    2. **Heal** adjacent friendlies.
-   3. **Fire** adjacent enemies (prefer builders).
+   3. **Fire** adjacent enemy buildings (not builder bots).
    4. **Apron** on assigned side only: 3-deep inward conveyors (no barriers);
       repair forever when missing.
    5. **Linger** on that side’s depth-1 strip.
@@ -81,7 +81,7 @@ Even builders stay home once the enemy core is known:
 
 1. **Hunt turrets** — if an enemy gunner or sentinel is in vision, fire if
    orthogonally adjacent, else move to attack it.
-2. **Place wing gunners** from turn **20**: fill every open **wing** tile flanking
+2. **Place wing gunners** from turn **10**: fill every open **wing** tile flanking
    the approach belt strip (**4 per flank** at depths 1–4, up to 8); face toward
    the enemy; sync living count to slot 3. Raiders stagger across missing pads.
 3. **Assist apron** on the enemy approach side: 3-deep inward conveyors (no
@@ -99,9 +99,9 @@ until their pivot.
 
 **Pivot to raiders** (`run_attack_builder`):
 - Round **300+**: odd-index builders (1, 3, 5, 7, …)
-- Round **400+**: even-index builders (2, 4, 6, …) leave phalanx
+- Round **600+**: even-index builders (2, 4, 6, …) leave phalanx
 
-Home wing gunners stay; threat-spawn stops once evens leave phalanx (round 400).
+Home wing gunners stay; threat-spawn stops once evens leave phalanx (round 600).
 
 Gunner fire uses shared `run_gunner` (core → gunner → sentinel → builder →
 harvester → belts; rotates toward core/combat in vision).
@@ -119,12 +119,13 @@ Packaged as the `RAIDERS` task list (`run_raiders_tasklist` /
      gunners on empty tiles at Chebyshev distance **1–3** from the enemy 2×2
      footprint (**prefer closer**); **face into the known enemy core** (nearest
      footprint tile; prefer cardinal aim); raiders side-stagger. Still stand-fire
-     if on a belt. Idle at cap until the next gunner window (or if turrets die,
-     rebuild).
+     if on a belt.
    - **Sentinels** (last **20** turns of each cycle): place up to **5** siege
      sentinels at r² 16–32 facing into the enemy core (prefer max range); if no
-     site fits, fall back to ~**3** tiles from the footprint; sync count to slot 3;
-     idle after cap.
+     site fits, fall back to ~**3** tiles from the footprint; sync count to slot 3.
+3. **Hunt vision** (when gunner/sentinel placement is idle at cap): attack the
+   nearest enemy **gunner → sentinel → harvester → belt** in vision (adjacent
+   fire for buildings; stand-fire for belts); else push the enemy core.
 
 Examples: gunners 30–49, sentinels 50–69, gunners 70–89, …
 

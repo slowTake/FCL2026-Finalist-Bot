@@ -7,7 +7,7 @@ via stand-and-fire.
 
 Even builders (raiders) abort economy once the enemy core is known. Active
 order is ACTIVE_RAID_ORDER: "phalanx" (home apron + wing gunners; odds
-pivot to raiders at 300, evens at 400) or "raiders" (belt raid →
+pivot to raiders at 300, evens at 600) or "raiders" (belt raid →
 gunner/sentinel siege loop in attack.py). Odd economy
 builders (1, 3, 5) keep mining; idle ore recheck every 50 turns. Indices 6+
 defend the core from spawn.
@@ -60,7 +60,7 @@ CARDINALS = [Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST]
 # "phalanx" = home apron + wing gunners; "raiders" = offensive siege task list.
 ACTIVE_RAID_ORDER = "phalanx"
 PHALANX_ODD_TO_RAIDERS_TURN = 300
-PHALANX_EVEN_TO_RAIDERS_TURN = 400
+PHALANX_EVEN_TO_RAIDERS_TURN = 600
 
 SLOT_HARVESTER_COUNT = 2
 SLOT_PACKED_CORES = 15
@@ -75,7 +75,7 @@ MERGE_SAVE_MIN = 2
 
 
 def effective_raid_order(round_n: int, my_index: int = 0) -> str:
-    """Under phalanx: odds → raiders at 300, evens → raiders at 400."""
+    """Under phalanx: odds → raiders at 300, evens → raiders at 600."""
     if ACTIVE_RAID_ORDER != "phalanx":
         return ACTIVE_RAID_ORDER
     if my_index % 2 == 1:
@@ -88,7 +88,7 @@ def effective_raid_order(round_n: int, my_index: int = 0) -> str:
 
 
 def home_phalanx_active(round_n: int) -> bool:
-    """True while even builders are still on home phalanx (before round 400)."""
+    """True while even builders are still on home phalanx (before round 600)."""
     return (
         ACTIVE_RAID_ORDER == "phalanx"
         and round_n < PHALANX_EVEN_TO_RAIDERS_TURN
@@ -581,7 +581,7 @@ class Player:
             self.stuck = 0
         self.last_pos = pos
 
-        # Raid path: odds → raiders from 300; evens phalanx then raiders at 400.
+        # Raid path: odds → raiders from 300; evens phalanx then raiders at 600.
         round_n = ct.get_current_round()
         if on_raid_tasklist(
             self.hivemind.my_index, self.enemy_core_pos, round_n

@@ -5,7 +5,7 @@ enemy gunners in vision, heal, fire, then lay a per-side inward apron
 (3-deep belts, no barriers).
 
 Even builders may run PHALANX (see ACTIVE_RAID_ORDER in main): hunt enemy
-gunners/sentinels, fill flank wing gunners from round 20, then apron, then
+gunners/sentinels, fill flank wing gunners from round 10, then apron, then
 one gunner beside each nearby ally harvester, then soft-idle.
 """
 
@@ -41,7 +41,7 @@ PHALANX = (
     "guard_harvesters",
     "soft_idle",
 )
-PHALANX_GUNNER_TURN = 20
+PHALANX_GUNNER_TURN = 10
 # Chebyshev distance from core footprint — ~10×10 neighbourhood.
 HARVESTER_GUARD_CHEB = 10
 _ENEMY_TURRET_TYPES = (EntityType.GUNNER, EntityType.SENTINEL)
@@ -364,35 +364,24 @@ def _try_heal(ct: Controller) -> bool:
 
 
 def _try_adjacent_fire(ct: Controller) -> bool:
-    """Fire orthogonal adjacent enemies: prefer builders, then any enemy building."""
+    """Fire orthogonal adjacent enemy buildings (not builder bots)."""
     if ct.get_action_cooldown() != 0:
         return False
     pos = ct.get_position()
     my_team = ct.get_team()
-    builder_tile: Position | None = None
-    other_tile: Position | None = None
 
     for d in CARDINALS:
         tile = pos.add(d)
         if not ct.can_fire(tile):
             continue
-        bot = ct.get_tile_builder_bot_id(tile)
-        if bot is not None and ct.get_team(bot) != my_team:
-            builder_tile = tile
-            break
         bid = ct.get_tile_building_id(tile)
         if bid is None:
             continue
         if ct.get_team(bid) == my_team:
             continue
-        if other_tile is None:
-            other_tile = tile
-
-    target = builder_tile if builder_tile is not None else other_tile
-    if target is None:
-        return False
-    ct.fire(target)
-    return True
+        ct.fire(tile)
+        return True
+    return False
 
 
 def _phalanx_assigned_site(
