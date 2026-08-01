@@ -6,7 +6,7 @@ ACTIVE_RAID_ORDER = "raiders" in main.py:
   - From GUNNER_TURN: repeating RAID_LOOP — first GUNNER_PHASE_LEN turns place
     gunners, remainder place siege sentinels, then loop.
 
-Default ACTIVE_RAID_ORDER is "phalanx" (home pads in defence.py).
+Default ACTIVE_RAID_ORDER is "phalanx" (home apron + wing gunners in defence.py).
 
 Core tops ammo to 5 + 20 × max(1, n) from a caller-chosen min_turn
 (default GUNNER_TURN; phalanx uses turn 20).
@@ -63,6 +63,8 @@ _GUNNER_FALLBACK_FIRE_PRIORITY = {
     EntityType.CONVEYOR: 6,
     EntityType.SPLITTER: 6,
 }
+
+_FACE_DIRS = tuple(d for d in Direction if d != Direction.CENTRE)
 
 
 def _core_footprint(core_pos: Position) -> list[Position]:
@@ -479,8 +481,13 @@ def _best_vision_target(
     ct: Controller,
     priority: dict[EntityType, int],
     types: tuple[EntityType, ...],
+    *,
+    must_hit: bool = False,
 ) -> Position | None:
-    """Best enemy of given types in vision: priority then nearer."""
+    """Best enemy of given types in vision: priority then nearer.
+
+    If must_hit, only consider tiles a gunner could hit after some rotate.
+    """
     my_team = ct.get_team()
     pos = ct.get_position()
     best: Position | None = None
@@ -497,6 +504,8 @@ def _best_vision_target(
         if pri is None:
             continue
         tile = ct.get_position(eid)
+        if must_hit and _gunner_facing_to_hit(ct, tile) is None:
+            continue
         dist = pos.distance_squared(tile)
         if pri < best_pri or (pri == best_pri and dist < best_dist):
             best_pri = pri
@@ -505,13 +514,23 @@ def _best_vision_target(
     return best
 
 
-def _try_rotate_toward(ct: Controller, tile: Position) -> bool:
-    """Gunner-only: rotate to face tile if that facing can hit it."""
+def _gunner_facing_to_hit(ct: Controller, tile: Position) -> Direction | None:
+    """Facing that lets this gunner hit tile, prefer compass aim then any of 8."""
     pos = ct.get_position()
-    facing = facing_8way(pos, tile)
-    if facing == ct.get_direction():
+    preferred = facing_8way(pos, tile)
+    ordered = (preferred,) + tuple(d for d in _FACE_DIRS if d != preferred)
+    for facing in ordered:
+        if ct.can_fire_from(pos, facing, EntityType.GUNNER, tile):
+            return facing
+    return None
+
+
+def _try_rotate_toward(ct: Controller, tile: Position) -> bool:
+    """Gunner-only: rotate to a facing that can hit tile."""
+    facing = _gunner_facing_to_hit(ct, tile)
+    if facing is None:
         return False
-    if not ct.can_fire_from(pos, facing, EntityType.GUNNER, tile):
+    if facing == ct.get_direction():
         return False
     if not ct.can_rotate(facing):
         return False
@@ -525,8 +544,7 @@ def _try_rotate_toward_core(ct: Controller) -> bool:
     best_dist = 10**9
     pos = ct.get_position()
     for tile in _enemy_core_tiles(ct):
-        facing = facing_8way(pos, tile)
-        if not ct.can_fire_from(pos, facing, EntityType.GUNNER, tile):
+        if _gunner_facing_to_hit(ct, tile) is None:
             continue
         dist = pos.distance_squared(tile)
         if dist < best_dist:
@@ -548,7 +566,9 @@ def run_gunner(ct: Controller) -> None:
         return
     if _try_fire_priority(ct, _COMBAT_FIRE_PRIORITY):
         return
-    target = _best_vision_target(ct, _COMBAT_FIRE_PRIORITY, _COMBAT_TYPES)
+    target = _best_vision_target(
+        ct, _COMBAT_FIRE_PRIORITY, _COMBAT_TYPES, must_hit=True
+    )
     if target is not None and _try_rotate_toward(ct, target):
         return
     _try_fire_priority(ct, _GUNNER_FALLBACK_FIRE_PRIORITY)

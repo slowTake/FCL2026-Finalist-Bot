@@ -1,19 +1,19 @@
 """Core defence role for earl builders.
 
 Late spawns (indices >= DEFENDER_MIN_INDEX) stay near the ally core: hunt
-enemy gunners in vision, heal, fire, then lay a per-side inward apron +
-corner barrier. Gunner building is deferred.
+enemy gunners in vision, heal, fire, then lay a per-side inward apron
+(3-deep belts, no barriers).
 
-Even builders may run PHALANX (see ACTIVE_RAID_ORDER in main): assist the
-approach-side apron, place 2 sentinels beside approach-side corner barriers
-from round 20, then soft-idle (repair / rebuild / linger).
+Even builders may run PHALANX (see ACTIVE_RAID_ORDER in main): hunt enemy
+gunners/sentinels, fill flank wing gunners from round 20, then apron, then
+one gunner beside each nearby ally harvester, then soft-idle.
 """
 
 from __future__ import annotations
 
 from attack import (
     SLOT_SENTINEL_COUNT,
-    build_sentinel,
+    build_gunner,
 )
 from fcode import Controller, Direction, EntityType, Position
 
@@ -29,34 +29,26 @@ SIDE_ORDER = (SIDE_N, SIDE_E, SIDE_S, SIDE_W)
 CARDINALS = [Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST]
 DIRECTIONS = [d for d in Direction if d != Direction.CENTRE]
 
-# Named phases for the home-defence raid order (priority-gated in run_phalanx).
-PHALANX = ("assist_apron", "place_phalanx_sentinels", "soft_idle")
-PHALANX_SENTINEL_TURN = 20
-PHALANX_SENTINEL_COUNT = 2
+APRON_DEPTHS = (1, 2, 3)
+# Wing gunner pads: one column/row per flank, one tile per depth (4 each side).
+WING_DEPTHS = (1, 2, 3, 4)
 
-_NEIGHBOR_OFFSETS = (
-    (-1, -1),
-    (-1, 0),
-    (-1, 1),
-    (0, -1),
-    (0, 1),
-    (1, -1),
-    (1, 0),
-    (1, 1),
+# Named phases for the home-defence raid order (priority-gated in run_phalanx).
+PHALANX = (
+    "hunt_turrets",
+    "place_phalanx_gunners",
+    "assist_apron",
+    "guard_harvesters",
+    "soft_idle",
 )
+PHALANX_GUNNER_TURN = 20
+# Chebyshev distance from core footprint — ~10×10 neighbourhood.
+HARVESTER_GUARD_CHEB = 10
+_ENEMY_TURRET_TYPES = (EntityType.GUNNER, EntityType.SENTINEL)
 
 
 def is_defender(my_index: int) -> bool:
     return my_index >= DEFENDER_MIN_INDEX
-
-
-def _core_footprint(core_pos: Position) -> list[Position]:
-    return [
-        core_pos,
-        Position(core_pos.x + 1, core_pos.y),
-        Position(core_pos.x, core_pos.y + 1),
-        Position(core_pos.x + 1, core_pos.y + 1),
-    ]
 
 
 def _in_bounds(ct: Controller, pos: Position) -> bool:
@@ -84,26 +76,14 @@ def _belt_faces(ct: Controller, tile: Position, expected: Direction) -> bool:
     return ct.get_direction(bid) == expected
 
 
-def _has_allied_barrier(ct: Controller, pos: Position) -> bool:
+def _has_allied_gunner(ct: Controller, pos: Position) -> bool:
     if not ct.is_in_vision(pos):
         return False
     bid = ct.get_tile_building_id(pos)
     if bid is None:
         return False
     return (
-        ct.get_entity_type(bid) == EntityType.BARRIER
-        and ct.get_team(bid) == ct.get_team()
-    )
-
-
-def _has_allied_sentinel(ct: Controller, pos: Position) -> bool:
-    if not ct.is_in_vision(pos):
-        return False
-    bid = ct.get_tile_building_id(pos)
-    if bid is None:
-        return False
-    return (
-        ct.get_entity_type(bid) == EntityType.SENTINEL
+        ct.get_entity_type(bid) == EntityType.GUNNER
         and ct.get_team(bid) == ct.get_team()
     )
 
@@ -111,10 +91,10 @@ def _has_allied_sentinel(ct: Controller, pos: Position) -> bool:
 def side_conveyor_specs(
     core_pos: Position, side: int
 ) -> list[tuple[Position, Direction]]:
-    """2-wide × 2-deep inward strip for one cardinal side."""
+    """2-wide × 3-deep inward strip for one cardinal side."""
     cx, cy = core_pos.x, core_pos.y
     tiles: list[tuple[Position, Direction]] = []
-    for depth in (1, 2):
+    for depth in APRON_DEPTHS:
         if side == SIDE_N:
             for dx in (0, 1):
                 tiles.append((Position(cx + dx, cy - depth), Direction.SOUTH))
@@ -128,18 +108,6 @@ def side_conveyor_specs(
             for dy in (0, 1):
                 tiles.append((Position(cx - depth, cy + dy), Direction.EAST))
     return tiles
-
-
-def side_barrier_tile(core_pos: Position, side: int) -> Position:
-    """Depth-1 diagonal on the clockwise corner of the side."""
-    cx, cy = core_pos.x, core_pos.y
-    if side == SIDE_N:
-        return Position(cx - 1, cy - 1)  # NW
-    if side == SIDE_E:
-        return Position(cx + 2, cy - 1)  # NE
-    if side == SIDE_S:
-        return Position(cx + 2, cy + 2)  # SE
-    return Position(cx - 1, cy + 2)  # SW
 
 
 def side_depth1_tiles(core_pos: Position, side: int) -> list[Position]:
@@ -168,10 +136,6 @@ def apron_conveyor_specs(
     return side_conveyor_specs(core_pos, side)
 
 
-def apron_barrier_tiles(core_pos: Position, side: int) -> list[Position]:
-    return [side_barrier_tile(core_pos, side)]
-
-
 def enemy_approach_side(ally_core: Position, enemy_core: Position) -> int:
     """Dominant cardinal from ally 2×2 center toward the enemy core."""
     cx = ally_core.x + 0.5
@@ -183,94 +147,59 @@ def enemy_approach_side(ally_core: Position, enemy_core: Position) -> int:
     return SIDE_S if dy >= 0 else SIDE_N
 
 
-def approach_corner_barriers(core_pos: Position, side: int) -> list[Position]:
-    """Two corner barriers flanking the approach-side apron."""
-    return [
-        side_barrier_tile(core_pos, side),
-        side_barrier_tile(core_pos, (side + 1) % 4),
-    ]
+def side_wing_tiles(core_pos: Position, side: int) -> list[Position]:
+    """Flank columns/rows beside the belt strip — 4 pads per wing."""
+    cx, cy = core_pos.x, core_pos.y
+    tiles: list[Position] = []
+    for depth in WING_DEPTHS:
+        if side == SIDE_N:
+            tiles.append(Position(cx - 1, cy - depth))
+            tiles.append(Position(cx + 2, cy - depth))
+        elif side == SIDE_E:
+            tiles.append(Position(cx + 1 + depth, cy - 1))
+            tiles.append(Position(cx + 1 + depth, cy + 2))
+        elif side == SIDE_S:
+            tiles.append(Position(cx - 1, cy + 1 + depth))
+            tiles.append(Position(cx + 2, cy + 1 + depth))
+        elif side == SIDE_W:
+            tiles.append(Position(cx - depth, cy - 1))
+            tiles.append(Position(cx - depth, cy + 2))
+    return tiles
 
 
-def _all_apron_keys(core_pos: Position) -> set[tuple[int, int]]:
-    keys: set[tuple[int, int]] = set()
-    for s in SIDE_ORDER:
-        for tile, _ in side_conveyor_specs(core_pos, s):
-            keys.add((tile.x, tile.y))
-    return keys
-
-
-def _pick_beside_barrier(
-    ct: Controller,
-    *,
-    core_pos: Position,
-    barrier: Position,
-    enemy_core: Position,
-    forbidden: set[tuple[int, int]],
-) -> Position | None:
-    """Outward adjacent tile beside a barrier; never on apron/barrier/core."""
-    cx = core_pos.x + 0.5
-    cy = core_pos.y + 0.5
-    best: Position | None = None
-    best_score: tuple[float, float] | None = None
-
-    for dx, dy in _NEIGHBOR_OFFSETS:
-        cand = Position(barrier.x + dx, barrier.y + dy)
-        key = (cand.x, cand.y)
-        if key in forbidden:
-            continue
-        if not _in_bounds(ct, cand):
-            continue
-        if ct.is_in_vision(cand):
-            if not ct.is_tile_empty(cand) and not _has_allied_sentinel(ct, cand):
-                continue
-        away = (cand.x - cx) ** 2 + (cand.y - cy) ** 2
-        toward = -cand.distance_squared(enemy_core)
-        score = (away, toward)
-        if best_score is None or score > best_score:
-            best_score = score
-            best = cand
-    return best
-
-
-def phalanx_sentinel_sites(
+def phalanx_gunner_sites(
     ct: Controller,
     core_pos: Position,
     side: int,
-    enemy_core: Position,
 ) -> list[Position]:
-    """One pad beside each approach-side corner barrier (off apron belts)."""
-    forbidden = _all_apron_keys(core_pos)
-    for tile in _core_footprint(core_pos):
-        forbidden.add((tile.x, tile.y))
-    barriers = approach_corner_barriers(core_pos, side)
-    for b in barriers:
-        forbidden.add((b.x, b.y))
-
+    """In-vision approach-side wing tiles that are empty or hold an allied gunner."""
     sites: list[Position] = []
-    for barrier in barriers:
-        site = _pick_beside_barrier(
-            ct,
-            core_pos=core_pos,
-            barrier=barrier,
-            enemy_core=enemy_core,
-            forbidden=forbidden,
-        )
-        if site is not None:
-            sites.append(site)
-            forbidden.add((site.x, site.y))
+    for tile in side_wing_tiles(core_pos, side):
+        if not _in_bounds(ct, tile):
+            continue
+        if not ct.is_in_vision(tile):
+            continue
+        if not ct.is_tile_empty(tile) and not _has_allied_gunner(ct, tile):
+            continue
+        sites.append(tile)
     return sites
 
 
+def phalanx_missing_gunner_sites(
+    ct: Controller, sites: list[Position]
+) -> list[Position]:
+    """Wings in vision that still need a gunner (empty)."""
+    return [s for s in sites if ct.is_tile_empty(s)]
+
+
 def _apron_incomplete(ct: Controller, core_pos: Position, side: int) -> bool:
+    """True if an in-vision apron belt is missing/wrong. Fogged tiles count as OK."""
     for tile, facing in side_conveyor_specs(core_pos, side):
         if not _in_bounds(ct, tile):
             continue
-        if not _belt_faces(ct, tile, facing):
-            return True
-    for tile in apron_barrier_tiles(core_pos, side):
-        if not _in_bounds(ct, tile):
+        if not ct.is_in_vision(tile):
             continue
-        if not _has_allied_barrier(ct, tile):
+        if not _belt_faces(ct, tile, facing):
             return True
     return False
 
@@ -278,80 +207,30 @@ def _apron_incomplete(ct: Controller, core_pos: Position, side: int) -> bool:
 def _phalanx_apron_incomplete(
     ct: Controller, core_pos: Position, side: int
 ) -> bool:
-    """Approach-side apron plus the other flanking corner barrier."""
-    if _apron_incomplete(ct, core_pos, side):
-        return True
-    other = side_barrier_tile(core_pos, (side + 1) % 4)
-    if _in_bounds(ct, other) and not _has_allied_barrier(ct, other):
-        return True
-    return False
-
-
-def _try_build_barrier_at(ct: Controller, tile: Position) -> bool:
-    """Build or step toward a single barrier tile. True if acted/moved."""
-    if not _in_bounds(ct, tile):
-        return False
-    if _has_allied_barrier(ct, tile):
-        return False
-    pos = ct.get_position()
-    if pos.x == tile.x and pos.y == tile.y:
-        if ct.get_move_cooldown() == 0:
-            for d in CARDINALS:
-                if ct.can_move(d):
-                    ct.move(d)
-                    return True
-        return True
-    if ct.get_action_cooldown() == 0:
-        if abs(pos.x - tile.x) + abs(pos.y - tile.y) == 1:
-            if ct.can_build_barrier(tile):
-                ct.build_barrier(tile)
-                return True
-    if ct.get_move_cooldown() != 0:
-        return False
-    desired = pos.direction_to(tile)
-    if desired == Direction.CENTRE:
-        return False
-    primary = [desired, desired.rotate_left(), desired.rotate_right()]
-    for d in primary:
-        if d != Direction.CENTRE and ct.can_move(d):
-            ct.move(d)
-            return True
-    for d in DIRECTIONS:
-        if d not in primary and ct.can_move(d):
-            ct.move(d)
-            return True
-    return False
+    """Approach-side belt apron incomplete."""
+    return _apron_incomplete(ct, core_pos, side)
 
 
 def _phalanx_try_apron(
     ct: Controller, *, core_pos: Position, side: int
 ) -> bool:
-    """Lay approach-side apron, then the other flanking barrier if needed."""
-    if try_make_apron(ct, core_pos=core_pos, side=side):
-        return True
-    other = side_barrier_tile(core_pos, (side + 1) % 4)
-    return _try_build_barrier_at(ct, other)
+    """Lay approach-side apron belts."""
+    return try_make_apron(ct, core_pos=core_pos, side=side)
 
 
 def try_make_apron(
     ct: Controller, *, core_pos: Position, side: int
 ) -> bool:
-    """Lay this side's apron conveyors + barrier. True if built or moved."""
+    """Lay this side's apron conveyors. True if built or moved."""
     pending: list[Position] = []
     conveyor_specs = apron_conveyor_specs(core_pos, side)
-    barriers = apron_barrier_tiles(core_pos, side)
 
     for tile, facing in conveyor_specs:
         if not _in_bounds(ct, tile):
             continue
+        if not ct.is_in_vision(tile):
+            continue
         if _belt_faces(ct, tile, facing):
-            continue
-        pending.append(tile)
-
-    for tile in barriers:
-        if not _in_bounds(ct, tile):
-            continue
-        if _has_allied_barrier(ct, tile):
             continue
         pending.append(tile)
 
@@ -379,16 +258,6 @@ def try_make_apron(
                 continue
             if ct.can_build_conveyor(tile, facing):
                 ct.build_conveyor(tile, facing)
-                return True
-        for tile in barriers:
-            if not _in_bounds(ct, tile):
-                continue
-            if _has_allied_barrier(ct, tile):
-                continue
-            if abs(pos.x - tile.x) + abs(pos.y - tile.y) != 1:
-                continue
-            if ct.can_build_barrier(tile):
-                ct.build_barrier(tile)
                 return True
 
     if ct.get_move_cooldown() != 0:
@@ -441,21 +310,34 @@ def _defence_hold_target(
 
 
 def _nearest_enemy_gunner(ct: Controller) -> Position | None:
+    return _nearest_enemy_turret(ct, (EntityType.GUNNER,))
+
+
+def _nearest_enemy_turret(
+    ct: Controller,
+    types: tuple[EntityType, ...] = _ENEMY_TURRET_TYPES,
+) -> Position | None:
+    """Nearest enemy gunner/sentinel in vision."""
     my_team = ct.get_team()
     pos = ct.get_position()
     best: Position | None = None
     best_dist = float("inf")
     for eid in ct.get_nearby_entities():
-        if ct.get_entity_type(eid) != EntityType.GUNNER:
+        if ct.get_entity_type(eid) not in types:
             continue
         if ct.get_team(eid) == my_team:
             continue
-        gpos = ct.get_position(eid)
-        d = pos.distance_squared(gpos)
+        tpos = ct.get_position(eid)
+        d = pos.distance_squared(tpos)
         if d < best_dist:
             best_dist = d
-            best = gpos
+            best = tpos
     return best
+
+
+def core_under_turret_threat(ct: Controller) -> bool:
+    """True if an enemy gunner or sentinel is within this unit's vision (core)."""
+    return _nearest_enemy_turret(ct) is not None
 
 
 def _try_fire_tile(ct: Controller, tile: Position) -> bool:
@@ -514,17 +396,146 @@ def _try_adjacent_fire(ct: Controller) -> bool:
 
 
 def _phalanx_assigned_site(
-    my_index: int, sites: list[Position], missing: list[Position]
+    my_index: int, missing: list[Position]
 ) -> Position | None:
-    """Prefer this raider's staggered site; else any missing pad."""
+    """Stagger even raiders across open wing pads."""
     if not missing:
         return None
-    if sites:
-        preferred = sites[(0 if my_index <= 2 else 1) % len(sites)]
-        for m in missing:
-            if m.x == preferred.x and m.y == preferred.y:
-                return preferred
-    return missing[0]
+    return missing[((max(my_index, 1) // 2) - 1) % len(missing)]
+
+
+def _core_footprint(core_pos: Position) -> list[Position]:
+    return [
+        core_pos,
+        Position(core_pos.x + 1, core_pos.y),
+        Position(core_pos.x, core_pos.y + 1),
+        Position(core_pos.x + 1, core_pos.y + 1),
+    ]
+
+
+def _chebyshev_to_core(pos: Position, core_pos: Position) -> int:
+    return min(
+        max(abs(pos.x - t.x), abs(pos.y - t.y)) for t in _core_footprint(core_pos)
+    )
+
+
+def _apron_tile_keys(core_pos: Position) -> set[tuple[int, int]]:
+    keys: set[tuple[int, int]] = set()
+    for s in SIDE_ORDER:
+        for tile, _ in side_conveyor_specs(core_pos, s):
+            keys.add((tile.x, tile.y))
+        for tile in side_wing_tiles(core_pos, s):
+            keys.add((tile.x, tile.y))
+    for t in _core_footprint(core_pos):
+        keys.add((t.x, t.y))
+    return keys
+
+
+def _harvester_has_gunner(ct: Controller, harvester: Position) -> bool:
+    """True if a cardinal neighbour already holds an allied gunner."""
+    for d in CARDINALS:
+        n = harvester.add(d)
+        if not _in_bounds(ct, n):
+            continue
+        if ct.is_in_vision(n) and _has_allied_gunner(ct, n):
+            return True
+    return False
+
+
+def _allied_harvesters_near_core(
+    ct: Controller,
+    core_pos: Position,
+    local_map: dict,
+) -> list[Position]:
+    """Ally harvesters within HARVESTER_GUARD_CHEB of the core footprint."""
+    my_team = ct.get_team()
+    found: dict[tuple[int, int], Position] = {}
+
+    for eid in ct.get_nearby_entities():
+        if ct.get_entity_type(eid) != EntityType.HARVESTER:
+            continue
+        if ct.get_team(eid) != my_team:
+            continue
+        pos = ct.get_position(eid)
+        if _chebyshev_to_core(pos, core_pos) > HARVESTER_GUARD_CHEB:
+            continue
+        found[(pos.x, pos.y)] = pos
+
+    for (x, y), cell in local_map.items():
+        ent = cell.get("entity") if isinstance(cell, dict) else None
+        if not ent or ent.get("type") != EntityType.HARVESTER:
+            continue
+        if ent.get("team") != my_team:
+            continue
+        pos = Position(x, y)
+        if _chebyshev_to_core(pos, core_pos) > HARVESTER_GUARD_CHEB:
+            continue
+        found[(x, y)] = pos
+
+    return sorted(found.values(), key=lambda p: (p.x, p.y))
+
+
+def _pick_harvester_gunner_site(
+    ct: Controller,
+    *,
+    harvester: Position,
+    core_pos: Position,
+    enemy_core: Position,
+) -> Position | None:
+    """Cardinal pad beside harvester; prefer empty, off apron, toward enemy."""
+    forbidden = _apron_tile_keys(core_pos)
+    best: Position | None = None
+    best_score: tuple[int, int] | None = None
+
+    for d in CARDINALS:
+        cand = harvester.add(d)
+        if not _in_bounds(ct, cand):
+            continue
+        key = (cand.x, cand.y)
+        if key in forbidden:
+            continue
+        if ct.is_in_vision(cand):
+            if _has_allied_gunner(ct, cand):
+                return cand
+            if not ct.is_tile_empty(cand):
+                continue
+        toward = cand.distance_squared(enemy_core)
+        score = (toward, abs(cand.x - harvester.x) + abs(cand.y - harvester.y))
+        if best_score is None or score < best_score:
+            best_score = score
+            best = cand
+    return best
+
+
+def phalanx_harvester_gunner_sites(
+    ct: Controller,
+    *,
+    core_pos: Position,
+    enemy_core: Position,
+    local_map: dict,
+) -> list[Position]:
+    """One gunner pad per unguarded ally harvester near the core."""
+    sites: list[Position] = []
+    used: set[tuple[int, int]] = set()
+    for harv in _allied_harvesters_near_core(ct, core_pos, local_map):
+        if _harvester_has_gunner(ct, harv):
+            continue
+        site = _pick_harvester_gunner_site(
+            ct,
+            harvester=harv,
+            core_pos=core_pos,
+            enemy_core=enemy_core,
+        )
+        if site is None:
+            continue
+        key = (site.x, site.y)
+        if key in used:
+            continue
+        if ct.is_in_vision(site) and _has_allied_gunner(ct, site):
+            continue
+        used.add(key)
+        sites.append(site)
+    return sites
 
 
 def run_phalanx(
@@ -535,33 +546,60 @@ def run_phalanx(
     enemy_core: Position,
     ally_core: Position | None,
 ) -> Position | None:
-    """PHALANX: apron assist → 2 corner pads from turn 20 → soft idle."""
-    del local_map  # reserved for parity with run_attack_builder signature
+    """PHALANX: hunt turrets → wing gunners → apron → harvester guards → idle."""
     if ally_core is None:
         return None
 
     side = enemy_approach_side(ally_core, enemy_core)
 
+    # 1. Attack nearby enemy gunners / sentinels first.
+    threat = _nearest_enemy_turret(ct)
+    if threat is not None:
+        if _try_fire_tile(ct, threat):
+            return _defence_hold_target(ct, ally_core, side)
+        return threat
+
+    round_n = ct.get_current_round()
+
+    # 2. Wing gunners before apron.
+    sites = phalanx_gunner_sites(ct, ally_core, side)
+    wing_living = sum(1 for s in sites if _has_allied_gunner(ct, s))
+    missing = phalanx_missing_gunner_sites(ct, sites)
+    if round_n >= PHALANX_GUNNER_TURN and missing:
+        site = _phalanx_assigned_site(my_index, missing)
+        if site is not None:
+            pos = ct.get_position()
+            if abs(pos.x - site.x) + abs(pos.y - site.y) == 1:
+                if build_gunner(ct, site, enemy_core):
+                    wing_living += 1
+            ct.write_store(SLOT_SENTINEL_COUNT, wing_living)
+            return site
+
+    # 3. Approach-side apron belts.
     if _phalanx_apron_incomplete(ct, ally_core, side):
         if _phalanx_try_apron(ct, core_pos=ally_core, side=side):
             return None
         return _defence_hold_target(ct, ally_core, side)
 
-    sites = phalanx_sentinel_sites(ct, ally_core, side, enemy_core)
-    living = sum(1 for s in sites if _has_allied_sentinel(ct, s))
-    ct.write_store(SLOT_SENTINEL_COUNT, min(living, PHALANX_SENTINEL_COUNT))
+    harvesters = _allied_harvesters_near_core(ct, ally_core, local_map)
+    guard_living = sum(1 for h in harvesters if _harvester_has_gunner(ct, h))
+    ct.write_store(SLOT_SENTINEL_COUNT, wing_living + guard_living)
 
-    missing = [s for s in sites if not _has_allied_sentinel(ct, s)]
-    round_n = ct.get_current_round()
-    if round_n >= PHALANX_SENTINEL_TURN and living < PHALANX_SENTINEL_COUNT:
-        site = _phalanx_assigned_site(my_index, sites, missing)
-        if site is not None:
-            pos = ct.get_position()
-            if abs(pos.x - site.x) + abs(pos.y - site.y) == 1:
-                if build_sentinel(ct, site, enemy_core):
-                    living = min(living + 1, PHALANX_SENTINEL_COUNT)
-                    ct.write_store(SLOT_SENTINEL_COUNT, living)
-            return site
+    # 4. One gunner beside each nearby ally harvester.
+    if round_n >= PHALANX_GUNNER_TURN:
+        guard_sites = phalanx_harvester_gunner_sites(
+            ct,
+            core_pos=ally_core,
+            enemy_core=enemy_core,
+            local_map=local_map,
+        )
+        if guard_sites:
+            site = _phalanx_assigned_site(my_index, guard_sites)
+            if site is not None:
+                pos = ct.get_position()
+                if abs(pos.x - site.x) + abs(pos.y - site.y) == 1:
+                    build_gunner(ct, site, enemy_core)
+                return site
 
     return _defence_hold_target(ct, ally_core, side)
 
@@ -569,12 +607,12 @@ def run_phalanx(
 def run_defender(
     ct: Controller, *, core_pos: Position | None, my_index: int
 ) -> Position | None:
-    """Gunner hunt → heal → fire → side apron → linger. None if move already used."""
+    """Gunner/sentinel hunt → heal → fire → side apron → linger."""
     side: int | None = None
     if core_pos is not None:
         side = assigned_side(ct, core_pos, my_index)
 
-    gunner = _nearest_enemy_gunner(ct)
+    gunner = _nearest_enemy_turret(ct)
     if gunner is not None:
         if _try_fire_tile(ct, gunner):
             if core_pos is None:

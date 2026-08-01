@@ -6,15 +6,16 @@ Wrong-facing allied belts are destroyed and rebuilt; enemy belts are cleared
 via stand-and-fire.
 
 Even builders (raiders) abort economy once the enemy core is known. Active
-order is ACTIVE_RAID_ORDER: "phalanx" (home apron + corner sentinels) or
-"raiders" (belt raid → gunner/sentinel siege loop in attack.py). Odd economy
+order is ACTIVE_RAID_ORDER: "phalanx" (home apron + wing gunners; odds
+pivot to raiders at 300, evens at 400) or "raiders" (belt raid →
+gunner/sentinel siege loop in attack.py). Odd economy
 builders (1, 3, 5) keep mining; idle ore recheck every 50 turns. Indices 6+
 defend the core from spawn.
 
 Store slots:
   0–1                  Free
   2  SLOT_HARVESTER_COUNT Total harvesters built by the team
-  3  SLOT_SENTINEL_COUNT  Living sentinels (phalanx pads or siege)
+  3  SLOT_SENTINEL_COUNT  Living phalanx wing gunners or siege sentinels (ammo)
   4–6                  Free
   7–15                 HiveMind-owned — never write from Player
 
@@ -35,7 +36,8 @@ from attack import (
     top_up_ammo,
 )
 from defence import (
-    PHALANX_SENTINEL_TURN,
+    PHALANX_GUNNER_TURN,
+    core_under_turret_threat,
     is_defender,
     run_defender,
     run_phalanx,
@@ -55,8 +57,10 @@ from pathing import astar, astar_from_seeds, manhattan
 DIRECTIONS = [d for d in Direction if d != Direction.CENTRE]
 CARDINALS = [Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST]
 
-# "phalanx" = home defence pads; "raiders" = offensive siege task list.
+# "phalanx" = home apron + wing gunners; "raiders" = offensive siege task list.
 ACTIVE_RAID_ORDER = "phalanx"
+PHALANX_ODD_TO_RAIDERS_TURN = 300
+PHALANX_EVEN_TO_RAIDERS_TURN = 400
 
 SLOT_HARVESTER_COUNT = 2
 SLOT_PACKED_CORES = 15
@@ -68,6 +72,41 @@ SPAWN_INTERVAL = 25
 PATH_MAX_ITERS = 2000
 ORE_RECHECK_INTERVAL = 50
 MERGE_SAVE_MIN = 2
+
+
+def effective_raid_order(round_n: int, my_index: int = 0) -> str:
+    """Under phalanx: odds → raiders at 300, evens → raiders at 400."""
+    if ACTIVE_RAID_ORDER != "phalanx":
+        return ACTIVE_RAID_ORDER
+    if my_index % 2 == 1:
+        if round_n >= PHALANX_ODD_TO_RAIDERS_TURN:
+            return "raiders"
+        return "phalanx"
+    if round_n >= PHALANX_EVEN_TO_RAIDERS_TURN:
+        return "raiders"
+    return "phalanx"
+
+
+def home_phalanx_active(round_n: int) -> bool:
+    """True while even builders are still on home phalanx (before round 400)."""
+    return (
+        ACTIVE_RAID_ORDER == "phalanx"
+        and round_n < PHALANX_EVEN_TO_RAIDERS_TURN
+    )
+
+
+def on_raid_tasklist(
+    my_index: int, enemy_core: Position | None, round_n: int
+) -> bool:
+    """Who runs phalanx or raiders this turn (enemy core must be known)."""
+    if enemy_core is None or my_index <= 0:
+        return False
+    if ACTIVE_RAID_ORDER != "phalanx":
+        return is_raider(my_index, enemy_core)
+    # Phalanx mode: odds join offense from 300; evens always on the raid path.
+    if my_index % 2 == 1:
+        return round_n >= PHALANX_ODD_TO_RAIDERS_TURN
+    return True
 
 
 def nearest_cardinal(d: Direction) -> Direction:
@@ -459,20 +498,21 @@ class Player:
 
     def _run_core(self, ct: Controller) -> None:
         # Ammo before spawn early-return so top-up continues after builder cap.
+        round_n = ct.get_current_round()
+        phalanx_home = home_phalanx_active(round_n)
         ammo_turn = (
-            PHALANX_SENTINEL_TURN
-            if ACTIVE_RAID_ORDER == "phalanx"
-            else GUNNER_TURN
+            PHALANX_GUNNER_TURN if phalanx_home else GUNNER_TURN
         )
         top_up_ammo(ct, min_turn=ammo_turn)
 
         living = self._count_living_builders(ct)
-        if living >= MAX_BUILDERS:
+        threat = phalanx_home and core_under_turret_threat(ct)
+        # Under turret threat, keep spawning past the normal builder cap.
+        if living >= MAX_BUILDERS and not threat:
             return
         if ct.get_unit_count() >= GameConstants.MAX_TEAM_UNITS:
             return
 
-        round_n = ct.get_current_round()
         can_rush = self.num_spawned < MAX_BUILDERS_EARLY
         can_interval = (
             self.num_spawned >= MAX_BUILDERS_EARLY
@@ -483,7 +523,9 @@ class Player:
         can_replenish = (
             self.num_spawned >= MAX_BUILDERS and living < MAX_BUILDERS
         )
-        if not can_rush and not can_interval and not can_replenish:
+        # While enemy turrets are in core vision, spawn ASAP past the normal cap.
+        can_threat_spawn = threat
+        if not can_rush and not can_interval and not can_replenish and not can_threat_spawn:
             return
 
         ti = ct.get_global_resources()
@@ -539,25 +581,17 @@ class Player:
             self.stuck = 0
         self.last_pos = pos
 
-        if is_defender(self.hivemind.my_index):
-            self._clear_relay()
-            self.ore_site = None
-            hold = run_defender(
-                ct,
-                core_pos=self.core_pos,
-                my_index=self.hivemind.my_index,
-            )
-            if hold is not None:
-                self.target = hold
-                self._move_toward_target(ct, retarget=False)
-            return
-
-        if is_raider(self.hivemind.my_index, self.enemy_core_pos):
+        # Raid path: odds → raiders from 300; evens phalanx then raiders at 400.
+        round_n = ct.get_current_round()
+        if on_raid_tasklist(
+            self.hivemind.my_index, self.enemy_core_pos, round_n
+        ):
             enemy = self.enemy_core_pos
             assert enemy is not None
             self._clear_relay()
             self.ore_site = None
-            if ACTIVE_RAID_ORDER == "phalanx":
+            order = effective_raid_order(round_n, self.hivemind.my_index)
+            if order == "phalanx":
                 site = run_phalanx(
                     ct,
                     my_index=self.hivemind.my_index,
@@ -578,11 +612,23 @@ class Player:
             self._move_toward_target(ct, retarget=False)
             return
 
+        if is_defender(self.hivemind.my_index):
+            self._clear_relay()
+            self.ore_site = None
+            hold = run_defender(
+                ct,
+                core_pos=self.core_pos,
+                my_index=self.hivemind.my_index,
+            )
+            if hold is not None:
+                self.target = hold
+                self._move_toward_target(ct, retarget=False)
+            return
+
         if self.in_relay:
             self._relay_toward_core(ct)
             return
 
-        round_n = ct.get_current_round()
         if round_n - self.last_ore_recheck_round >= ORE_RECHECK_INTERVAL:
             self.skipped_ores.clear()
             self.ore_site = None

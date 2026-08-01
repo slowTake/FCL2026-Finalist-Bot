@@ -2,9 +2,10 @@
 
 Starter economy loop + HiveMind (`components/` symlinks) + **inbound steal-relay**
 belts to the **ally** core only. **Even builders** run the active raid order
-(`ACTIVE_RAID_ORDER` in `main.py`): default **`phalanx`** (home apron + 2
-corner sentinels in `defence.py`); set to **`raiders`** for the old offensive
-belt-raid → gunner/sentinel siege loop (`attack.py`). Builders 1/3/5 stay on
+(`ACTIVE_RAID_ORDER` in `main.py`): default **`phalanx`** (home apron + wing
+gunners in `defence.py`; **odd** builders pivot to raiders at round **300**,
+**even** at **400**); set to **`raiders`** for the old offensive belt-raid →
+gunner/sentinel siege loop (`attack.py`). Builders 1/3/5 stay on
 economy (idle ore recheck every 50 turns); late spawns 6+ defend and lay a home
 apron (`defence.py`). Core tops ammo from turn 20 (phalanx) or 30 (raiders).
 
@@ -14,7 +15,7 @@ apron (`defence.py`). Core tops ammo from turn 20 (phalanx) or 30 (raiders).
 |------|-------|---------|
 | 0–1 | — | Free |
 | 2 | Player | `SLOT_HARVESTER_COUNT` — total harvesters we built |
-| 3 | Player | `SLOT_SENTINEL_COUNT` — living sentinels (phalanx pads or siege; ammo) |
+| 3 | Player | `SLOT_SENTINEL_COUNT` — living phalanx wing gunners or siege sentinels (ammo) |
 | 4–6 | — | Free |
 | 7 | HiveMind | Builder registry count (spawn increments; builders read as `my_index`) |
 | 8–9 | HiveMind | Packed enemy intel (up to 4 targets) |
@@ -39,8 +40,8 @@ whenever living builders drop below 9. If the rush finishes after turn 10, take
 the next interval slot.
 
 From the ammo start turn the core tops team ammo to
-`5 + 20 × max(1, living sentinels)` via `convert_ammo` (before the living-cap
-early return), reading slot 3. Phalanx starts at turn **20**; raiders at **30**.
+`5 + 20 × max(1, living count in slot 3)` via `convert_ammo` (before the
+living-cap early return). Phalanx starts at turn **20**; raiders at **30**.
 
 ## Builder task order
 
@@ -53,10 +54,10 @@ Each turn (`_run_builder`), after HiveMind `tick` and stuck tracking:
       toward it (skip the rest this turn).
    2. **Heal** adjacent friendlies.
    3. **Fire** adjacent enemies (prefer builders).
-   4. **Apron** on assigned side only: 2-deep inward conveyors + clockwise
-      corner barrier (N→NW, E→NE, S→SE, W→SW); repair forever when missing.
+   4. **Apron** on assigned side only: 3-deep inward conveyors (no barriers);
+      repair forever when missing.
    5. **Linger** on that side’s depth-1 strip.
-   No ore / relay / siege. Gunner building deferred.
+   No ore / relay / siege. Wing gunners are phalanx-only.
 1. **Raider gate** (even `my_index`, enemy core known, any turn) → abort any
    relay/ore task; run `ACTIVE_RAID_ORDER` (`phalanx` or `raiders`); move toward
    the chosen site and return. Odd builders (1/3/5) keep the economy loop below.
@@ -78,16 +79,32 @@ Each turn (`_run_builder`), after HiveMind `tick` and stuck tracking:
 
 Even builders stay home once the enemy core is known:
 
-1. **Assist apron** on the enemy approach side (dominant cardinal ally→enemy):
-   2-deep inward conveyors + both flanking corner barriers (barriers stay).
-2. **Place sentinels** from turn **20**: up to **2** pads, each on an empty tile
-   **beside** an approach-side corner barrier (never on apron belts); face toward
-   the enemy; sync count to slot 3. Index 2 prefers pad 0, index 4 prefers pad 1.
-3. **Soft idle** — repair missing apron / rebuild dead pads; otherwise linger on
+1. **Hunt turrets** — if an enemy gunner or sentinel is in vision, fire if
+   orthogonally adjacent, else move to attack it.
+2. **Place wing gunners** from turn **20**: fill every open **wing** tile flanking
+   the approach belt strip (**4 per flank** at depths 1–4, up to 8); face toward
+   the enemy; sync living count to slot 3. Raiders stagger across missing pads.
+3. **Assist apron** on the enemy approach side: 3-deep inward conveyors (no
+   barriers).
+4. **Guard harvesters**: place **1 gunner** cardinally beside each ally harvester
+   within Chebyshev **10** of the core footprint (skip apron/core tiles; face
+   enemy). Stagger raiders across missing pads.
+5. **Soft idle** — repair missing apron / rebuild dead pads; otherwise linger on
    the approach depth-1 strip.
 
-Sentinel fire uses shared `run_sentinel` (core → gunner → sentinel → builder →
-harvester on the facing line; no rotate).
+While an enemy gunner/sentinel is in **core vision**, the core keeps spawning
+extra builders past the normal 9-cap (team unit cap still applies). Even-index
+builders run phalanx (including 6+); odd late spawns still defend assigned sides
+until their pivot.
+
+**Pivot to raiders** (`run_attack_builder`):
+- Round **300+**: odd-index builders (1, 3, 5, 7, …)
+- Round **400+**: even-index builders (2, 4, 6, …) leave phalanx
+
+Home wing gunners stay; threat-spawn stops once evens leave phalanx (round 400).
+
+Gunner fire uses shared `run_gunner` (core → gunner → sentinel → builder →
+harvester → belts; rotates toward core/combat in vision).
 
 ### Raiders (`attack.py`) — `ACTIVE_RAID_ORDER = "raiders"`
 
