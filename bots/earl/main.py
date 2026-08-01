@@ -55,7 +55,7 @@ MAX_BUILDERS_EARLY = 5
 MAX_BUILDERS = 9
 FIRST_INTERVAL_SPAWN = 10
 SPAWN_INTERVAL = 25
-PATH_MAX_ITERS = 800
+PATH_MAX_ITERS = 2000
 ORE_RECHECK_INTERVAL = 50
 
 
@@ -318,17 +318,28 @@ def first_incomplete_index(
     return None
 
 
-def last_built_path_index(
+def extend_relay_built_to(
     ct: Controller,
     path: list[Position],
     core_pos: Position,
-) -> int | None:
-    last: int | None = None
-    for i, tile in enumerate(path):
+    built_to: int,
+) -> int:
+    """Advance watermark only through contiguous correct belts in vision.
+
+    Never skips fog or gaps — a later visible correct belt must not mark
+    unfinished mid-path tiles complete.
+    """
+    i = max(-1, built_to) + 1
+    while i < len(path):
+        tile = path[i]
+        if not ct.is_in_vision(tile):
+            break
         want = path_travel_dir(path, i, core_pos)
-        if belt_faces(ct, tile, want):
-            last = i
-    return last
+        if not belt_faces(ct, tile, want):
+            break
+        built_to = i
+        i += 1
+    return built_to
 
 
 class Player:
@@ -780,27 +791,20 @@ class Player:
         origin_visible = ct.is_in_vision(self.relay_origin)
         path = self.relay_path
 
-        # Raise watermark from currently visible correctly facing belts.
+        # Raise watermark only through contiguous visible correct belts.
         if path is not None:
-            vis = last_built_path_index(ct, path, self.core_pos)
-            if vis is not None:
-                self.relay_built_to = max(self.relay_built_to, vis)
+            self.relay_built_to = extend_relay_built_to(
+                ct, path, self.core_pos, self.relay_built_to
+            )
 
         if not origin_visible:
             if path:
                 if self.relay_built_to >= 0:
                     self.relay_origin = path[self.relay_built_to]
                 else:
+                    # Stay anchored at the builder; do not invent watermark
+                    # progress from nearest path tile (false-completes relays).
                     self.relay_origin = pos
-                    best_i = 0
-                    best_d = float("inf")
-                    for i, tile in enumerate(path):
-                        d = pos.distance_squared(tile)
-                        if d < best_d:
-                            best_d = d
-                            best_i = i
-                    # Nearest tile is a progress hint when we have no watermark yet.
-                    self.relay_built_to = max(self.relay_built_to, best_i - 1)
             else:
                 self.relay_origin = pos
         else:
@@ -817,10 +821,13 @@ class Player:
                 ct, self.relay_origin, self.core_pos, ore_blocked=ore_blocked
             )
             self.relay_path = path
-            self.relay_built_to = -1
-        if path is None:
-            self._abort_relay()
-            return
+            if path is None:
+                self._abort_relay()
+                return
+            # New path indices: re-derive contiguous prefix (e.g. reseed belt).
+            self.relay_built_to = extend_relay_built_to(
+                ct, path, self.core_pos, -1
+            )
 
         # Never scan behind the high-water mark (fogged early tiles look incomplete).
         work_from = self.relay_built_to + 1

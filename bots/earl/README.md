@@ -119,8 +119,9 @@ finds no path. Relays search layable/joinable tiles toward the ally core.
 After building or claiming a harvester, A\* a conveyor path to an **ally**
 core-adjacent tile (`is_core_adjacent` requires our team). Belts face toward the
 ally core. Wrong-facing allied belts are destroyed and rebuilt; enemy belts are
-cleared via stand-and-fire, then replaced. Completing or aborting the path
-clears relay state; builder then picks a new ore.
+cleared via stand-and-fire, then replaced. Progress uses a contiguous vision
+watermark (`relay_built_to`) so fogged mid-path gaps are not skipped. Completing
+or aborting the path clears relay state; builder then picks a new ore.
 
 ## Run
 
