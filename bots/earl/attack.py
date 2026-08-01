@@ -1,11 +1,15 @@
 """Raider attack role, ammo top-up, and turret fire for earl.
 
-Raiders (even my_index, enemy core known):
+RAIDERS task list (even my_index, enemy core known) — select via
+ACTIVE_RAID_ORDER = "raiders" in main.py:
   - Before GUNNER_TURN: push the enemy core; stand-fire enemy belts on the way.
   - From GUNNER_TURN: repeating RAID_LOOP — first GUNNER_PHASE_LEN turns place
     gunners, remainder place siege sentinels, then loop.
 
-Core tops ammo to 5 + 20 × max(1, n) from GUNNER_TURN.
+Default ACTIVE_RAID_ORDER is "phalanx" (home pads in defence.py).
+
+Core tops ammo to 5 + 20 × max(1, n) from a caller-chosen min_turn
+(default GUNNER_TURN; phalanx uses turn 20).
 Gunners fire core → builders → harvesters → belts; sentinels omit belts.
 """
 
@@ -390,9 +394,10 @@ def ammo_target(n: int) -> int:
     return AMMO_FLOOR_BONUS + AMMO_PER_SENTINEL * max(1, living)
 
 
-def top_up_ammo(ct: Controller) -> None:
-    """Core: top ammo from GUNNER_TURN onward."""
-    if ct.get_current_round() < GUNNER_TURN:
+def top_up_ammo(ct: Controller, *, min_turn: int | None = None) -> None:
+    """Core: top ammo from min_turn (default GUNNER_TURN) onward."""
+    start = GUNNER_TURN if min_turn is None else min_turn
+    if ct.get_current_round() < start:
         return
     n = ct.read_store(SLOT_SENTINEL_COUNT)
     target = ammo_target(n)
@@ -517,7 +522,11 @@ def _run_sentinel_phase(
     return site
 
 
-def run_attack_builder(
+# Named phases for the offensive raid order (turn-gated in run_raiders_tasklist).
+RAIDERS = ("belt_raid", "place_gunners", "place_siege_sentinels")
+
+
+def run_raiders_tasklist(
     ct: Controller,
     *,
     my_index: int,
@@ -525,7 +534,7 @@ def run_attack_builder(
     enemy_core: Position,
     ally_core: Position | None,
 ) -> Position | None:
-    """Belt raid, then looping gunner → sentinel phases. None if idle."""
+    """RAIDERS order: belt raid, then looping gunner → sentinel. None if idle."""
     round_n = ct.get_current_round()
     if round_n < GUNNER_TURN:
         return _run_belt_raid(ct, enemy_core=enemy_core)
@@ -538,6 +547,24 @@ def run_attack_builder(
             enemy_core=enemy_core,
         )
     return _run_sentinel_phase(
+        ct,
+        my_index=my_index,
+        local_map=local_map,
+        enemy_core=enemy_core,
+        ally_core=ally_core,
+    )
+
+
+def run_attack_builder(
+    ct: Controller,
+    *,
+    my_index: int,
+    local_map: dict,
+    enemy_core: Position,
+    ally_core: Position | None,
+) -> Position | None:
+    """Thin wrapper over the RAIDERS task list."""
+    return run_raiders_tasklist(
         ct,
         my_index=my_index,
         local_map=local_map,

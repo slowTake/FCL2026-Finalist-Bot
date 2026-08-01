@@ -1,10 +1,12 @@
 # earl
 
 Starter economy loop + HiveMind (`components/` symlinks) + **inbound steal-relay**
-belts to the **ally** core only. **Raiders** (even builders): push enemy → clear
-belts on the way → looping gunners/sentinels every 40 turns from turn 30
-(`attack.py`). Builders 1/3/5 stay on economy (idle ore recheck every 50 turns);
-late spawns 6+ defend and lay a home apron (`defence.py`). Core tops ammo from turn 30.
+belts to the **ally** core only. **Even builders** run the active raid order
+(`ACTIVE_RAID_ORDER` in `main.py`): default **`phalanx`** (home apron + 2
+corner sentinels in `defence.py`); set to **`raiders`** for the old offensive
+belt-raid → gunner/sentinel siege loop (`attack.py`). Builders 1/3/5 stay on
+economy (idle ore recheck every 50 turns); late spawns 6+ defend and lay a home
+apron (`defence.py`). Core tops ammo from turn 20 (phalanx) or 30 (raiders).
 
 ## Store slots
 
@@ -12,7 +14,7 @@ late spawns 6+ defend and lay a home apron (`defence.py`). Core tops ammo from t
 |------|-------|---------|
 | 0–1 | — | Free |
 | 2 | Player | `SLOT_HARVESTER_COUNT` — total harvesters we built |
-| 3 | Player | `SLOT_SENTINEL_COUNT` — living siege sentinels (for ammo top-up) |
+| 3 | Player | `SLOT_SENTINEL_COUNT` — living sentinels (phalanx pads or siege; ammo) |
 | 4–6 | — | Free |
 | 7 | HiveMind | Builder registry count (spawn increments; builders read as `my_index`) |
 | 8–9 | HiveMind | Packed enemy intel (up to 4 targets) |
@@ -36,8 +38,9 @@ every 25 turns** starting at turn **10**, up to **9 living** (turns
 whenever living builders drop below 9. If the rush finishes after turn 10, take
 the next interval slot.
 
-From turn ≥ 30 the core tops team ammo to `5 + 20 × max(1, living sentinels)`
-via `convert_ammo` (before the living-cap early return), reading slot 3.
+From the ammo start turn the core tops team ammo to
+`5 + 20 × max(1, living sentinels)` via `convert_ammo` (before the living-cap
+early return), reading slot 3. Phalanx starts at turn **20**; raiders at **30**.
 
 ## Builder task order
 
@@ -55,8 +58,8 @@ Each turn (`_run_builder`), after HiveMind `tick` and stuck tracking:
    5. **Linger** on that side’s depth-1 strip.
    No ore / relay / siege. Gunner building deferred.
 1. **Raider gate** (even `my_index`, enemy core known, any turn) → abort any
-   relay/ore task; run `attack.py` phases below; move toward the chosen site and
-   return. Odd builders (1/3/5) keep the economy loop below.
+   relay/ore task; run `ACTIVE_RAID_ORDER` (`phalanx` or `raiders`); move toward
+   the chosen site and return. Odd builders (1/3/5) keep the economy loop below.
 2. **Idle ore recheck** (not in relay, every 50 turns): clear `skipped_ores` /
    `ore_site` and allow ally-harvester candidates so broken inbound belts can be
    rebuilt. Does not abort a live relay.
@@ -71,9 +74,24 @@ Each turn (`_run_builder`), after HiveMind `tick` and stuck tracking:
 6. **Heal** adjacent damaged friendlies (if action free).
 7. **Move** toward `ore_site` / `_pick_target` (no pave-while-walking).
 
-### Raiders (`attack.py`)
+### Phalanx (`defence.py`) — default (`ACTIVE_RAID_ORDER = "phalanx"`)
 
-Once the enemy core is known (`my_index` even, > 0):
+Even builders stay home once the enemy core is known:
+
+1. **Assist apron** on the enemy approach side (dominant cardinal ally→enemy):
+   2-deep inward conveyors + both flanking corner barriers (barriers stay).
+2. **Place sentinels** from turn **20**: up to **2** pads, each on an empty tile
+   **beside** an approach-side corner barrier (never on apron belts); face toward
+   the enemy; sync count to slot 3. Index 2 prefers pad 0, index 4 prefers pad 1.
+3. **Soft idle** — repair missing apron / rebuild dead pads; otherwise linger on
+   the approach depth-1 strip.
+
+Sentinel fire logic is unchanged (same `run_sentinel` as siege).
+
+### Raiders (`attack.py`) — `ACTIVE_RAID_ORDER = "raiders"`
+
+Packaged as the `RAIDERS` task list (`run_raiders_tasklist` /
+`run_attack_builder`). Once the enemy core is known (`my_index` even, > 0):
 
 1. **Belt raid** (`round < 30`): head toward the enemy core; if an enemy
    conveyor/splitter is in vision, divert to the **nearest** one and stand-fire

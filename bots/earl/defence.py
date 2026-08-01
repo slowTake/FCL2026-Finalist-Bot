@@ -3,10 +3,18 @@
 Late spawns (indices >= DEFENDER_MIN_INDEX) stay near the ally core: hunt
 enemy gunners in vision, heal, fire, then lay a per-side inward apron +
 corner barrier. Gunner building is deferred.
+
+Even builders may run PHALANX (see ACTIVE_RAID_ORDER in main): assist the
+approach-side apron, place 2 sentinels beside approach-side corner barriers
+from round 20, then soft-idle (repair / rebuild / linger).
 """
 
 from __future__ import annotations
 
+from attack import (
+    SLOT_SENTINEL_COUNT,
+    build_sentinel,
+)
 from fcode import Controller, Direction, EntityType, Position
 
 DEFENDER_MIN_INDEX = 6  # indices 6+
@@ -20,6 +28,22 @@ SIDE_ORDER = (SIDE_N, SIDE_E, SIDE_S, SIDE_W)
 
 CARDINALS = [Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST]
 DIRECTIONS = [d for d in Direction if d != Direction.CENTRE]
+
+# Named phases for the home-defence raid order (priority-gated in run_phalanx).
+PHALANX = ("assist_apron", "place_phalanx_sentinels", "soft_idle")
+PHALANX_SENTINEL_TURN = 20
+PHALANX_SENTINEL_COUNT = 2
+
+_NEIGHBOR_OFFSETS = (
+    (-1, -1),
+    (-1, 0),
+    (-1, 1),
+    (0, -1),
+    (0, 1),
+    (1, -1),
+    (1, 0),
+    (1, 1),
+)
 
 
 def is_defender(my_index: int) -> bool:
@@ -68,6 +92,18 @@ def _has_allied_barrier(ct: Controller, pos: Position) -> bool:
         return False
     return (
         ct.get_entity_type(bid) == EntityType.BARRIER
+        and ct.get_team(bid) == ct.get_team()
+    )
+
+
+def _has_allied_sentinel(ct: Controller, pos: Position) -> bool:
+    if not ct.is_in_vision(pos):
+        return False
+    bid = ct.get_tile_building_id(pos)
+    if bid is None:
+        return False
+    return (
+        ct.get_entity_type(bid) == EntityType.SENTINEL
         and ct.get_team(bid) == ct.get_team()
     )
 
@@ -134,6 +170,167 @@ def apron_conveyor_specs(
 
 def apron_barrier_tiles(core_pos: Position, side: int) -> list[Position]:
     return [side_barrier_tile(core_pos, side)]
+
+
+def enemy_approach_side(ally_core: Position, enemy_core: Position) -> int:
+    """Dominant cardinal from ally 2×2 center toward the enemy core."""
+    cx = ally_core.x + 0.5
+    cy = ally_core.y + 0.5
+    dx = (enemy_core.x + 0.5) - cx
+    dy = (enemy_core.y + 0.5) - cy
+    if abs(dx) >= abs(dy):
+        return SIDE_E if dx >= 0 else SIDE_W
+    return SIDE_S if dy >= 0 else SIDE_N
+
+
+def approach_corner_barriers(core_pos: Position, side: int) -> list[Position]:
+    """Two corner barriers flanking the approach-side apron."""
+    return [
+        side_barrier_tile(core_pos, side),
+        side_barrier_tile(core_pos, (side + 1) % 4),
+    ]
+
+
+def _all_apron_keys(core_pos: Position) -> set[tuple[int, int]]:
+    keys: set[tuple[int, int]] = set()
+    for s in SIDE_ORDER:
+        for tile, _ in side_conveyor_specs(core_pos, s):
+            keys.add((tile.x, tile.y))
+    return keys
+
+
+def _pick_beside_barrier(
+    ct: Controller,
+    *,
+    core_pos: Position,
+    barrier: Position,
+    enemy_core: Position,
+    forbidden: set[tuple[int, int]],
+) -> Position | None:
+    """Outward adjacent tile beside a barrier; never on apron/barrier/core."""
+    cx = core_pos.x + 0.5
+    cy = core_pos.y + 0.5
+    best: Position | None = None
+    best_score: tuple[float, float] | None = None
+
+    for dx, dy in _NEIGHBOR_OFFSETS:
+        cand = Position(barrier.x + dx, barrier.y + dy)
+        key = (cand.x, cand.y)
+        if key in forbidden:
+            continue
+        if not _in_bounds(ct, cand):
+            continue
+        if ct.is_in_vision(cand):
+            if not ct.is_tile_empty(cand) and not _has_allied_sentinel(ct, cand):
+                continue
+        away = (cand.x - cx) ** 2 + (cand.y - cy) ** 2
+        toward = -cand.distance_squared(enemy_core)
+        score = (away, toward)
+        if best_score is None or score > best_score:
+            best_score = score
+            best = cand
+    return best
+
+
+def phalanx_sentinel_sites(
+    ct: Controller,
+    core_pos: Position,
+    side: int,
+    enemy_core: Position,
+) -> list[Position]:
+    """One pad beside each approach-side corner barrier (off apron belts)."""
+    forbidden = _all_apron_keys(core_pos)
+    for tile in _core_footprint(core_pos):
+        forbidden.add((tile.x, tile.y))
+    barriers = approach_corner_barriers(core_pos, side)
+    for b in barriers:
+        forbidden.add((b.x, b.y))
+
+    sites: list[Position] = []
+    for barrier in barriers:
+        site = _pick_beside_barrier(
+            ct,
+            core_pos=core_pos,
+            barrier=barrier,
+            enemy_core=enemy_core,
+            forbidden=forbidden,
+        )
+        if site is not None:
+            sites.append(site)
+            forbidden.add((site.x, site.y))
+    return sites
+
+
+def _apron_incomplete(ct: Controller, core_pos: Position, side: int) -> bool:
+    for tile, facing in side_conveyor_specs(core_pos, side):
+        if not _in_bounds(ct, tile):
+            continue
+        if not _belt_faces(ct, tile, facing):
+            return True
+    for tile in apron_barrier_tiles(core_pos, side):
+        if not _in_bounds(ct, tile):
+            continue
+        if not _has_allied_barrier(ct, tile):
+            return True
+    return False
+
+
+def _phalanx_apron_incomplete(
+    ct: Controller, core_pos: Position, side: int
+) -> bool:
+    """Approach-side apron plus the other flanking corner barrier."""
+    if _apron_incomplete(ct, core_pos, side):
+        return True
+    other = side_barrier_tile(core_pos, (side + 1) % 4)
+    if _in_bounds(ct, other) and not _has_allied_barrier(ct, other):
+        return True
+    return False
+
+
+def _try_build_barrier_at(ct: Controller, tile: Position) -> bool:
+    """Build or step toward a single barrier tile. True if acted/moved."""
+    if not _in_bounds(ct, tile):
+        return False
+    if _has_allied_barrier(ct, tile):
+        return False
+    pos = ct.get_position()
+    if pos.x == tile.x and pos.y == tile.y:
+        if ct.get_move_cooldown() == 0:
+            for d in CARDINALS:
+                if ct.can_move(d):
+                    ct.move(d)
+                    return True
+        return True
+    if ct.get_action_cooldown() == 0:
+        if abs(pos.x - tile.x) + abs(pos.y - tile.y) == 1:
+            if ct.can_build_barrier(tile):
+                ct.build_barrier(tile)
+                return True
+    if ct.get_move_cooldown() != 0:
+        return False
+    desired = pos.direction_to(tile)
+    if desired == Direction.CENTRE:
+        return False
+    primary = [desired, desired.rotate_left(), desired.rotate_right()]
+    for d in primary:
+        if d != Direction.CENTRE and ct.can_move(d):
+            ct.move(d)
+            return True
+    for d in DIRECTIONS:
+        if d not in primary and ct.can_move(d):
+            ct.move(d)
+            return True
+    return False
+
+
+def _phalanx_try_apron(
+    ct: Controller, *, core_pos: Position, side: int
+) -> bool:
+    """Lay approach-side apron, then the other flanking barrier if needed."""
+    if try_make_apron(ct, core_pos=core_pos, side=side):
+        return True
+    other = side_barrier_tile(core_pos, (side + 1) % 4)
+    return _try_build_barrier_at(ct, other)
 
 
 def try_make_apron(
@@ -314,6 +511,59 @@ def _try_adjacent_fire(ct: Controller) -> bool:
         return False
     ct.fire(target)
     return True
+
+
+def _phalanx_assigned_site(
+    my_index: int, sites: list[Position], missing: list[Position]
+) -> Position | None:
+    """Prefer this raider's staggered site; else any missing pad."""
+    if not missing:
+        return None
+    if sites:
+        preferred = sites[(0 if my_index <= 2 else 1) % len(sites)]
+        for m in missing:
+            if m.x == preferred.x and m.y == preferred.y:
+                return preferred
+    return missing[0]
+
+
+def run_phalanx(
+    ct: Controller,
+    *,
+    my_index: int,
+    local_map: dict,
+    enemy_core: Position,
+    ally_core: Position | None,
+) -> Position | None:
+    """PHALANX: apron assist → 2 corner pads from turn 20 → soft idle."""
+    del local_map  # reserved for parity with run_attack_builder signature
+    if ally_core is None:
+        return None
+
+    side = enemy_approach_side(ally_core, enemy_core)
+
+    if _phalanx_apron_incomplete(ct, ally_core, side):
+        if _phalanx_try_apron(ct, core_pos=ally_core, side=side):
+            return None
+        return _defence_hold_target(ct, ally_core, side)
+
+    sites = phalanx_sentinel_sites(ct, ally_core, side, enemy_core)
+    living = sum(1 for s in sites if _has_allied_sentinel(ct, s))
+    ct.write_store(SLOT_SENTINEL_COUNT, min(living, PHALANX_SENTINEL_COUNT))
+
+    missing = [s for s in sites if not _has_allied_sentinel(ct, s)]
+    round_n = ct.get_current_round()
+    if round_n >= PHALANX_SENTINEL_TURN and living < PHALANX_SENTINEL_COUNT:
+        site = _phalanx_assigned_site(my_index, sites, missing)
+        if site is not None:
+            pos = ct.get_position()
+            if abs(pos.x - site.x) + abs(pos.y - site.y) == 1:
+                if build_sentinel(ct, site, enemy_core):
+                    living = min(living + 1, PHALANX_SENTINEL_COUNT)
+                    ct.write_store(SLOT_SENTINEL_COUNT, living)
+            return site
+
+    return _defence_hold_target(ct, ally_core, side)
 
 
 def run_defender(

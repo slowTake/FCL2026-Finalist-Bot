@@ -5,15 +5,16 @@ steal any harvester), then pave a committed conveyor path back to the core.
 Wrong-facing allied belts are destroyed and rebuilt; enemy belts are cleared
 via stand-and-fire.
 
-Even builders (raiders) abort economy once the enemy core is known (see
-attack.py): push the enemy, stand-fire belts on the way, gunners from turn 30
-facing into the enemy core, then a 40-turn gunner/sentinel loop. Odd economy builders (1, 3, 5)
-keep mining; idle ore recheck every 50 turns. Indices 6+ defend the core from spawn.
+Even builders (raiders) abort economy once the enemy core is known. Active
+order is ACTIVE_RAID_ORDER: "phalanx" (home apron + corner sentinels) or
+"raiders" (belt raid → gunner/sentinel siege loop in attack.py). Odd economy
+builders (1, 3, 5) keep mining; idle ore recheck every 50 turns. Indices 6+
+defend the core from spawn.
 
 Store slots:
   0–1                  Free
   2  SLOT_HARVESTER_COUNT Total harvesters built by the team
-  3  SLOT_SENTINEL_COUNT  Living siege sentinels (attack.py)
+  3  SLOT_SENTINEL_COUNT  Living sentinels (phalanx pads or siege)
   4–6                  Free
   7–15                 HiveMind-owned — never write from Player
 
@@ -26,13 +27,19 @@ from __future__ import annotations
 import random
 
 from attack import (
+    GUNNER_TURN,
     is_raider,
     run_attack_builder,
     run_gunner,
     run_sentinel,
     top_up_ammo,
 )
-from defence import is_defender, run_defender
+from defence import (
+    PHALANX_SENTINEL_TURN,
+    is_defender,
+    run_defender,
+    run_phalanx,
+)
 from fcode import (
     Controller,
     Direction,
@@ -47,6 +54,9 @@ from pathing import astar, astar_from_seeds, manhattan
 
 DIRECTIONS = [d for d in Direction if d != Direction.CENTRE]
 CARDINALS = [Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST]
+
+# "phalanx" = home defence pads; "raiders" = offensive siege task list.
+ACTIVE_RAID_ORDER = "phalanx"
 
 SLOT_HARVESTER_COUNT = 2
 SLOT_PACKED_CORES = 15
@@ -449,7 +459,12 @@ class Player:
 
     def _run_core(self, ct: Controller) -> None:
         # Ammo before spawn early-return so top-up continues after builder cap.
-        top_up_ammo(ct)
+        ammo_turn = (
+            PHALANX_SENTINEL_TURN
+            if ACTIVE_RAID_ORDER == "phalanx"
+            else GUNNER_TURN
+        )
+        top_up_ammo(ct, min_turn=ammo_turn)
 
         living = self._count_living_builders(ct)
         if living >= MAX_BUILDERS:
@@ -542,13 +557,22 @@ class Player:
             assert enemy is not None
             self._clear_relay()
             self.ore_site = None
-            site = run_attack_builder(
-                ct,
-                my_index=self.hivemind.my_index,
-                local_map=self.hivemind.local_map,
-                enemy_core=enemy,
-                ally_core=self.core_pos,
-            )
+            if ACTIVE_RAID_ORDER == "phalanx":
+                site = run_phalanx(
+                    ct,
+                    my_index=self.hivemind.my_index,
+                    local_map=self.hivemind.local_map,
+                    enemy_core=enemy,
+                    ally_core=self.core_pos,
+                )
+            else:
+                site = run_attack_builder(
+                    ct,
+                    my_index=self.hivemind.my_index,
+                    local_map=self.hivemind.local_map,
+                    enemy_core=enemy,
+                    ally_core=self.core_pos,
+                )
             if site is not None:
                 self.target = site
             self._move_toward_target(ct, retarget=False)
