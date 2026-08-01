@@ -56,12 +56,14 @@ siege sentinels**.
 | 1 | Player | Orphaned relay origin, packed position |
 | 2 | Player | Harvester count |
 | 3 | Player | Shared ore position |
-| 4 | Player | One-off start: packed far ore (builder 1→2) |
+| 4 | Player | Early: packed far ore (builder 1→2). After attack start: living sentinel count for core `convert_ammo` |
 | 5 | Player | Siege sentinel A (packed) |
 | 6 | Player | Siege sentinel B (packed) |
 | 7–15 | HiveMind | Builder registry, intel, vision, metronome, map id, packed cores |
 
 Ally core is read from slot 15 via `unpack_cores`. Never write 7–15 from Player.
+
+**Ammo:** Core tops the team global ammo pool to `10 ×` sentinel count each turn via `convert_ammo` (fcode 2.3 model — turrets do not need conveyor feed).
 
 ## Run
 

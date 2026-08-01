@@ -10,12 +10,15 @@ Store slots:
   1  SLOT_ORPHAN_RELAY    Packed harvester origin needing a relay (Player)
   2  SLOT_HARVESTER_COUNT Total harvesters (Player)
   3  SLOT_ORE_LOCATION    Packed uncovered ore (Player)
-  4  SLOT_FAR_ORE         One-off start: packed far ore for builder 1/2 (Player)
+  4  SLOT_FAR_ORE / SLOT_SENTINEL_COUNT
+                          Early: packed far ore for builder 1/2; after attack
+                          start: living sentinel count for core convert_ammo
   5  SLOT_SIEGE_A         Packed siege sentinel A (Player, attack phase)
   6  SLOT_SIEGE_B         Packed siege sentinel B (Player, attack phase)
   7–15                    HiveMind-owned — never write from Player
 
 Ally core position is read from HiveMind slot 15 via unpack_cores.
+Core tops team ammo to 10 × sentinel count via convert_ammo each turn.
 """
 
 from __future__ import annotations
@@ -34,7 +37,8 @@ SLOT_SPAWN_CREDITS = 0
 SLOT_ORPHAN_RELAY = 1
 SLOT_HARVESTER_COUNT = 2
 SLOT_ORE_LOCATION = 3
-SLOT_FAR_ORE = 4
+SLOT_FAR_ORE = 4  # early packed far ore; then sentinel count (alias below)
+SLOT_SENTINEL_COUNT = 4
 SLOT_SIEGE_A = 5
 SLOT_SIEGE_B = 6
 SLOT_PACKED_CORES = 15
@@ -674,6 +678,16 @@ class Player:
 
     def _run_core(self, ct: Controller) -> None:
         # HiveMind packs ally core into slot 15 on tick; do not write slots 7–15.
+        # Top up team ammo to one sentinel shot each (tutorial convert_ammo model).
+        n = ct.read_store(SLOT_SENTINEL_COUNT)
+        if 0 < n <= MAX_SIEGE_SENTINELS:
+            target = n * 10
+            ammo = ct.get_global_ammo()
+            if ammo < target:
+                amount = min(target - ammo, ct.get_global_resources())
+                if amount > 0 and ct.can_convert_ammo(amount):
+                    ct.convert_ammo(amount)
+
         round_n = ct.get_current_round()
         if round_n > 0 and round_n % SPAWN_CREDIT_INTERVAL == 0:
             ct.write_store(
@@ -740,6 +754,10 @@ class Player:
             self.ore_site = None
             if self.in_relay and self.relay_mode in ("to_core", "to_ore"):
                 self._clear_relay()
+            # Slot 4 held a packed far-ore pos; clear so it can store sentinel count.
+            # Packed positions are always >> MAX_SIEGE_SENTINELS.
+            if ct.read_store(SLOT_SENTINEL_COUNT) > MAX_SIEGE_SENTINELS:
+                ct.write_store(SLOT_SENTINEL_COUNT, 0)
 
         attacking = attack_time
         siege_builder = attacking and idx % 2 == 1
@@ -1100,6 +1118,12 @@ class Player:
         if ct.can_build_sentinel(site, facing):
             ct.build_sentinel(site, facing)
             self._publish_siege_site(ct, site)
+            # Slot 4 may still show packed far-ore this round (writes lag 1 turn).
+            count = ct.read_store(SLOT_SENTINEL_COUNT)
+            if count > MAX_SIEGE_SENTINELS:
+                ct.write_store(SLOT_SENTINEL_COUNT, 1)
+            elif count < MAX_SIEGE_SENTINELS:
+                ct.write_store(SLOT_SENTINEL_COUNT, count + 1)
             # Keep placing until cap; even builders handle feed in the meantime
             if self._count_our_sentinels(ct) >= MAX_SIEGE_SENTINELS:
                 self._start_sentinel_feed(ct, site)
