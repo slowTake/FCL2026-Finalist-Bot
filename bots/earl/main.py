@@ -513,33 +513,44 @@ class Player:
         if self.enemy_core_pos is None:
             self._read_enemy_core(ct)
 
+        my_index = self.hivemind.my_index
+        role = "unknown"
+        if is_defender(my_index): role = "defender"
+        elif is_raider(my_index, self.enemy_core_pos): role = "raider"
+        else: role = "economy"
+        
+        print(f"[{my_index}] START {role} at {pos} | relay={self.in_relay} | target={self.target}")
+        self._do_run_builder(ct, my_index, pos)
+        print(f"[{my_index}] END {role} at {ct.get_position()} | relay={self.in_relay} | target={self.target}")
+
+    def _do_run_builder(self, ct: Controller, my_index: int, pos: Position) -> None:
         if self.last_pos == pos:
             self.stuck += 1
         else:
             self.stuck = 0
         self.last_pos = pos
 
-        if is_defender(self.hivemind.my_index):
+        if is_defender(my_index):
             self._clear_relay()
             self.ore_site = None
             hold = run_defender(
                 ct,
                 core_pos=self.core_pos,
-                my_index=self.hivemind.my_index,
+                my_index=my_index,
             )
             if hold is not None:
                 self.target = hold
-                self._move_toward_target(ct, retarget=False)
+            self._move_toward_target(ct, retarget=False)
             return
 
-        if is_raider(self.hivemind.my_index, self.enemy_core_pos):
+        if is_raider(my_index, self.enemy_core_pos):
             enemy = self.enemy_core_pos
             assert enemy is not None
             self._clear_relay()
             self.ore_site = None
             site = run_attack_builder(
                 ct,
-                my_index=self.hivemind.my_index,
+                my_index=my_index,
                 local_map=self.hivemind.local_map,
                 enemy_core=enemy,
                 ally_core=self.core_pos,
