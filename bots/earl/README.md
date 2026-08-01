@@ -1,8 +1,10 @@
 # earl
 
 Starter economy loop + HiveMind (`components/` symlinks) + **inbound steal-relay**
-belts to the core. Mid-game: even builders place sentinels; core tops ammo;
-sentinels fire (`attack.py`). Late spawns defend the core (`defence.py`).
+belts to the core. **Raiders** (even builders): push enemy → clear belts on the
+way → gunners @30 (face into enemy core) → sentinels @80 (`attack.py`). Builders
+1/5 home-defend at mid-game; late spawns defend (`defence.py`). Core tops ammo
+from turn 30.
 
 ## Store slots
 
@@ -31,20 +33,20 @@ enemy core** when known (ASSUMED/KNOWN from slot 15); otherwise closest to
 **Schedule:** rush the first **5** as soon as Ti allows, then spawn **one more
 every 100 turns** up to a hard cap of **9** (turns 100 / 200 / 300 / 400).
 
-From turn ≥ 80 the core also tops team ammo to `20 × max(1, living sentinels)`
+From turn ≥ 30 the core tops team ammo to `5 + 20 × max(1, living sentinels)`
 via `convert_ammo` (before the spawn-cap early return), reading slot 3.
 
 ## Builder task order
 
 Each turn (`_run_builder`), after HiveMind `tick` and stuck tracking:
 
-0. **Defender gate** (`my_index >= 6`) → `defence.py`: heal adjacent friendlies,
-   else fire adjacent enemies (prefer builders); linger on the core apron.
-   No ore / relay / siege. Gunners deferred.
-1. **Attack gate** (turn ≥ 80, even `my_index`, enemy core known) → abort any
-   relay/ore task; place up to 5 sentinels around the enemy core at max range
-   (`attack.py`). Sync sentinel count to slot 3. Then move toward the chosen
-   site and return. Odd builders (1–5) skip this and keep the economy loop below.
+0. **Defender gate** (`my_index >= 6` always, or indices `1`/`5` when turn ≥ 80)
+   → `defence.py`: heal adjacent friendlies, else fire adjacent enemies (prefer
+   builders); linger on the core apron. No ore / relay / siege. Gunners deferred.
+1. **Raider gate** (even `my_index`, enemy core known, any turn) → abort any
+   relay/ore task; run `attack.py` phases below; move toward the chosen site and
+   return. Builders 1/5 defend at mid-game (gate 0); builder 3 keeps the economy
+   loop below.
 2. **If `in_relay`** → only run inbound relay (`_relay_toward_core`); return.
 3. **Ore-site task** (`_try_ore_site_task`) — sticky `ore_site` via `_pick_ore_site`:
    - Empty → step off if on tile; adjacent → build harvester, then enter inbound relay.
@@ -56,16 +58,25 @@ Each turn (`_run_builder`), after HiveMind `tick` and stuck tracking:
 5. **Heal** adjacent damaged friendlies (if action free).
 6. **Move** toward `ore_site` / `_pick_target` (no pave-while-walking).
 
-### Mid-game attack (`attack.py`)
+### Raiders (`attack.py`)
 
-- Trigger: `round >= 80`, `my_index % 2 == 0`, enemy core from slot 15.
-- Cap: 5 ally sentinels (counted via HiveMind `local_map`; written to slot 3).
-- Placement: ring tiles at r² 16–32 from the 2×2 enemy core; builders side-stagger
-  by index so they don’t pile on the same tile. Face sentinels at the enemy core.
-- **Ammo:** core keeps pool at `20 × max(1, n)` (prestock 20 at mid-game, then
-  +20 per living sentinel, up to 100). Sentinels cost 10 ammo/shot.
-- **Fire:** each sentinel fires every turn when able — priority enemy **core**,
-  then **builders**, then **harvesters**. After the cap, even builders idle.
+Three phases once the enemy core is known (`my_index` even, > 0):
+
+1. **Belt raid** (`round < 30`): head toward the enemy core; if an enemy
+   conveyor/splitter is in vision, divert to the **nearest** one and stand-fire
+   (builders fire own tile only); then resume toward the core.
+2. **Gunners** (`30 ≤ round < 80`): place up to **3** ally gunners on empty tiles
+   at Chebyshev distance **1–3** from the enemy 2×2 footprint; **face into the
+   known enemy core** (nearest footprint tile; prefer cardinal aim); raiders
+   side-stagger. Still stand-fire if on a belt. After the cap, idle until
+   sentinel phase.
+3. **Sentinels** (`round ≥ 80`): place up to **5** siege sentinels at r² 16–32
+   facing into the enemy core; sync count to slot 3; idle after cap.
+
+- **Ammo:** from turn 30, core keeps pool at `5 + 20 × max(1, n)` (prestock 25,
+  then +20 per living sentinel). Turrets use global ammo.
+- **Gunner fire:** core → builders → harvesters → belts (conveyor/splitter).
+- **Sentinel fire:** core → builders → harvesters.
 
 ### Ore targeting
 

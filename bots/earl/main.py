@@ -5,9 +5,11 @@ steal any harvester), then pave a committed conveyor path back to the core.
 Wrong-facing allied belts are destroyed and rebuilt; enemy belts are cleared
 via stand-and-fire.
 
-At turn 80, even builders abort economy and place sentinels around the enemy
-core (see attack.py). Odd builders keep mining. Indices 6+ defend the core
-(see defence.py).
+Even builders (raiders) abort economy once the enemy core is known (see
+attack.py): push the enemy, stand-fire belts on the way, gunners from turn 30
+facing into the enemy core, sentinels from turn 80. Builders 1 and 5 return home
+to defend at turn 80 (see defence.py); builder 3 keeps mining. Indices 6+ defend
+the core from spawn.
 
 Store slots:
   0–1                  Free
@@ -25,7 +27,13 @@ from __future__ import annotations
 import random
 from collections import deque
 
-from attack import run_attack_builder, run_sentinel, should_attack, top_up_ammo
+from attack import (
+    is_raider,
+    run_attack_builder,
+    run_gunner,
+    run_sentinel,
+    top_up_ammo,
+)
 from defence import is_defender, run_defender
 from fcode import Controller, Direction, EntityType, Environment, Position
 from features import ORE_LOCATIONS
@@ -424,7 +432,7 @@ class Player:
             self.stuck = 0
         self.last_pos = pos
 
-        if is_defender(self.hivemind.my_index):
+        if is_defender(self.hivemind.my_index, ct.get_current_round()):
             self._clear_relay()
             self.ore_site = None
             hold = run_defender(ct, core_pos=self.core_pos)
@@ -433,11 +441,7 @@ class Player:
             self._move_toward_target(ct, retarget=False)
             return
 
-        if should_attack(
-            ct.get_current_round(),
-            self.hivemind.my_index,
-            self.enemy_core_pos,
-        ):
+        if is_raider(self.hivemind.my_index, self.enemy_core_pos):
             enemy = self.enemy_core_pos
             assert enemy is not None
             self._clear_relay()
@@ -885,6 +889,4 @@ class Player:
     # ------------------------------------------------------------------
 
     def _run_gunner(self, ct: Controller) -> None:
-        target = ct.get_gunner_target()
-        if target is not None and ct.can_fire(target):
-            ct.fire(target)
+        run_gunner(ct)
