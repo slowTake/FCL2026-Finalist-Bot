@@ -5,10 +5,16 @@ steal any harvester), then pave a committed conveyor path back to the core.
 Wrong-facing allied belts are destroyed and rebuilt; enemy belts are cleared
 via stand-and-fire.
 
+Even builders (raiders) abort economy once the enemy core is known (see
+attack.py): push the enemy, stand-fire belts on the way, gunners from turn 30
+facing into the enemy core, then a 40-turn gunner/sentinel loop. Odd economy builders (1, 3, 5)
+keep mining; idle ore recheck every 50 turns. Indices 6+ defend the core from spawn.
+
 Store slots:
   0–1                  Free
   2  SLOT_HARVESTER_COUNT Total harvesters built by the team
-  3–6                  Free
+  3  SLOT_SENTINEL_COUNT  Living siege sentinels (attack.py)
+  4–6                  Free
   7–15                 HiveMind-owned — never write from Player
 
 Ally core from slot 15 via unpack_cores. Ore from ORE_LOCATIONS / local_map.
@@ -20,6 +26,14 @@ from __future__ import annotations
 import random
 from collections import deque
 
+from attack import (
+    is_raider,
+    run_attack_builder,
+    run_gunner,
+    run_sentinel,
+    top_up_ammo,
+)
+from defence import is_defender, run_defender
 from fcode import Controller, Direction, EntityType, Environment, Position
 from features import ORE_LOCATIONS
 from hivemind import CoreState, HiveMind, unpack_cores
@@ -30,7 +44,11 @@ CARDINALS = [Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST]
 SLOT_HARVESTER_COUNT = 2
 SLOT_PACKED_CORES = 15
 
-MAX_BUILDERS = 5
+MAX_BUILDERS_EARLY = 5
+MAX_BUILDERS = 9
+FIRST_INTERVAL_SPAWN = 20
+SPAWN_INTERVAL = 25
+ORE_RECHECK_INTERVAL = 50
 BFS_MAX_ITERS = 400
 
 
@@ -52,14 +70,26 @@ def in_bounds(ct: Controller, pos: Position) -> bool:
     return 0 <= pos.x < ct.get_map_width() and 0 <= pos.y < ct.get_map_height()
 
 
-def spawn_dirs_toward(
+def spawn_sites_toward(
     ct: Controller, core_pos: Position, goal: Position
-) -> list[Direction]:
-    """Prefer spawn tiles closer to goal (enemy core or map center)."""
-    return sorted(
-        DIRECTIONS,
-        key=lambda d: core_pos.add(d).distance_squared(goal),
-    )
+) -> list[Position]:
+    """Apron tiles around the full 2x2 core, closest to goal first."""
+    footprint = _core_footprint(core_pos)
+    footprint_keys = {(t.x, t.y) for t in footprint}
+    sites: list[Position] = []
+    seen: set[tuple[int, int]] = set()
+    for tile in footprint:
+        for d in DIRECTIONS:
+            cand = tile.add(d)
+            key = (cand.x, cand.y)
+            if key in seen or key in footprint_keys:
+                continue
+            if not in_bounds(ct, cand):
+                continue
+            seen.add(key)
+            sites.append(cand)
+    sites.sort(key=lambda p: p.distance_squared(goal))
+    return sites
 
 
 def _core_footprint(core_pos: Position) -> list[Position]:
@@ -80,7 +110,11 @@ def is_core_adjacent(
             continue
         if ct.is_in_vision(neighbor):
             bid = ct.get_tile_building_id(neighbor)
-            if bid is not None and ct.get_entity_type(bid) == EntityType.CORE:
+            if (
+                bid is not None
+                and ct.get_entity_type(bid) == EntityType.CORE
+                and ct.get_team(bid) == ct.get_team()
+            ):
                 return True
     if core_pos is None:
         return False
@@ -325,9 +359,12 @@ class Player:
         self.last_pos: Position | None = None
         self.stuck = 0
         self.core_pos: Position | None = None
+        self.enemy_core_pos: Position | None = None
 
         self.ore_site: Position | None = None
         self.skipped_ores: set[tuple[int, int]] = set()
+        self.last_ore_recheck_round = 0
+        self.ore_recheck_allow_ally = False
 
         self.in_relay = False
         self.relay_origin: Position | None = None
@@ -345,6 +382,8 @@ class Player:
                 self._run_builder(ct)
             elif etype == EntityType.GUNNER:
                 self._run_gunner(ct)
+            elif etype == EntityType.SENTINEL:
+                run_sentinel(ct)
         except Exception:
             return
 
@@ -353,8 +392,22 @@ class Player:
     # ------------------------------------------------------------------
 
     def _run_core(self, ct: Controller) -> None:
+        # Ammo before spawn early-return so top-up continues after builder cap.
+        top_up_ammo(ct)
+
         if self.num_spawned >= MAX_BUILDERS:
             return
+
+        round_n = ct.get_current_round()
+        can_rush = self.num_spawned < MAX_BUILDERS_EARLY
+        can_interval = (
+            self.num_spawned >= MAX_BUILDERS_EARLY
+            and round_n >= FIRST_INTERVAL_SPAWN
+            and (round_n - FIRST_INTERVAL_SPAWN) % SPAWN_INTERVAL == 0
+        )
+        if not can_rush and not can_interval:
+            return
+
         ti = ct.get_global_resources()
         if ti < ct.get_builder_bot_cost():
             return
@@ -364,8 +417,8 @@ class Player:
             goal = Position(enemy[1], enemy[2])
         else:
             goal = Position(ct.get_map_width() // 2, ct.get_map_height() // 2)
-        for d in spawn_dirs_toward(ct, pos, goal):
-            if self.hivemind.spawn_builder(ct, pos.add(d)):
+        for spawn_pos in spawn_sites_toward(ct, pos, goal):
+            if self.hivemind.spawn_builder(ct, spawn_pos):
                 self.num_spawned += 1
                 return
 
@@ -377,6 +430,8 @@ class Player:
         pos = ct.get_position()
         if self.core_pos is None:
             self._read_core_pos(ct)
+        if self.enemy_core_pos is None:
+            self._read_enemy_core(ct)
 
         if self.last_pos == pos:
             self.stuck += 1
@@ -384,9 +439,46 @@ class Player:
             self.stuck = 0
         self.last_pos = pos
 
+        if is_defender(self.hivemind.my_index):
+            self._clear_relay()
+            self.ore_site = None
+            hold = run_defender(
+                ct,
+                core_pos=self.core_pos,
+                my_index=self.hivemind.my_index,
+            )
+            if hold is not None:
+                self.target = hold
+                self._move_toward_target(ct, retarget=False)
+            return
+
+        if is_raider(self.hivemind.my_index, self.enemy_core_pos):
+            enemy = self.enemy_core_pos
+            assert enemy is not None
+            self._clear_relay()
+            self.ore_site = None
+            site = run_attack_builder(
+                ct,
+                my_index=self.hivemind.my_index,
+                local_map=self.hivemind.local_map,
+                enemy_core=enemy,
+                ally_core=self.core_pos,
+            )
+            if site is not None:
+                self.target = site
+            self._move_toward_target(ct, retarget=False)
+            return
+
         if self.in_relay:
             self._relay_toward_core(ct)
             return
+
+        round_n = ct.get_current_round()
+        if round_n - self.last_ore_recheck_round >= ORE_RECHECK_INTERVAL:
+            self.skipped_ores.clear()
+            self.ore_site = None
+            self.last_ore_recheck_round = round_n
+            self.ore_recheck_allow_ally = True
 
         if not self.in_relay:
             self._try_ore_site_task(ct)
@@ -404,6 +496,11 @@ class Player:
         ally, _ = unpack_cores(ct.read_store(SLOT_PACKED_CORES))
         if ally[0] != CoreState.UNKNOWN:
             self.core_pos = Position(ally[1], ally[2])
+
+    def _read_enemy_core(self, ct: Controller) -> None:
+        _, enemy = unpack_cores(ct.read_store(SLOT_PACKED_CORES))
+        if enemy[0] != CoreState.UNKNOWN:
+            self.enemy_core_pos = Position(enemy[1], enemy[2])
 
     def _try_heal(self, ct: Controller) -> None:
         pos = ct.get_position()
@@ -504,14 +601,19 @@ class Player:
     def _pick_ore_site(self, ct: Controller, pos: Position) -> Position | None:
         """Nth-nearest known ore by builder index: prefer empty, then steal.
 
-        Builder my_index N takes candidates[(N-1) % len]; unregistered (0) → nearest.
+        On idle recheck, fall back to ally harvesters so inbound belts can be
+        rebuilt. Builder my_index N takes candidates[(N-1) % len]; 0 → nearest.
         """
         map_id = self.hivemind.map_id
         if map_id <= 0:
+            self.ore_recheck_allow_ally = False
             return None
         my_team = ct.get_team()
+        allow_ally = self.ore_recheck_allow_ally
+        self.ore_recheck_allow_ally = False
         empty: list[tuple[int, Position]] = []
         steal: list[tuple[int, Position]] = []
+        ally: list[tuple[int, Position]] = []
 
         for ox, oy in ORE_LOCATIONS.get(map_id, []):
             if (ox, oy) in self.skipped_ores:
@@ -523,6 +625,9 @@ class Player:
                 and ent.get("type") == EntityType.HARVESTER
                 and ent.get("team") == my_team
             ):
+                if allow_ally:
+                    ore_pos = Position(ox, oy)
+                    ally.append((pos.distance_squared(ore_pos), ore_pos))
                 continue
             # Synced blocked tile with no entity — treat as already claimed
             if not ent and tile_info.get("passable") is False:
@@ -536,6 +641,8 @@ class Player:
                 empty.append((d, ore_pos))
 
         candidates = empty if empty else steal
+        if not candidates and allow_ally:
+            candidates = ally
         if not candidates:
             return None
         candidates.sort(key=lambda t: t[0])
@@ -736,16 +843,17 @@ class Player:
     # Movement / targeting
     # ------------------------------------------------------------------
 
-    def _move_toward_target(self, ct: Controller) -> None:
+    def _move_toward_target(self, ct: Controller, *, retarget: bool = True) -> None:
         if ct.get_move_cooldown() != 0:
             return
 
         pos = ct.get_position()
-        if self.ore_site is not None:
-            self.target = self.ore_site
-        elif self.target is None or pos == self.target or self.stuck >= 3:
-            self.target = self._pick_target(ct)
-            self.stuck = 0
+        if retarget:
+            if self.ore_site is not None:
+                self.target = self.ore_site
+            elif self.target is None or pos == self.target or self.stuck >= 3:
+                self.target = self._pick_target(ct)
+                self.stuck = 0
         if self.target is None:
             return
 
@@ -809,6 +917,4 @@ class Player:
     # ------------------------------------------------------------------
 
     def _run_gunner(self, ct: Controller) -> None:
-        target = ct.get_gunner_target()
-        if target is not None and ct.can_fire(target):
-            ct.fire(target)
+        run_gunner(ct)
