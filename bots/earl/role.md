@@ -95,7 +95,7 @@ Named phases (`RAIDERS`):
 2. **belt_raid** (`round < 30`) — push enemy core; divert to nearest enemy
    conveyor/splitter in vision and stand-fire; resume toward core.
 3. **place_gunners** — first 20 turns of each 40-turn loop from turn 30: up to
-   3 ally gunners at Chebyshev 1–3 from enemy footprint, face into core.
+   3 ally gunners at Chebyshev 1–3 from enemy footprint with verified core LOS.
 4. **place_siege_sentinels** — last 20 turns of each loop: up to 5 sentinels at
    r² 16–32 (fallback ~3 tiles); sync count to slot 3.
 5. **hunt_vision** — when placement is idle at cap: attack nearest enemy

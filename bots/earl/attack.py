@@ -113,6 +113,34 @@ def facing_toward_core(site: Position, enemy_core: Position) -> Direction:
     return facing_8way(site, _aim_core_tile(site, enemy_core))
 
 
+def best_gunner_facing(
+    ct: Controller, site: Position, enemy_core: Position
+) -> Direction | None:
+    """Facing that can hit the enemy core from site; cardinals before diagonals."""
+    footprint = _core_footprint(enemy_core)
+    cardinals = (
+        Direction.NORTH,
+        Direction.EAST,
+        Direction.SOUTH,
+        Direction.WEST,
+    )
+    diagonals = (
+        Direction.NORTHEAST,
+        Direction.SOUTHEAST,
+        Direction.SOUTHWEST,
+        Direction.NORTHWEST,
+    )
+    for facing in cardinals:
+        for tile in footprint:
+            if ct.can_fire_from(site, facing, EntityType.GUNNER, tile):
+                return facing
+    for facing in diagonals:
+        for tile in footprint:
+            if ct.can_fire_from(site, facing, EntityType.GUNNER, tile):
+                return facing
+    return None
+
+
 def is_raider(my_index: int, enemy_core: Position | None) -> bool:
     """Even builders leave economy once the enemy core is known (any turn)."""
     return my_index > 0 and my_index % 2 == 0 and enemy_core is not None
@@ -329,7 +357,7 @@ def pick_gunner_site(
     my_index: int,
     local_map: dict,
 ) -> Position | None:
-    """Empty tile Chebyshev 1–3 from enemy footprint; prefer closer + cardinal."""
+    """Empty tile Chebyshev 1–3 from enemy footprint; must be able to hit core."""
     footprint = _core_footprint(enemy_core)
     fp_keys = {(t.x, t.y) for t in footprint}
     best: Position | None = None
@@ -363,7 +391,9 @@ def pick_gunner_site(
                     continue
                 if ct.get_tile_env(cand) != Environment.EMPTY:
                     continue
-            facing = facing_toward_core(cand, enemy_core)
+            facing = best_gunner_facing(ct, cand, enemy_core)
+            if facing is None:
+                continue
             diag_pen = 0 if facing in _CARDINALS else 500
             side = siege_cand_side(cand, enemy_core)
             side_pen = (
@@ -405,8 +435,8 @@ def build_gunner(
     """Build a gunner at site. Face core if in range and aiming at core; else aim_target.
 
     When aim_target is None, aim is the enemy core (siege / wing pads).
-    When aim_target is a harvester (or core is out of gunner range), face that
-    target via facing_8way so the pad is already on the fire line.
+    Core-siege pads use can_fire_from-verified facing; harvester / out-of-range
+    aim uses facing_8way so the pad is already on the fire line.
     """
     pos = ct.get_position()
     if abs(pos.x - site.x) + abs(pos.y - site.y) != 1:
@@ -424,7 +454,9 @@ def build_gunner(
     )
 
     if core_in_range and aim_is_core:
-        facing = facing_toward_core(site, enemy_core)
+        facing = best_gunner_facing(ct, site, enemy_core)
+        if facing is None:
+            return False
     else:
         facing = facing_8way(site, target)
 

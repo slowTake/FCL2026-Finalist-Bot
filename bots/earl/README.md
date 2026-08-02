@@ -137,9 +137,9 @@ Packaged as the `RAIDERS` task list (`run_raiders_tasklist` /
 3. **Siege loop** (from turn 30, every **40** turns):
    - **Gunners** (first **20** turns of each cycle): place up to **3** ally
      gunners on empty tiles at Chebyshev distance **1–3** from the enemy 2×2
-     footprint (**prefer closer**); **face into the known enemy core** (nearest
-     footprint tile; prefer cardinal aim); raiders side-stagger. Still stand-fire
-     if on a belt.
+     footprint (**prefer closer**); only sites that can **actually hit** the
+     core (`can_fire_from`, cardinals before diagonals); raiders side-stagger.
+     Still stand-fire if on a belt.
    - **Sentinels** (last **20** turns of each cycle): place up to **5** siege
      sentinels at r² 16–32 facing into the enemy core (prefer max range); if no
      site fits, fall back to ~**3** tiles from the footprint; sync count to slot 3.
