@@ -113,7 +113,7 @@ Home wing gunners stay; threat-spawn and phalanx ammo stay active while
 `ACTIVE_RAID_ORDER = "phalanx"` (new evens keep the home role after 600).
 
 Gunner fire uses shared `run_gunner` (core → gunner → sentinel → builder →
-harvester → belts; rotates toward core/combat in vision).
+harvester → belts; rotates toward core/combat/harvester in vision).
 
 ### Raiders (`attack.py`) — `ACTIVE_RAID_ORDER = "raiders"`
 

@@ -15,7 +15,7 @@ Core tops ammo to 5 + 20 × max(1, n) from a caller-chosen min_turn
 (default GUNNER_TURN; phalanx uses turn 10).
 Turret fire: core first; else gunner → sentinel → builder (then harvester;
 gunners also belts). Gunners rotate toward core or combat targets in vision
-(gunner/sentinel/builder) when off the current fire line; sentinels stay
+(gunner/sentinel/builder/harvester) when off the current fire line; sentinels stay
 fixed-facing.
 """
 
@@ -61,12 +61,14 @@ _COMBAT_ROTATE_TYPES = (
     EntityType.GUNNER,
     EntityType.SENTINEL,
     EntityType.BUILDER_BOT,
+    EntityType.HARVESTER,
 )
 
 _COMBAT_FIRE_PRIORITY = {
     EntityType.GUNNER: 2,
     EntityType.SENTINEL: 3,
     EntityType.BUILDER_BOT: 4,
+    EntityType.HARVESTER: 5,
 }
 
 _GUNNER_FALLBACK_FIRE_PRIORITY = {
@@ -600,7 +602,7 @@ def _try_rotate_toward_core(ct: Controller) -> bool:
 
 
 def _try_rotate_toward_combat(ct: Controller) -> bool:
-    """Rotate onto nearest hittable enemy gunner/sentinel/builder."""
+    """Rotate onto nearest hittable enemy gunner/sentinel/builder/harvester."""
     target = _best_vision_target(
         ct, _COMBAT_FIRE_PRIORITY, _COMBAT_ROTATE_TYPES, must_hit=True
     )
