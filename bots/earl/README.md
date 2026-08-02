@@ -88,14 +88,15 @@ Built count from slot 2. At cap: finish active chains only; no new seeks.
 
 Even builders stay home once the enemy core is known:
 
-1. **Hunt turrets** — if an enemy gunner or sentinel is in vision, fire if
-   orthogonally adjacent, else move to attack it.
-2. **Place wing gunners** while threat is armed — core slot **1** (sticky
+1. **Place wing gunners** while threat is armed — core slot **1** (sticky
    **20** turns) **or** this builder sees an enemy builder (same turn): pads
-   on that **threat side** — soft depths **1–3** (up to 3 per flank); live
-   builder/turret rush lifts to depths **1–5**; fog OK to path; nearest open
-   pad (no stagger); face toward the enemy; sync living count to slot 3.
+   on that **threat side** — soft depths **1–5**; live builder/turret rush
+   uses the same depths; fog OK to path; nearest open pad (no stagger); face
+   toward the enemy; sync living count to slot 3.
    Home wings do not fill the siege gunner cap. Until armed, skip (soft-idle).
+2. **Hunt turrets** — if an enemy gunner or sentinel is in vision, fire if
+   orthogonally adjacent, else move to attack it (after open wing pads are
+   filled while armed).
 3. **Assist apron** on the **threat side** while armed: 3-deep
    inward conveyors (no barriers; `LAY_APRON_BELTS` currently **off**).
 4. **Guard harvesters**: place **1 gunner** cardinally beside each ally harvester

@@ -66,12 +66,13 @@ Post-600 new odds stay on economy (unlimited after 400).
 Home defence for even builders once the enemy core is known
 (`ACTIVE_RAID_ORDER = "phalanx"`). Named phases (`PHALANX`):
 
-1. **hunt_turrets** — enemy gunner/sentinel in vision: fire if adjacent, else move.
-2. **place_phalanx_gunners** — while threat armed (core slot 1 sticky **or**
-   local enemy builder sight): wing pads on that side — soft depths **1–3**
-   (up to 3 per flank); live builder/turret rush lifts to depths **1–5**;
-   fog OK to path; nearest open pad; face enemy; sync living count to slot 3.
+1. **place_phalanx_gunners** — while threat armed (core slot 1 sticky **or**
+   local enemy builder sight): wing pads on that side — soft depths **1–5**;
+   live builder/turret rush uses the same depths; fog OK to path; nearest
+   open pad; face enemy; sync living count to slot 3.
    Home wings do not fill the siege gunner cap.
+2. **hunt_turrets** — enemy gunner/sentinel in vision: fire if adjacent, else
+   move (after open wing pads are filled while armed).
 3. **assist_apron** — 3-deep inward conveyors on the threat side while armed
    (`LAY_APRON_BELTS` in `defence.py`; currently **off**).
 4. **guard_harvesters** — from turn 10: 1 gunner cardinally beside each ally
