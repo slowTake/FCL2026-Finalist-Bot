@@ -99,15 +99,14 @@ Named phases (`RAIDERS`):
    gunner can already hit it (`can_fire_from`), place a gunner on an empty
    tile in range that can hit it (prefer closer; index-staggered; nearest
    uncovered harvester first).
-2. **belt_raid** (`round < 30`) — push enemy core; divert to nearest enemy
-   conveyor/splitter in vision and stand-fire; resume toward core.
-3. **place_gunners** — first 20 turns of each 40-turn loop (epoch 30, or 300
+2. **place_gunners** — first 20 turns of each 40-turn loop (epoch 30, or 300
    after odd pivot): up to 8 siege gunners (near enemy core only) at Chebyshev
    1–3 with verified core LOS.
-4. **place_siege_sentinels** — last 20 turns of each loop: up to 5 sentinels at
+3. **place_siege_sentinels** — last 20 turns of each loop: up to 5 sentinels at
    r² 16–32 (fallback ~3 tiles); sync count to slot 3.
-5. **hunt_vision** — when placement is idle at cap: attack nearest enemy
-   gunner → sentinel → harvester → belt; else push enemy core.
+4. **belt_raid** (last) — divert to nearest enemy conveyor/splitter in vision
+   and stand-fire; else push enemy core. Also the pre-30 fallthrough when the
+   siege loop is inactive.
 
 Ammo from turn 30 (or turn 10 under phalanx): core tops pool to
 `12 + 2×gunners + 10×sentinels` from known ally turrets in `local_map`.
@@ -127,8 +126,7 @@ Harvester siege (`harrass.py`). Named phases (`HARRASS`):
    gunner on an empty tile in range that can hit it (prefer closer;
    index-staggered; nearest uncovered first)
    (`attack._run_siege_enemy_harvester`).
-4. **seek_harvesters** — when siege has no site: hunt enemy gunner → sentinel
-   → harvester → belt in vision; else push enemy core (`attack._run_raid_hunt`).
+4. **push_enemy_core** — when siege has no site: path toward the enemy core.
 
 **Assignment under phalanx:** builder index **5** (`HARRASS_INDEX`) once the
 enemy core is known, until turn **300**, then joins the odd **raiders** pivot.

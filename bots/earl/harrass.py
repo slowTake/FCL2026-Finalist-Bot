@@ -6,7 +6,7 @@ ACTIVE_RAID_ORDER = "harrass" in main.py:
   - Then, if next to the enemy core (Chebyshev ≤ gunner place max): raider
     core gunner/sentinel siege.
   - Else: siege uncovered enemy harvesters (reuse raider harvester siege).
-  - Else seek: hunt vision targets / push enemy core to find more harvesters.
+  - Else push enemy core.
 """
 
 from __future__ import annotations
@@ -18,7 +18,6 @@ from attack import (
     _chebyshev_to_footprint,
     _core_footprint,
     _run_raid_core_siege,
-    _run_raid_hunt,
     _run_siege_enemy_harvester,
 )
 from defence import run_phalanx
@@ -30,7 +29,7 @@ HARRASS = (
     "phalanx_home",
     "siege_enemy_core",
     "siege_enemy_harvester",
-    "seek_harvesters",
+    "push_enemy_core",
 )
 
 
@@ -50,7 +49,7 @@ def run_harrasser(
     enemy_core: Position,
     ally_core: Position | None,
 ) -> Position | None:
-    """HARRASS: phalanx home until 50, then core siege → harvester → seek."""
+    """HARRASS: phalanx home until 50, then core siege → harvester → push core."""
     if ct.get_current_round() < HARRASS_START_TURN:
         return run_phalanx(
             ct,
@@ -79,4 +78,4 @@ def run_harrasser(
     )
     if site is not None:
         return site
-    return _run_raid_hunt(ct, enemy_core=enemy_core)
+    return enemy_core

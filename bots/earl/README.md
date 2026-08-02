@@ -135,10 +135,7 @@ Packaged as the `RAIDERS` task list (`run_raiders_tasklist` /
    and no ally gunner can already **hit** it (`can_fire_from`, not mere range),
    place a gunner on an empty in-range tile that can hit it (index-staggered;
    nearest uncovered harvester first).
-2. **Belt raid** (`round < 30`): head toward the enemy core; if an enemy
-   conveyor/splitter is in vision, divert to the **nearest** one and stand-fire
-   (builders fire own tile only); then resume toward the core.
-3. **Siege loop** (from turn 30, every **40** turns; from turn **300** the
+2. **Siege loop** (from turn 30, every **40** turns; from turn **300** the
    epoch restarts so odd-pivot raiders get a fresh gunner→sentinel window):
    - **Gunners** (first **20** turns of each cycle): place up to **8** siege
      gunners (count only pads within Chebyshev **3** of the enemy 2×2 — home
@@ -148,9 +145,9 @@ Packaged as the `RAIDERS` task list (`run_raiders_tasklist` /
    - **Sentinels** (last **20** turns of each cycle): place up to **5** siege
      sentinels at r² 16–32 facing into the enemy core (prefer max range); if no
      site fits, fall back to ~**3** tiles from the footprint; sync count to slot 3.
-4. **Hunt vision** (when gunner/sentinel placement is idle at cap): attack the
-   nearest enemy **gunner → sentinel → harvester → belt** in vision (adjacent
-   fire for buildings; stand-fire for belts); else push the enemy core.
+3. **Belt raid** (last): if an enemy conveyor/splitter is in vision, divert to
+   the **nearest** one and stand-fire (builders fire own tile only); else push
+   the enemy core. Also the pre-30 fallthrough when the siege loop is inactive.
 
 Examples: gunners 30–49, sentinels 50–69, …; after 300: gunners 300–319,
 sentinels 320–339, …
@@ -175,8 +172,7 @@ turn **300**, then joins the odd raiders pivot. Also selectable as
    reuse `attack._run_raid_core_siege` (raider gunner/sentinel loop).
 3. **Siege enemy harvester** — reuse `attack._run_siege_enemy_harvester`
    (cover = can hit via `can_fire_from`; nearest uncovered first).
-4. **Seek harvesters** — when no siege site: reuse `attack._run_raid_hunt`
-   (hunt gunner → sentinel → harvester → belt; else push enemy core).
+4. **Push enemy core** — when no siege site: path toward the enemy core.
 
 ### Ore targeting
 

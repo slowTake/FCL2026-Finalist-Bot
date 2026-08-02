@@ -4,10 +4,10 @@ RAIDERS task list (even my_index, enemy core known) — select via
 ACTIVE_RAID_ORDER = "raiders" in main.py (also after phalanx pivots):
   - Top priority: if an uncovered enemy harvester is in vision, place a gunner
     that can hit it (siege_enemy_harvester; cover = can_fire_from, not range).
-  - Before GUNNER_TURN: push the enemy core; stand-fire enemy belts on the way.
   - From GUNNER_TURN: repeating RAID_LOOP — first GUNNER_PHASE_LEN turns place
-    gunners, remainder place siege sentinels; when placement is idle (at cap),
-    hunt enemy gunners / sentinels / harvesters / belts in vision.
+    gunners, remainder place siege sentinels.
+  - Last: belt_raid — stand-fire / path to enemy belts, else push enemy core
+    (also the pre-GUNNER_TURN fallthrough when core siege is inactive).
   - After PHALANX_RAID_PIVOT_TURN (300), the loop epoch restarts so the odd
     pivot gets a fresh gunner→sentinel window. Siege gunner cap counts only
     pads near the enemy core (home wings do not fill the cap).
@@ -929,79 +929,12 @@ def _run_sentinel_phase(
     return site
 
 
-_HUNT_PRIORITY = {
-    EntityType.GUNNER: 1,
-    EntityType.SENTINEL: 2,
-    EntityType.HARVESTER: 3,
-}
-
-
-def _pick_raid_hunt_target(ct: Controller) -> Position | None:
-    """Nearest vision target: gunner > sentinel > harvester > enemy belt."""
-    my_team = ct.get_team()
-    pos = ct.get_position()
-    best: Position | None = None
-    best_pri = 99
-    best_dist = 10**9
-
-    for eid in ct.get_nearby_entities():
-        if ct.get_team(eid) == my_team:
-            continue
-        etype = ct.get_entity_type(eid)
-        pri = _HUNT_PRIORITY.get(etype)
-        if pri is None:
-            continue
-        tile = ct.get_position(eid)
-        dist = pos.distance_squared(tile)
-        if pri < best_pri or (pri == best_pri and dist < best_dist):
-            best_pri = pri
-            best_dist = dist
-            best = tile
-
-    if best is not None:
-        return best
-    return _pick_enemy_belt_target(ct)
-
-
-def _try_adjacent_raid_fire(ct: Controller, tile: Position) -> bool:
-    """Fire an orthogonally adjacent enemy building/bot tile."""
-    if ct.get_action_cooldown() != 0:
-        return False
-    pos = ct.get_position()
-    if abs(pos.x - tile.x) + abs(pos.y - tile.y) != 1:
-        return False
-    if not ct.can_fire(tile):
-        return False
-    ct.fire(tile)
-    return True
-
-
-def _run_raid_hunt(
-    ct: Controller, *, enemy_core: Position
-) -> Position | None:
-    """Attack gunners / sentinels / harvesters / belts in vision; else push core."""
-    if _try_stand_fire_belt(ct):
-        return ct.get_position()
-
-    target = _pick_raid_hunt_target(ct)
-    if target is None:
-        return enemy_core
-
-    if _enemy_belt_at(ct, target):
-        return target
-
-    if _try_adjacent_raid_fire(ct, target):
-        return target
-    return target
-
-
 # Named phases for the offensive raid order (priority-gated in run_raiders_tasklist).
 RAIDERS = (
     "siege_enemy_harvester",
-    "belt_raid",
     "place_gunners",
     "place_siege_sentinels",
-    "hunt_vision",
+    "belt_raid",
 )
 
 
@@ -1017,7 +950,7 @@ def _run_raid_core_siege(
 
     After phalanx odd-pivot, the epoch restarts so walkers get a full gunner
     window then sentinels. Returns a move/build site, or None when idle at cap /
-    no sentinel site (caller falls through to hunt / other work).
+    no sentinel site (caller falls through to belt_raid / push core).
     """
     round_n = ct.get_current_round()
     epoch = (
@@ -1050,7 +983,7 @@ def run_raiders_tasklist(
     enemy_core: Position,
     ally_core: Position | None,
 ) -> Position | None:
-    """RAIDERS: harvester gunner → belt raid → gunner/sentinel loop → hunt."""
+    """RAIDERS: harvester gunner → core siege loop → belt raid / push core."""
     site = _run_siege_enemy_harvester(
         ct,
         my_index=my_index,
@@ -1061,18 +994,17 @@ def run_raiders_tasklist(
         return site
 
     round_n = ct.get_current_round()
-    if round_n < GUNNER_TURN:
-        return _run_belt_raid(ct, enemy_core=enemy_core)
-    site = _run_raid_core_siege(
-        ct,
-        my_index=my_index,
-        local_map=local_map,
-        enemy_core=enemy_core,
-        ally_core=ally_core,
-    )
-    if site is not None:
-        return site
-    return _run_raid_hunt(ct, enemy_core=enemy_core)
+    if round_n >= GUNNER_TURN:
+        site = _run_raid_core_siege(
+            ct,
+            my_index=my_index,
+            local_map=local_map,
+            enemy_core=enemy_core,
+            ally_core=ally_core,
+        )
+        if site is not None:
+            return site
+    return _run_belt_raid(ct, enemy_core=enemy_core)
 
 
 def run_attack_builder(
