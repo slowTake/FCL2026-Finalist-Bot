@@ -5,11 +5,12 @@ enemy gunners in vision, heal, fire, then lay a per-side inward apron
 (3-deep belts, no barriers).
 
 Even builders may run PHALANX (see ACTIVE_RAID_ORDER in main): while the
-core's sticky builder-threat switch is armed, place wing gunners first then
-hunt enemy gunners/sentinels; approach apron only while armed.
-Soft fill uses depths 1–5; live builder or turret rush uses the same depths.
-Then one gunner beside each nearby ally harvester, clear encroaching enemy
-harvesters/belts in vision, then soft-idle.
+core's sticky threat switch is armed (enemy builder or gunner/sentinel in
+vision), place wing gunners first then hunt enemy gunners/sentinels;
+approach apron only while armed. Soft fill uses depths 1–5; live builder
+or turret rush uses the same depths. Then one gunner beside each nearby
+ally harvester, clear encroaching enemy harvesters/belts in vision, then
+soft-idle.
 """
 
 from __future__ import annotations
@@ -234,14 +235,14 @@ def _nearest_enemy_builder(ct: Controller) -> Position | None:
 def resolve_phalanx_threat_side(
     ct: Controller, ally_core: Position
 ) -> int | None:
-    """Core sticky slot, or same-turn side from a locally seen enemy builder."""
+    """Core sticky slot, or same-turn side from a local enemy builder/turret."""
     side = phalanx_builder_threat(ct)
     if side is not None:
         return side
-    builder = _nearest_enemy_builder(ct)
-    if builder is None:
+    threat = _nearest_enemy_builder(ct) or _nearest_enemy_turret(ct)
+    if threat is None:
         return None
-    return side_toward(ally_core, builder)
+    return side_toward(ally_core, threat)
 
 
 def update_phalanx_builder_threat(
@@ -250,7 +251,7 @@ def update_phalanx_builder_threat(
     sticky_until: int,
     last_side: int,
 ) -> tuple[int, int]:
-    """Core: arm/refresh sticky threat from enemy builders in vision; write slot 1.
+    """Core: arm/refresh sticky threat from enemy builders or turrets; write slot 1.
 
     Returns updated (sticky_until, side).
     """
@@ -259,8 +260,9 @@ def update_phalanx_builder_threat(
     my_team = ct.get_team()
     best: Position | None = None
     best_dist = 10**9
+    threat_types = (EntityType.BUILDER_BOT,) + _ENEMY_TURRET_TYPES
     for eid in ct.get_nearby_entities():
-        if ct.get_entity_type(eid) != EntityType.BUILDER_BOT:
+        if ct.get_entity_type(eid) not in threat_types:
             continue
         if ct.get_team(eid) == my_team:
             continue

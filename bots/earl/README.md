@@ -3,14 +3,15 @@
 Starter economy loop + HiveMind (`components/` symlinks) + **inbound steal-relay**
 belts to the **ally** core only. Default **`ACTIVE_RAID_ORDER = "phalanx"`**
 (`main.py`): **even** builders → home phalanx (`defence.py`) once the enemy
-core is known; **odd** builders → economy (`logistics.py`) forever, including
-sniping uncovered enemy harvesters in vision. Set to **`raiders`** for the
-offensive belt-raid → gunner/sentinel siege loop (`attack.py`); set to
-**`harrass`** for harvester siege + seek (`harrass.py`). Economy harvester
-caps (**2** until 50, **3** until 100, **4** until 200, **5** until 250,
-**6** until 400, then unlimited); idle-recheck ore every 50 turns. Full role
-task lists: [`role.md`](role.md). Core tops ammo from turn 10 (phalanx) or 30
-(raiders / harrass).
+core is known; fire-and-forget even waves leave at **300** / **600** by spawn
+cohort (later even spawns refill phalanx and never raid); **odd** builders →
+economy (`logistics.py`), graduating to harrass on **relay+100** or **age 200**
+(whichever first). Set to **`raiders`** for the offensive belt-raid →
+gunner/sentinel siege loop (`attack.py`); set to **`harrass`** for harvester
+siege + seek (`harrass.py`). Economy harvester caps (**2** until 50, **3**
+until 100, **4** until 200, **5** until 250, **6** until 400, then unlimited);
+idle-recheck ore every 50 turns. Full role task lists: [`role.md`](role.md).
+Core tops ammo from turn 10 (phalanx) or 30 (raiders / harrass).
 
 ## Store slots
 
@@ -59,19 +60,25 @@ Each turn (`_run_builder`), after HiveMind `tick` and stuck tracking. Role
 details and phase lists live in [`role.md`](role.md).
 
 0. **Raid gate** — `on_raid_tasklist` (default: even indices once enemy core
-   known → `phalanx`; or full `raiders` / `harrass` override); abort relay/ore;
-   move toward site and return.
+   known → `phalanx` or fire-and-forget `raiders` by spawn cohort at 300/600;
+   or full `raiders` / `harrass` override); abort relay/ore; move toward site
+   and return.
 1. **Economy** (`run_economy` / `ECONOMY` in `logistics.py`) — odd builders:
    1. **If `in_relay`** → finish inbound relay (always, even at harvester cap).
-   2. **Harrass after relay** — first completed relay + **100** turns →
-      permanently `run_harrasser` (sticky).
+   2. **Harrass graduate** — sticky `run_harrasser` when **either** first
+      completed relay + **100** turns **or** age ≥ **200** from spawn
+      (whichever first; needs enemy core known).
    3. **Snipe enemy harvester** — uncovered enemy harvester in vision →
       place/path gunner (`attack._run_siege_enemy_harvester`).
    4. **Idle ore recheck** (every 50 turns): clear skips; allow ally-harvester
       chain repair. While at cap, do **not** seek new empty/steal sites.
    5. **Ore-site task** — build / steal / clear belts (skipped when at cap
       unless site is already a harvester for re-relay).
-   6. **Heal** → **move** toward site.
+   6. **Hunt enemy turret** — if orthogonally adjacent to an enemy
+      gunner/sentinel, fire/destroy (even under cap). Else **at cap only**:
+      path toward a turret in vision (far chase does not interrupt under-cap
+      harvester placement).
+   7. **Heal** → **move** toward site.
 
 ### Harvester caps (economy)
 
@@ -88,14 +95,22 @@ Built count from slot 2. At cap: finish active chains only; no new seeks.
 
 ### Phalanx (`defence.py`) — default (`ACTIVE_RAID_ORDER = "phalanx"`)
 
-Even builders stay home once the enemy core is known (including late even
-spawns — no pivot to raiders):
+Even builders home-defend once the enemy core is known. Fire-and-forget waves
+by `spawn_round` cohort (via `effective_raid_order`):
+
+| Cohort | Behavior |
+|--------|----------|
+| `spawn < 300` | Phalanx until **300**, then sticky raiders |
+| `300 ≤ spawn < 600` | Phalanx until **600**, then sticky raiders |
+| `spawn ≥ 600` | Phalanx forever (home refill after wave 2) |
+
+While still on phalanx:
 
 1. **Place wing gunners** while threat is armed — core slot **1** (sticky
-   **20** turns) **or** this builder sees an enemy builder (same turn): pads
-   on that **threat side** — soft depths **1–5**; live builder/turret rush
-   uses the same depths; fog OK to path; nearest open pad (no stagger); face
-   toward the enemy; sync living count to slot 3.
+   **20** turns) **or** this builder sees an enemy builder / gunner / sentinel
+   (same turn): pads on that **threat side** — soft depths **1–5**; live
+   builder/turret rush uses the same depths; fog OK to path; nearest open pad
+   (no stagger); face toward the enemy; sync living count to slot 3.
    Home wings do not fill the siege gunner cap. Until armed, skip (soft-idle).
 2. **Hunt turrets** — if an enemy gunner or sentinel is in vision, fire if
    orthogonally adjacent, else move to attack it (after open wing pads are
@@ -130,8 +145,8 @@ Packaged as the `RAIDERS` task list (`run_raiders_tasklist` /
    and no ally gunner can already **hit** it (`can_fire_from`, not mere range),
    place a gunner on an empty in-range tile that can hit it (index-staggered;
    nearest uncovered harvester first).
-2. **Siege loop** (from turn 30, every **40** turns; from turn **300** the
-   epoch restarts so late joiners get a fresh gunner→sentinel window):
+2. **Siege loop** (from turn 30, every **40** turns; epochs restart at **300**
+   and **600** so each even wave gets a fresh gunner→sentinel window):
    - **Gunners** (first **20** turns of each cycle): place up to **8** siege
      gunners (count only pads within Chebyshev **3** of the enemy 2×2 — home
      wings do not fill the cap) on empty tiles at distance **1–3**; only sites
@@ -145,7 +160,7 @@ Packaged as the `RAIDERS` task list (`run_raiders_tasklist` /
    the enemy core. Also the pre-30 fallthrough when the siege loop is inactive.
 
 Examples: gunners 30–49, sentinels 50–69, …; after 300: gunners 300–319,
-sentinels 320–339, …
+sentinels 320–339, …; after 600: gunners 600–619, …
 
 - **Ammo:** from turn 30 (phalanx: 10), core keeps pool at
   `12 + 2×gunners + 10×sentinels` from known ally turrets in `local_map`.
@@ -157,8 +172,8 @@ sentinels 320–339, …
 ### Harrass (`harrass.py`)
 
 Packaged as the `HARRASS` task list (`run_harrasser`) when
-`ACTIVE_RAID_ORDER = "harrass"`. Under default phalanx, odds use economy
-harvester snipe instead of this full order.
+`ACTIVE_RAID_ORDER = "harrass"`. Under default phalanx, odds stay on economy
+but may sticky-graduate into this order via the relay+100 / age-200 OR gate.
 
 1. **Phalanx home** (`round < 50`) — same duties as phalanx until
    `HARRASS_START_TURN`.

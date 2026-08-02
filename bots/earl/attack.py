@@ -8,9 +8,10 @@ ACTIVE_RAID_ORDER = "raiders" in main.py (also after phalanx pivots):
     gunners, remainder place siege sentinels.
   - Last: belt_raid — stand-fire / path to enemy belts, else push enemy core
     (also the pre-GUNNER_TURN fallthrough when core siege is inactive).
-  - After PHALANX_RAID_PIVOT_TURN (300), the loop epoch restarts so the odd
-    pivot gets a fresh gunner→sentinel window. Siege gunner cap counts only
-    pads near the enemy core (home wings do not fill the cap).
+  - After PHALANX_WAVE1_TURN / PHALANX_WAVE2_TURN (300 / 600), the loop epoch
+    restarts so each fire-and-forget even wave gets a fresh gunner→sentinel
+    window. Siege gunner cap counts only pads near the enemy core (home wings
+    do not fill the cap).
 
 Default ACTIVE_RAID_ORDER is "phalanx" (home apron + wing gunners in defence.py).
 
@@ -28,8 +29,11 @@ from fcode import Controller, Direction, EntityType, Environment, Position
 GUNNER_TURN = 30
 RAID_LOOP = 40
 GUNNER_PHASE_LEN = 20  # first half of each loop
-# Mirror main.PHALANX_ODD_TO_RAIDERS_TURN — restart siege loop at odd pivot.
-PHALANX_RAID_PIVOT_TURN = 300
+# Mirror main.PHALANX_WAVE1_TURN / PHALANX_WAVE2_TURN — restart siege at each wave.
+PHALANX_WAVE1_TURN = 300
+PHALANX_WAVE2_TURN = 600
+# Back-compat alias for callers / docs that still name the first pivot.
+PHALANX_RAID_PIVOT_TURN = PHALANX_WAVE1_TURN
 MAX_CORE_GUNNERS = 8
 MAX_SIEGE_SENTINELS = 5
 SENTINEL_RANGE_SQ = 32
@@ -948,16 +952,18 @@ def _run_raid_core_siege(
 ) -> Position | None:
     """Gunner/sentinel core siege on the raider RAID_LOOP clock.
 
-    After phalanx odd-pivot, the epoch restarts so walkers get a full gunner
-    window then sentinels. Returns a move/build site, or None when idle at cap /
-    no sentinel site (caller falls through to belt_raid / push core).
+    After each phalanx even-wave pivot (300 / 600), the epoch restarts so
+    walkers get a full gunner window then sentinels. Returns a move/build
+    site, or None when idle at cap / no sentinel site (caller falls through
+    to belt_raid / push core).
     """
     round_n = ct.get_current_round()
-    epoch = (
-        PHALANX_RAID_PIVOT_TURN
-        if round_n >= PHALANX_RAID_PIVOT_TURN
-        else GUNNER_TURN
-    )
+    if round_n >= PHALANX_WAVE2_TURN:
+        epoch = PHALANX_WAVE2_TURN
+    elif round_n >= PHALANX_WAVE1_TURN:
+        epoch = PHALANX_WAVE1_TURN
+    else:
+        epoch = GUNNER_TURN
     cycle_t = (round_n - epoch) % RAID_LOOP
     if cycle_t < GUNNER_PHASE_LEN:
         return _run_gunner_phase(

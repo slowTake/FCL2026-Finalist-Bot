@@ -7,7 +7,13 @@ run_economy / clear_relay (see role.md).
 from __future__ import annotations
 
 from attack import _run_siege_enemy_harvester
-from defence import available_sides, mark_relay_complete, side_depth1_tiles
+from defence import (
+    _nearest_enemy_turret,
+    _try_fire_tile,
+    available_sides,
+    mark_relay_complete,
+    side_depth1_tiles,
+)
 from fcode import Controller, Direction, EntityType, Environment, Position
 from features import ORE_LOCATIONS
 from harrass import run_harrasser
@@ -45,6 +51,8 @@ HARVESTER_CAP_TO_5_TURN = 250
 HARVESTER_CAP_UNLIMITED_TURN = 400
 # After first inbound relay completes, wait this many turns then run harrass.
 ECONOMY_TO_HARRASS_DELAY = 100
+# Or graduate at this age from spawn (whichever fires first with relay+delay).
+ECONOMY_MIN_AGE_BEFORE_HARRASS = 200
 
 # Named phases for the economy role (priority-gated in run_economy).
 ECONOMY = (
@@ -53,6 +61,7 @@ ECONOMY = (
     "snipe_enemy_harvester",
     "idle_ore_recheck",
     "ore_site",
+    "hunt_enemy_turret",
     "heal",
     "move",
 )
@@ -148,20 +157,43 @@ def abort_relay(bot) -> None:
     clear_relay(bot)
 
 
+def _orthogonally_adjacent(a: Position, b: Position) -> bool:
+    return abs(a.x - b.x) + abs(a.y - b.y) == 1
+
+
+def _try_melee_turret(ct: Controller, turret: Position) -> bool:
+    """Fire or destroy an orthogonally adjacent enemy turret. True if acted."""
+    if _try_fire_tile(ct, turret):
+        return True
+    if ct.get_action_cooldown() != 0:
+        return False
+    if not _orthogonally_adjacent(ct.get_position(), turret):
+        return False
+    if ct.can_destroy(turret):
+        ct.destroy(turret)
+        return True
+    return False
+
+
 def run_economy(bot, ct: Controller) -> None:
-    """ECONOMY role turn: finish relays, graduate to harrass, snipe, ore, heal, move."""
+    """ECONOMY role turn: finish relays, graduate to harrass, snipe, ore, hunt, heal, move."""
     round_n = ct.get_current_round()
     at_cap = economy_at_harvester_cap(ct, round_n)
+    pos = ct.get_position()
 
     if bot.in_relay:
         relay_toward_core(bot, ct)
         return
 
-    if (
+    spawn_round = getattr(bot, "spawn_round", None)
+    if spawn_round is None:
+        spawn_round = round_n
+    relay_ready = (
         bot.relay_finished_round is not None
         and round_n >= bot.relay_finished_round + ECONOMY_TO_HARRASS_DELAY
-        and bot.enemy_core_pos is not None
-    ):
+    )
+    age_ready = round_n >= spawn_round + ECONOMY_MIN_AGE_BEFORE_HARRASS
+    if (relay_ready or age_ready) and bot.enemy_core_pos is not None:
         site = run_harrasser(
             ct,
             my_index=bot.hivemind.my_index,
@@ -188,6 +220,14 @@ def run_economy(bot, ct: Controller) -> None:
             bot._move_toward_target(ct, retarget=False)
             return
 
+    # Melee first: already next to a gunner/sentinel — always fight (even under cap).
+    turret = _nearest_enemy_turret(ct)
+    if turret is not None and _orthogonally_adjacent(pos, turret):
+        bot.ore_site = None
+        bot.target = turret
+        _try_melee_turret(ct, turret)
+        return
+
     if round_n - bot.last_ore_recheck_round >= ORE_RECHECK_INTERVAL:
         # At cap, clear skips so ally chain repair can run; still no
         # empty/steal picks while capped (pick_ore_site).
@@ -202,6 +242,20 @@ def run_economy(bot, ct: Controller) -> None:
     if bot.in_relay:
         relay_toward_core(bot, ct)
         return
+
+    # At cap only: path toward enemy gunner/sentinel in vision (no wing place).
+    if at_cap:
+        turret = _nearest_enemy_turret(ct)
+        if turret is not None:
+            if _orthogonally_adjacent(ct.get_position(), turret):
+                bot.ore_site = None
+                bot.target = turret
+                _try_melee_turret(ct, turret)
+                return
+            bot.ore_site = None
+            bot.target = turret
+            bot._move_toward_target(ct, retarget=False)
+            return
 
     if ct.get_action_cooldown() == 0:
         bot._try_heal(ct)
