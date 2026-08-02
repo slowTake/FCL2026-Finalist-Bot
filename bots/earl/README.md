@@ -9,7 +9,8 @@ evens → phalanx); set to **`raiders`** for the old offensive belt-raid →
 gunner/sentinel siege loop (`attack.py`); set to **`harrass`** for harvester
 siege + seek (`harrass.py`). Economy builders (1/3; index 5 harrasses — phalanx
 home until 50) mine under a staged
-harvester cap (**3** until 200, **5** until 500, then unlimited) in
+harvester cap (**3** until 100, **4** until 150, **5** until 400, then
+unlimited) in
 [`logistics.py`](logistics.py) and idle-recheck ore every 50 turns; late
 spawns 6+ defend and lay a home apron (`defence.py`). Full role task lists:
 [`role.md`](role.md). Core tops ammo from turn 10 (phalanx) or 30 (raiders /
@@ -174,14 +175,16 @@ turn **300**, then joins the odd raiders pivot. Also selectable as
 
 - Known sites from `ORE_LOCATIONS` once the map is fingerprinted.
 - Prefer empty ore, then enemy/unknown harvester (steal).
+- Rank by **Chebyshev distance to the ally core** footprint (shorter relays);
+  if core unknown, fall back to distance from the builder.
 - Skip our harvesters and locally finished sites (`skipped_ores`), except on
   idle recheck when ally harvesters are allowed so inbound relays can be fixed.
 - While at the economy harvester cap, empty/steal picks are disabled; ally
   recheck for chain repair still runs.
 - **Builder stagger:** each builder uses HiveMind `my_index` and takes the
-  `(my_index - 1) % n`-th nearest eligible ore (builder 1 → nearest, builder 2
-  → 2nd, …). Stops everyone racing the same node. Unregistered index `0` falls
-  back to nearest.
+  `(my_index - 1) % n`-th nearest-to-core eligible ore (builder 1 → nearest,
+  builder 2 → 2nd, …). Stops everyone racing the same node. Unregistered
+  index `0` falls back to nearest.
 
 ### Pathfinding (`pathing.py`)
 

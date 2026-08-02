@@ -26,7 +26,8 @@ Mine and inbound-relay (`logistics.py`). Named phases (`ECONOMY`):
 1. **finish_relay** — if `in_relay`, only pave the inbound chain to the ally core.
 2. **idle_ore_recheck** — every 50 turns: clear `skipped_ores` / `ore_site` and
    allow ally-harvester candidates so broken inbound belts can be rebuilt.
-3. **ore_site** — sticky site via `_pick_ore_site` / `_try_ore_site_task`:
+3. **ore_site** — sticky site via `pick_ore_site` / `try_ore_site_task`
+   (ranked nearest to ally core, then builder-index stagger):
    - Empty → step off if on tile; adjacent → build harvester, then enter relay.
    - Any harvester (ally or enemy) → enter inbound relay (steal / claim / re-relay).
    - Enemy belt on ore → stand on tile and `fire`.
@@ -43,17 +44,18 @@ empty ores or steals; idle recheck may still re-relay **ally** harvesters.
 
 | Rounds | Cap |
 |--------|-----|
-| `< 200` | **3** |
-| `200 .. 499` | **5** |
-| `≥ 500` | unlimited |
+| `< 100` | **3** |
+| `100 .. 149` | **4** |
+| `150 .. 399` | **5** |
+| `≥ 400` | unlimited |
 
-Constants: `HARVESTER_CAP_UNTIL_200`, `HARVESTER_CAP_UNTIL_500`,
-`HARVESTER_CAP_LIFT_TURN`, `HARVESTER_CAP_UNLIMITED_TURN` in `logistics.py`.
+Constants: `HARVESTER_CAP_3` / `_4` / `_5`, `HARVESTER_CAP_TO_4_TURN`,
+`HARVESTER_CAP_TO_5_TURN`, `HARVESTER_CAP_UNLIMITED_TURN` in `logistics.py`.
 
 Under default phalanx order, pre-600 **odd** economy builders (1/3) pivot to
 **raiders** at turn **300** (fire-and-forget). Index **5** runs harrass
 (phalanx home until **50**, then siege/seek) until 300, then joins that pivot.
-Post-600 new odds stay on economy (unlimited after 500).
+Post-600 new odds stay on economy (unlimited after 400).
 
 ---
 
