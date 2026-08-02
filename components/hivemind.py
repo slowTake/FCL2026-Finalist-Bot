@@ -47,6 +47,8 @@ class HiveMind:
         if fingerprint in KNOWN_MAPS:
             self.map_id, self.map_name, enemy_x, enemy_y = KNOWN_MAPS[fingerprint]
             enemy_state = CoreState.ASSUMED
+        
+        print(f"HIVEMIND FINGERPRINT: {fingerprint} -> Map ID: {self.map_id} ({self.map_name})")
 
         ct.write_store(14, self.map_id)
 
@@ -75,35 +77,34 @@ class HiveMind:
                     pass
             entity_positions[(epos.x, epos.y)] = ent_data
 
-        for dy in range(-4, 5):
-            for dx in range(-4, 5):
-                if dx*dx + dy*dy <= 16:
-                    px = pos.x + dx
-                    py = pos.y + dy
-                    if 0 <= px < w and 0 <= py < h:
-                        pos_obj = Position(px, py)
-                        if not ct.is_in_vision(pos_obj):
-                            continue
+        for dy in range(-6, 7):
+            for dx in range(-6, 7):
+                px = pos.x + dx
+                py = pos.y + dy
+                if 0 <= px < w and 0 <= py < h:
+                    pos_obj = Position(px, py)
+                    if not ct.is_in_vision(pos_obj):
+                        continue
                             
-                        if (px, py) not in self.local_map:
-                            self.local_map[(px, py)] = {}
-                        self.local_map[(px, py)]["last_seen_turn"] = self.global_turn
-                        if (px, py) in entity_positions:
-                            ent_type = entity_positions[(px, py)]["type"]
-                            if ent_type in (EntityType.CONVEYOR, EntityType.SPLITTER):
-                                self.local_map[(px, py)]["passable"] = True
-                            else:
-                                self.local_map[(px, py)]["passable"] = False
-                            self.local_map[(px, py)]["entity"] = entity_positions[(px, py)]
+                    if (px, py) not in self.local_map:
+                        self.local_map[(px, py)] = {}
+                    self.local_map[(px, py)]["last_seen_turn"] = self.global_turn
+                    if (px, py) in entity_positions:
+                        ent_type = entity_positions[(px, py)]["type"]
+                        if ent_type in (EntityType.CONVEYOR, EntityType.SPLITTER):
+                            self.local_map[(px, py)]["passable"] = True
                         else:
-                            env_tile = ct.get_tile_env(pos_obj)
-                            is_wall = (env_tile == Environment.WALL)
-                            self.local_map[(px, py)]["passable"] = not is_wall
-                            if env_tile == Environment.ORE_TITANIUM:
-                                self.local_map[(px, py)]["ore"] = True
-                                
-                            if "entity" in self.local_map[(px, py)]:
-                                del self.local_map[(px, py)]["entity"]
+                            self.local_map[(px, py)]["passable"] = False
+                        self.local_map[(px, py)]["entity"] = entity_positions[(px, py)]
+                    else:
+                        env_tile = ct.get_tile_env(pos_obj)
+                        is_wall = (env_tile == Environment.WALL)
+                        self.local_map[(px, py)]["passable"] = not is_wall
+                        if env_tile == Environment.ORE_TITANIUM:
+                            self.local_map[(px, py)]["ore"] = True
+                            
+                        if "entity" in self.local_map[(px, py)]:
+                            del self.local_map[(px, py)]["entity"]
 
     def _broadcast_vision(self, ct: Controller):
         pos = ct.get_position()
@@ -199,11 +200,11 @@ class HiveMind:
             self.my_index = ct.read_store(7)
 
         # 3. Process Map Detection (Core Only)
-        if is_core and self.global_turn == 1:
+        if is_core and self.global_turn == 0:
             self._detect_and_store_map(ct)
 
         # 4. Read static map knowledge if we haven't
-        if self.map_id == 0 and self.global_turn > 1:
+        if self.map_id == 0 and self.global_turn > 0:
             self.map_id = ct.read_store(14)
             
         if self.map_id != 0 and not self._walls_loaded:

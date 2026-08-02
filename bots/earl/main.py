@@ -59,6 +59,7 @@ from logistics import (
     run_economy,
 )
 from pathing import astar, manhattan
+from features import WALL_LOCATIONS
 
 DIRECTIONS = [d for d in Direction if d != Direction.CENTRE]
 CARDINALS = [Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST]
@@ -155,9 +156,9 @@ def in_bounds(ct: Controller, pos: Position) -> bool:
 
 
 def spawn_sites_toward(
-    ct: Controller, core_pos: Position, goal: Position
+    ct: Controller, core_pos: Position, goal: Position, map_id: int, is_enemy_core: bool = False
 ) -> list[Position]:
-    """Apron tiles around the full 2x2 core, closest to goal first."""
+    """Apron tiles around the full 2x2 core, closest to goal first using A*."""
     footprint = _core_footprint(core_pos)
     footprint_keys = {(t.x, t.y) for t in footprint}
     sites: list[Position] = []
@@ -172,7 +173,39 @@ def spawn_sites_toward(
                 continue
             seen.add(key)
             sites.append(cand)
-    sites.sort(key=lambda p: p.distance_squared(goal))
+            
+    walls = set(WALL_LOCATIONS.get(map_id, []))
+    def is_passable(p: Position) -> bool:
+        if (p.x, p.y) in footprint_keys:
+            return False
+        if not in_bounds(ct, p):
+            return False
+        if (p.x, p.y) in walls:
+            return False
+        return True
+        
+    def path_len(p: Position) -> int:
+        if p == goal:
+            return 0
+            
+        def is_goal_fn(cand: Position) -> bool:
+            if cand == goal:
+                return True
+            if is_enemy_core:
+                # Check if adjacent to the 2x2 enemy core
+                for dx in (0, 1):
+                    for dy in (0, 1):
+                        cx, cy = goal.x + dx, goal.y + dy
+                        if abs(cand.x - cx) + abs(cand.y - cy) == 1:
+                            return True
+            return False
+            
+        path = astar(p, goal, is_passable=is_passable, is_goal=is_goal_fn, max_iters=200)
+        if path is not None:
+            return len(path)
+        return p.distance_squared(goal) * 1000  # Fallback
+            
+    sites.sort(key=path_len)
     return sites
 
 
@@ -272,9 +305,11 @@ class Player:
         _, enemy = unpack_cores(ct.read_store(SLOT_PACKED_CORES))
         if enemy[0] != CoreState.UNKNOWN:
             goal = Position(enemy[1], enemy[2])
+            is_enemy = True
         else:
             goal = Position(ct.get_map_width() // 2, ct.get_map_height() // 2)
-        for spawn_pos in spawn_sites_toward(ct, pos, goal):
+            is_enemy = False
+        for spawn_pos in spawn_sites_toward(ct, pos, goal, map_id=self.hivemind.map_id, is_enemy_core=is_enemy):
             if self.hivemind.spawn_builder(ct, spawn_pos):
                 self.num_spawned += 1
                 return

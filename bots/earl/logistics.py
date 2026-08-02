@@ -21,6 +21,15 @@ MERGE_SAVE_MIN = 8
 # Do not join onto allied belts this close to the core (apron / near-core funnel).
 MERGE_MIN_CORE_CHEB = 4
 
+# --- Settings ---
+# If True, economy bots pause belt laying to leave titanium for early core spawns
+USE_EARLY_TITANIUM_BUFFER = True
+# Buffer amount on top of builder cost (e.g., 10 means wait for 60 total)
+EARLY_TITANIUM_BUFFER_AMOUNT = 10
+# Round number after which the buffer is ignored
+EARLY_TITANIUM_BUFFER_END_TURN = 50
+# ----------------
+
 # Economy harvester caps by round (None = unlimited). Built count from slot 2.
 HARVESTER_CAP_UNTIL_200 = 3
 HARVESTER_CAP_UNTIL_500 = 5
@@ -839,6 +848,10 @@ def relay_toward_core(bot, ct: Controller) -> None:
 
     adjacent = abs(pos.x - tile.x) + abs(pos.y - tile.y) == 1
     if adjacent:
+        # Prevent early belt building from starving the core's initial rush
+        if USE_EARLY_TITANIUM_BUFFER and ct.get_current_round() < EARLY_TITANIUM_BUFFER_END_TURN:
+            if ct.get_global_resources() < ct.get_builder_bot_cost() + EARLY_TITANIUM_BUFFER_AMOUNT:
+                return
         result = ensure_belt_on_path(ct, tile, travel_dir)
         if result == "failed":
             bot.relay_stuck += 1
