@@ -2,8 +2,8 @@
 
 Starter economy loop + HiveMind (`components/` symlinks) + **inbound steal-relay**
 belts to the **ally** core only. **Even builders** run the active raid order
-(`ACTIVE_RAID_ORDER` in `main.py`): default **`phalanx`** (home apron + wing
-gunners in `defence.py`; pre-600 **odd** builders pivot to raiders at **300**,
+(`ACTIVE_RAID_ORDER` in `main.py`): default **`phalanx`** (home defence —
+threat intercept/chase + wing-pad fallback in `defence.py`; pre-600 **odd** builders pivot to raiders at **300**,
 pre-600 **even** at **600**, fire-and-forget; post-600 odds → economy, post-600
 evens → phalanx); set to **`raiders`** for the old offensive belt-raid →
 gunner/sentinel siege loop (`attack.py`); set to **`harrass`** for harvester
@@ -59,8 +59,10 @@ turn **10**; raiders at **30**.
 
 ## Builder task order
 
-Each turn (`_run_builder`), after HiveMind `tick` and stuck tracking. Role
-details and phase lists live in [`role.md`](role.md).
+Each turn (`_run_builder`), after HiveMind `tick` and stuck tracking. After
+**100** consecutive same-tile turns, a builder may `destroy` an adjacent
+allied gunner/sentinel that is blocking exit (prefer the neighbour toward
+`target`). Role details and phase lists live in [`role.md`](role.md).
 
 0. **Raid gate** — `on_raid_tasklist` → `ACTIVE_RAID_ORDER` (`harrass`,
    `phalanx`, or `raiders`); abort relay/ore; move toward site and return.
@@ -88,14 +90,19 @@ Built count from slot 2. At cap: finish active chains only; no new seeks.
 
 Even builders stay home once the enemy core is known:
 
-1. **Place wing gunners** while threat is armed — core slot **1** (sticky
-   **20** turns) **or** this builder sees an enemy builder (same turn): pads
-   on that **threat side** — soft depths **1–5**; live builder/turret rush
-   uses the same depths; fog OK to path; nearest open pad (no stagger); face
-   toward the enemy; sync living count to slot 3.
+1. **Intercept / chase threat** while armed — core slot **1** (sticky
+   **20** turns) **or** this builder sees an enemy builder (same turn): path
+   toward the live enemy builder (else nearest enemy building) so home idle
+   intercepts approaches and also chases flankers around the core. Once
+   within Chebyshev **3**, place a gunner on an adjacent empty tile aimed at
+   them (**apron allowed**, core footprint forbidden); skip if an ally gunner
+   already covers it. If no live aim, fall back to wing pads on that
+   **threat side** — soft depths **1–5**; live builder/turret rush uses the
+   same depths; fog OK to path; nearest open pad (no stagger); face toward
+   the enemy; sync living count to slot 3.
    Home wings do not fill the siege gunner cap. Until armed, skip (soft-idle).
 2. **Hunt turrets** — if an enemy gunner or sentinel is in vision, fire if
-   orthogonally adjacent, else move to attack it (after open wing pads are
+   orthogonally adjacent, else move to attack it (after threat/wing pads are
    filled while armed).
 3. **Assist apron** on the **threat side** while armed: 3-deep
    inward conveyors (no barriers; `LAY_APRON_BELTS` currently **off**).

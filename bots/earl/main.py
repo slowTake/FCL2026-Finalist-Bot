@@ -101,6 +101,11 @@ REPLENISH_START_TURN = 75
 # Core vision radius; builders vanishing on the outer ring are treated as
 # walk-outs, not deaths (avoids replenish spam once raiders leave home).
 CORE_VISION_RADIUS = 6
+# Same-tile turns before destroying an adjacent ally gunner/sentinel that
+# corks an exit (small-map cornering after home defence placement).
+BLOCKING_TURRET_STUCK = 100
+
+_BLOCKING_TURRET_TYPES = (EntityType.GUNNER, EntityType.SENTINEL)
 
 
 def effective_raid_order(
@@ -442,6 +447,9 @@ class Player:
             self.stuck = 0
         self.last_pos = pos
 
+        if self.stuck >= BLOCKING_TURRET_STUCK:
+            self._try_clear_blocking_ally_turret(ct)
+
         # Raid path: pre-600 odds → raiders from 300; pre-600 evens phalanx
         # then raiders at 600 (fire-and-forget). Post-600: odds economy, evens phalanx.
         round_n = ct.get_current_round()
@@ -527,6 +535,44 @@ class Player:
     # ------------------------------------------------------------------
     # Movement / targeting
     # ------------------------------------------------------------------
+
+    def _try_clear_blocking_ally_turret(self, ct: Controller) -> bool:
+        """Destroy one adjacent ally gunner/sentinel after long stuck.
+
+        Prefer the neighbour that best advances toward self.target.
+        """
+        if self.stuck < BLOCKING_TURRET_STUCK:
+            return False
+        pos = ct.get_position()
+        my_team = ct.get_team()
+        target = self.target
+
+        cands: list[tuple[int, Position]] = []
+        for d in CARDINALS:
+            tile = pos.add(d)
+            if not ct.is_in_vision(tile):
+                continue
+            bid = ct.get_tile_building_id(tile)
+            if bid is None:
+                continue
+            if ct.get_team(bid) != my_team:
+                continue
+            if ct.get_entity_type(bid) not in _BLOCKING_TURRET_TYPES:
+                continue
+            if not ct.can_destroy(tile):
+                continue
+            if target is not None:
+                score = tile.distance_squared(target)
+            else:
+                score = 0
+            cands.append((score, tile))
+
+        if not cands:
+            return False
+        cands.sort(key=lambda item: item[0])
+        ct.destroy(cands[0][1])
+        self.stuck = 0
+        return True
 
     def _move_toward_target(self, ct: Controller, *, retarget: bool = True) -> None:
         if ct.get_move_cooldown() != 0:

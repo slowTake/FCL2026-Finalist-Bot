@@ -5,17 +5,19 @@ enemy gunners in vision, heal, fire, then lay a per-side inward apron
 (3-deep belts, no barriers).
 
 Even builders may run PHALANX (see ACTIVE_RAID_ORDER in main): while the
-core's sticky builder-threat switch is armed, place wing gunners first then
-hunt enemy gunners/sentinels; approach apron only while armed.
-Soft fill uses depths 1–5; live builder or turret rush uses the same depths.
-Then one gunner beside each nearby ally harvester, clear encroaching enemy
-harvesters/belts in vision, then soft-idle.
+core's sticky builder-threat switch is armed, path toward the live enemy
+builder (intercept at home, chase if they flank around the core) and once
+within Chebyshev 3 place a gunner on an adjacent empty tile (apron allowed;
+core footprint forbidden). Wing pads are sticky fallback. Then hunt
+turrets; apron while armed; harvester guards; clear; soft-idle.
 """
 
 from __future__ import annotations
 
 from attack import (
     SLOT_SENTINEL_COUNT,
+    _ally_gunner_covers_harvester,
+    _gunner_can_hit_tile,
     _pick_enemy_belt_target,
     _try_stand_fire_belt,
     build_gunner,
@@ -72,6 +74,8 @@ PHALANX = (
 PHALANX_GUNNER_TURN = 10
 # Chebyshev distance from core footprint — ~20×20 neighbourhood.
 HARVESTER_GUARD_CHEB = 20
+# Place threat gunners once this close to the live aim (intercept / chase).
+THREAT_PLACE_CHEB = 3
 _ENEMY_TURRET_TYPES = (EntityType.GUNNER, EntityType.SENTINEL)
 
 
@@ -379,6 +383,56 @@ def _nearest_wing_pad(pos: Position, pads: list[Position]) -> Position | None:
     if not pads:
         return None
     return min(pads, key=lambda t: pos.distance_squared(t))
+
+
+def _nearest_enemy_building(ct: Controller) -> Position | None:
+    """Nearest enemy building in vision (sticky fallback when builder left)."""
+    my_team = ct.get_team()
+    pos = ct.get_position()
+    best: Position | None = None
+    best_dist = 10**9
+    for bid in ct.get_nearby_buildings():
+        if ct.get_team(bid) == my_team:
+            continue
+        tpos = ct.get_position(bid)
+        dist = pos.distance_squared(tpos)
+        if dist < best_dist:
+            best_dist = dist
+            best = tpos
+    return best
+
+
+def _try_place_adjacent_threat_gunner(
+    ct: Controller,
+    *,
+    aim_target: Position,
+    enemy_core: Position,
+    ally_core: Position,
+) -> bool:
+    """Build a gunner on a cardinal neighbour aimed at the threat, if possible."""
+    footprint = {(t.x, t.y) for t in _core_footprint(ally_core)}
+    pos = ct.get_position()
+    # Prefer the empty neighbour closest to the approaching builder.
+    cands = sorted(
+        (pos.add(d) for d in CARDINALS),
+        key=lambda t: t.distance_squared(aim_target),
+    )
+    for site in cands:
+        if not _in_bounds(ct, site):
+            continue
+        if (site.x, site.y) in footprint:
+            continue
+        if not ct.is_in_vision(site):
+            continue
+        if ct.get_tile_env(site) != Environment.EMPTY:
+            continue
+        if not ct.is_tile_empty(site):
+            continue
+        if not _gunner_can_hit_tile(ct, site, aim_target):
+            continue
+        if build_gunner(ct, site, enemy_core, aim_target=aim_target):
+            return True
+    return False
 
 
 def phalanx_all_gunner_sites(
@@ -792,7 +846,7 @@ def run_phalanx(
     enemy_core: Position,
     ally_core: Position | None,
 ) -> Position | None:
-    """PHALANX: threat wings → turrets → apron → guards → clear → idle."""
+    """PHALANX: intercept/chase threat → wings → turrets → apron → guards → clear → idle."""
     if ally_core is None:
         return None
 
@@ -806,9 +860,30 @@ def run_phalanx(
     round_n = ct.get_current_round()
     wing_living = 0
 
-    # 1. Wing gunners while threat armed — place before hunting their turrets.
-    # Soft fill depths 1–5; live builder/turret rush uses the same depths.
+    # 1. Threat reaction while armed — path toward the live builder/building
+    # (home intercept + chase if they flank). Place only once within
+    # THREAT_PLACE_CHEB on an adjacent tile. Wing pads if no live aim.
     if threat_side is not None:
+        aim = _nearest_enemy_builder(ct)
+        if aim is None:
+            aim = _nearest_enemy_building(ct)
+        if aim is not None and not _ally_gunner_covers_harvester(
+            ct, local_map, aim
+        ):
+            pos = ct.get_position()
+            cheb = max(abs(pos.x - aim.x), abs(pos.y - aim.y))
+            if cheb <= THREAT_PLACE_CHEB:
+                if _try_place_adjacent_threat_gunner(
+                    ct,
+                    aim_target=aim,
+                    enemy_core=enemy_core,
+                    ally_core=ally_core,
+                ):
+                    wing_living += 1
+                    ct.write_store(SLOT_SENTINEL_COUNT, wing_living)
+            # Keep moving toward the live threat (intercept / chase).
+            return aim
+
         rushed = (
             _nearest_enemy_builder(ct) is not None
             or core_under_turret_threat(ct)
