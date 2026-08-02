@@ -6,6 +6,7 @@ run_economy / clear_relay (see role.md).
 
 from __future__ import annotations
 
+from attack import _run_siege_enemy_harvester
 from defence import available_sides, mark_relay_complete, side_depth1_tiles
 from fcode import Controller, Direction, EntityType, Environment, Position
 from features import ORE_LOCATIONS
@@ -31,11 +32,11 @@ EARLY_TITANIUM_BUFFER_END_TURN = 50
 # ----------------
 
 # Economy harvester caps by round (None = unlimited). Built count from slot 2.
-HARVESTER_CAP_1 = 1
-HARVESTER_CAP_2 = 2
-HARVESTER_CAP_3 = 3
-HARVESTER_CAP_4 = 4
-HARVESTER_CAP_5 = 5
+HARVESTER_CAP_1 = 2
+HARVESTER_CAP_2 = 3
+HARVESTER_CAP_3 = 4
+HARVESTER_CAP_4 = 5
+HARVESTER_CAP_5 = 6
 HARVESTER_CAP_TO_2_TURN = 50
 HARVESTER_CAP_TO_3_TURN = 100
 HARVESTER_CAP_TO_4_TURN = 200
@@ -45,6 +46,7 @@ HARVESTER_CAP_UNLIMITED_TURN = 400
 # Named phases for the economy role (priority-gated in run_economy).
 ECONOMY = (
     "finish_relay",
+    "snipe_enemy_harvester",
     "idle_ore_recheck",
     "ore_site",
     "heal",
@@ -143,13 +145,26 @@ def abort_relay(bot) -> None:
 
 
 def run_economy(bot, ct: Controller) -> None:
-    """ECONOMY role turn: finish relays, ore tasks under harvester cap, heal, move."""
+    """ECONOMY role turn: finish relays, snipe harvesters, ore under cap, heal, move."""
     round_n = ct.get_current_round()
     at_cap = economy_at_harvester_cap(ct, round_n)
 
     if bot.in_relay:
         relay_toward_core(bot, ct)
         return
+
+    if bot.enemy_core_pos is not None:
+        site = _run_siege_enemy_harvester(
+            ct,
+            my_index=bot.hivemind.my_index,
+            local_map=bot.hivemind.local_map,
+            enemy_core=bot.enemy_core_pos,
+        )
+        if site is not None:
+            bot.ore_site = None
+            bot.target = site
+            bot._move_toward_target(ct, retarget=False)
+            return
 
     if round_n - bot.last_ore_recheck_round >= ORE_RECHECK_INTERVAL:
         # At cap, clear skips so ally chain repair can run; still no
