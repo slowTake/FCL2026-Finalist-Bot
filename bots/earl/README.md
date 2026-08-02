@@ -21,7 +21,8 @@ harrass).
 | 0–1 | — | Free |
 | 2 | Player | `SLOT_HARVESTER_COUNT` — total harvesters we built |
 | 3 | Player | `SLOT_SENTINEL_COUNT` — living phalanx wing gunners or siege sentinels (ammo) |
-| 4–6 | — | Free |
+| 4 | HiveMind | `SLOT_LIVING_BUILDERS` — committed\|accum alive-builder bitmask |
+| 5–6 | — | Free |
 | 7 | HiveMind | Builder registry count (spawn increments; builders read as `my_index`) |
 | 8–9 | HiveMind | Packed enemy intel (up to 4 targets) |
 | 10–12 | HiveMind | Packed vision grid (passable bitmask broadcast) |
@@ -35,15 +36,17 @@ Never write 7–15 from Player. Ally core is read from slot 15.
 
 Builders spawn on an apron tile around the full **2×2 core footprint**
 (not just neighbors of the NW tile), preferring the tile **closest to the
-enemy core** when known (ASSUMED/KNOWN from slot 15); otherwise closest to
-**map center**. Tries candidates via `hivemind.spawn_builder` / `can_spawn`.
+enemy core**. Enemy position comes from map fingerprint (`KNOWN_MAPS` in
+`features.py`) on the same turn as detect (HiveMind cache), then slot 15
+ASSUMED/KNOWN. Unknown maps fall back to map center. Tries candidates via
+`hivemind.spawn_builder` / `can_spawn`.
 
-**Schedule:** rush the first **5** as soon as Ti allows, then spawn **one more
-every 25 turns** starting at turn **10**, up to **9** total spawned (turns
-10 / 35 / 60 / 85). After that, **replenish ASAP** whenever living builders
-drop below 9. Under turret threat, spawn ASAP up to **15 living** (hard
-lifetime `num_spawned` cap still **15** so vision undercount cannot run away).
-If the rush finishes after turn 10, take the next interval slot.
+**Living cap** (`builder_cap`): **5** until turn **10**, then **+1 every 25
+turns** up to **9** (caps at turns 10 / 35 / 60 / 85 → 6 / 7 / 8 / 9).
+**Always replenish** ASAP while living builders (slot 4 heartbeat mask) are
+below the current cap (deaths drop out after one metronome cycle; growth
+paced by the cap). Under turret threat, cap rises to **15 living** (hard
+lifetime `num_spawned` still **15**).
 
 From the ammo start turn the core tops team ammo to
 `5 + 20 × max(1, living count in slot 3)` via `convert_ammo` (before the

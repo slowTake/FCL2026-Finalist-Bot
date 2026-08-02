@@ -20,11 +20,14 @@ Store slots:
   0–1                  Free
   2  SLOT_HARVESTER_COUNT Total harvesters built by the team (logistics.py)
   3  SLOT_SENTINEL_COUNT  Living phalanx wing gunners or siege sentinels (ammo)
-  4–6                  Free
+  4  SLOT_LIVING_BUILDERS Committed|accum alive-builder bitmask (hivemind)
+  5–6                  Free
   7–15                 HiveMind-owned — never write from Player
 
-Ally core from slot 15 via unpack_cores. Ore from ORE_LOCATIONS / local_map.
-Core spawns builders toward enemy core (else map center).
+Ally core from slot 15 via unpack_cores; enemy core from fingerprint /
+KNOWN_MAPS (same-turn cache) or slot 15. Ore from ORE_LOCATIONS / local_map.
+Core always replenishes up to a living cap that steps 5→9 every 25 turns
+from turn 10 (threat raises cap to 15).
 """
 
 from __future__ import annotations
@@ -54,7 +57,7 @@ from fcode import (
     GameConstants,
     Position,
 )
-from hivemind import CoreState, HiveMind, unpack_cores
+from hivemind import CoreState, HiveMind, living_builder_count, unpack_cores
 from logistics import (
     PATH_MAX_ITERS,
     clear_relay,
@@ -62,7 +65,7 @@ from logistics import (
     run_economy,
 )
 from pathing import astar, manhattan
-from features import WALL_LOCATIONS, ORE_LOCATIONS
+from features import WALL_LOCATIONS
 
 DIRECTIONS = [d for d in Direction if d != Direction.CENTRE]
 CARDINALS = [Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST]
@@ -81,6 +84,14 @@ MAX_BUILDERS = 9
 MAX_BUILDERS_THREAT = 15
 FIRST_INTERVAL_SPAWN = 10
 SPAWN_INTERVAL = 25
+
+
+def builder_cap(round_n: int) -> int:
+    """Living builder target: 5 until turn 10, then +1 every 25 turns up to 9."""
+    if round_n < FIRST_INTERVAL_SPAWN:
+        return MAX_BUILDERS_EARLY
+    steps = 1 + (round_n - FIRST_INTERVAL_SPAWN) // SPAWN_INTERVAL
+    return min(MAX_BUILDERS, MAX_BUILDERS_EARLY + steps)
 
 
 def effective_raid_order(
@@ -279,85 +290,47 @@ class Player:
 
         living = self._count_living_builders(ct)
         threat = phalanx_home and core_under_turret_threat(ct)
-        # Lifetime safety net — living can undercount raiders out of vision.
+        cap = MAX_BUILDERS_THREAT if threat else builder_cap(round_n)
+        # Lifetime safety net — vision undercount cannot run away.
         if self.num_spawned >= MAX_BUILDERS_THREAT:
             return
-        if living >= MAX_BUILDERS_THREAT:
-            return
-        if living >= MAX_BUILDERS and not threat:
+        if living >= cap:
             return
         if ct.get_unit_count() >= GameConstants.MAX_TEAM_UNITS:
-            return
-
-        can_rush = self.num_spawned < MAX_BUILDERS_EARLY
-        can_interval = (
-            self.num_spawned >= MAX_BUILDERS_EARLY
-            and self.num_spawned < MAX_BUILDERS
-            and round_n >= FIRST_INTERVAL_SPAWN
-            and (round_n - FIRST_INTERVAL_SPAWN) % SPAWN_INTERVAL == 0
-        )
-        # Replace deaths back up to 9 living (after the initial 9 have been spawned).
-        can_replenish = (
-            self.num_spawned >= MAX_BUILDERS and living < MAX_BUILDERS
-        )
-        # Turret threat: ASAP up to 15 living for home defence.
-        can_threat_spawn = threat and living < MAX_BUILDERS_THREAT
-        if not can_rush and not can_interval and not can_replenish and not can_threat_spawn:
             return
 
         ti = ct.get_global_resources()
         if ti < ct.get_builder_bot_cost():
             return
+
         pos = ct.get_position()
-        _, enemy = unpack_cores(ct.read_store(SLOT_PACKED_CORES))
-        if enemy[0] != CoreState.UNKNOWN:
-            enemy_pos = Position(enemy[1], enemy[2])
+        enemy_pos = self._resolve_enemy_core(ct)
+        if enemy_pos is not None:
+            goal = enemy_pos
+            is_enemy = True
         else:
-            enemy_pos = None
+            goal = Position(ct.get_map_width() // 2, ct.get_map_height() // 2)
+            is_enemy = False
 
-        idx = self.num_spawned + 1
-        is_enemy = False
-
-        if not is_defender(idx) and not is_raider(idx, enemy_pos):
-            # Predict economy role: target nearest ore
-            ores = ORE_LOCATIONS.get(self.hivemind.map_id, [])
-            if ores:
-                closest = min(ores, key=lambda o: manhattan(pos, Position(o[0], o[1])))
-                goal = Position(closest[0], closest[1])
-            else:
-                goal = enemy_pos if enemy_pos else Position(ct.get_map_width() // 2, ct.get_map_height() // 2)
-                if enemy_pos: is_enemy = True
-        else:
-            # Predict raider/defender role: target enemy core if known, else center
-            goal = enemy_pos if enemy_pos else Position(ct.get_map_width() // 2, ct.get_map_height() // 2)
-            if enemy_pos: is_enemy = True
-
-        for spawn_pos in spawn_sites_toward(ct, pos, goal, map_id=self.hivemind.map_id, is_enemy_core=is_enemy):
+        for spawn_pos in spawn_sites_toward(
+            ct, pos, goal, map_id=self.hivemind.map_id, is_enemy_core=is_enemy
+        ):
             if self.hivemind.spawn_builder(ct, spawn_pos):
                 self.num_spawned += 1
                 return
 
     def _count_living_builders(self, ct: Controller) -> int:
-        """Ally builders known via local_map, plus any in core vision."""
-        my_team = ct.get_team()
-        seen: set[tuple[int, int]] = set()
-        for (x, y), info in self.hivemind.local_map.items():
-            ent = info.get("entity")
-            if not ent:
-                continue
-            if ent.get("type") != EntityType.BUILDER_BOT:
-                continue
-            if ent.get("team") != my_team:
-                continue
-            seen.add((x, y))
-        for eid in ct.get_nearby_entities():
-            if ct.get_entity_type(eid) != EntityType.BUILDER_BOT:
-                continue
-            if ct.get_team(eid) != my_team:
-                continue
-            p = ct.get_position(eid)
-            seen.add((p.x, p.y))
-        return len(seen)
+        """Alive builders from slot 4 heartbeat mask (committed | accumulating)."""
+        return living_builder_count(ct)
+
+    def _resolve_enemy_core(self, ct: Controller) -> Position | None:
+        """Enemy core from slot 15, else same-turn HiveMind fingerprint cache."""
+        _, enemy = unpack_cores(ct.read_store(SLOT_PACKED_CORES))
+        if enemy[0] != CoreState.UNKNOWN:
+            return Position(enemy[1], enemy[2])
+        if self.hivemind.enemy_core_pos is not None:
+            return self.hivemind.enemy_core_pos
+        return None
 
     # ------------------------------------------------------------------
     # Builder — role menu
@@ -446,9 +419,9 @@ class Player:
             self.core_pos = Position(ally[1], ally[2])
 
     def _read_enemy_core(self, ct: Controller) -> None:
-        _, enemy = unpack_cores(ct.read_store(SLOT_PACKED_CORES))
-        if enemy[0] != CoreState.UNKNOWN:
-            self.enemy_core_pos = Position(enemy[1], enemy[2])
+        enemy_pos = self._resolve_enemy_core(ct)
+        if enemy_pos is not None:
+            self.enemy_core_pos = enemy_pos
 
     def _try_heal(self, ct: Controller) -> None:
         pos = ct.get_position()
