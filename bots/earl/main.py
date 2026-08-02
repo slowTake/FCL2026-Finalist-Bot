@@ -17,17 +17,20 @@ indices while off the raid path) mine under a staged harvester cap
 Indices 6+ defend the core from spawn.
 
 Store slots:
-  0–1                  Free
+  0  SLOT_RELAY_COMPLETE  1 once any inbound relay finished (phalanx guns)
+  1                    Free
   2  SLOT_HARVESTER_COUNT Total harvesters built by the team (logistics.py)
   3  SLOT_SENTINEL_COUNT  Living phalanx wing gunners or siege sentinels (ammo)
-  4  SLOT_LIVING_BUILDERS Committed|accum alive-builder bitmask (hivemind)
-  5–6                  Free
+  4–6                  Free
   7–15                 HiveMind-owned — never write from Player
 
 Ally core from slot 15 via unpack_cores; enemy core from fingerprint /
 KNOWN_MAPS (same-turn cache) or slot 15. Ore from ORE_LOCATIONS / local_map.
-Core always replenishes up to a living cap that steps 5→9 every 25 turns
-from turn 10 (threat raises cap to 15).
+Core rushes 5 builders, then interval-spawns to 9, then grows one every
+50 turns up to 15, then one every 200 turns as a late fallback. From turn
+75, deaths are replaced ASAP only when a builder vanishes from interior
+core vision (walking out of fog does not count). Threat-spawn extras are
+off (`SPAWN_EXTRA_UNDER_THREAT`).
 """
 
 from __future__ import annotations
@@ -57,7 +60,7 @@ from fcode import (
     GameConstants,
     Position,
 )
-from hivemind import CoreState, HiveMind, living_builder_count, unpack_cores
+from hivemind import CoreState, HiveMind, unpack_cores
 from logistics import (
     PATH_MAX_ITERS,
     clear_relay,
@@ -82,16 +85,18 @@ SLOT_PACKED_CORES = 15
 MAX_BUILDERS_EARLY = 5
 MAX_BUILDERS = 9
 MAX_BUILDERS_THREAT = 15
+# When True, spawn ASAP up to MAX_BUILDERS_THREAT if enemy turret in core vision.
+SPAWN_EXTRA_UNDER_THREAT = False
 FIRST_INTERVAL_SPAWN = 10
 SPAWN_INTERVAL = 25
-
-
-def builder_cap(round_n: int) -> int:
-    """Living builder target: 5 until turn 10, then +1 every 25 turns up to 9."""
-    if round_n < FIRST_INTERVAL_SPAWN:
-        return MAX_BUILDERS_EARLY
-    steps = 1 + (round_n - FIRST_INTERVAL_SPAWN) // SPAWN_INTERVAL
-    return min(MAX_BUILDERS, MAX_BUILDERS_EARLY + steps)
+LATE_SPAWN_INTERVAL = 50
+FALLBACK_SPAWN_INTERVAL = 200
+# Death-replace (replace_debt) stays off until this turn so early growth
+# is only rush / interval / late / fallback.
+REPLENISH_START_TURN = 75
+# Core vision radius; builders vanishing on the outer ring are treated as
+# walk-outs, not deaths (avoids replenish spam once raiders leave home).
+CORE_VISION_RADIUS = 6
 
 
 def effective_raid_order(
@@ -239,8 +244,12 @@ class Player:
     def __init__(self):
         self.hivemind = HiveMind()
         self.num_spawned = 0
-        # Core-local alive floor: +=1 on spawn; sync down when store heartbeats look valid.
-        self.local_alive = 0
+        # Intentional living target (growth only); replenish does not raise it.
+        self.spawn_target = 0
+        self.last_growth_round = -10**9
+        self.replace_debt = 0
+        # eid -> last Position seen in core vision (death detection).
+        self._prev_vision_builders: dict[int, Position] = {}
 
         self.target: Position | None = None
         self.last_pos: Position | None = None
@@ -290,15 +299,48 @@ class Player:
         )
         top_up_ammo(ct, min_turn=ammo_turn)
 
-        living = self._count_living_builders(ct)
+        living_debt = self._observe_builder_deaths(ct)
+        if round_n >= REPLENISH_START_TURN:
+            self.replace_debt += living_debt
+        else:
+            self.replace_debt = 0
         threat = phalanx_home and core_under_turret_threat(ct)
-        cap = MAX_BUILDERS_THREAT if threat else builder_cap(round_n)
-        # Lifetime safety net — vision undercount cannot run away.
-        if self.num_spawned >= MAX_BUILDERS_THREAT:
-            return
-        if living >= cap:
-            return
         if ct.get_unit_count() >= GameConstants.MAX_TEAM_UNITS:
+            return
+
+        can_rush = self.spawn_target < MAX_BUILDERS_EARLY
+        can_interval = (
+            self.spawn_target >= MAX_BUILDERS_EARLY
+            and self.spawn_target < MAX_BUILDERS
+            and round_n >= FIRST_INTERVAL_SPAWN
+            and (round_n - FIRST_INTERVAL_SPAWN) % SPAWN_INTERVAL == 0
+        )
+        # After 9: grow one every LATE_SPAWN_INTERVAL turns (up to 15).
+        can_late = (
+            self.spawn_target >= MAX_BUILDERS
+            and self.spawn_target < MAX_BUILDERS_THREAT
+            and round_n - self.last_growth_round >= LATE_SPAWN_INTERVAL
+        )
+        # After 15: slow trickle every FALLBACK_SPAWN_INTERVAL turns.
+        can_fallback = (
+            self.spawn_target >= MAX_BUILDERS_THREAT
+            and round_n - self.last_growth_round >= FALLBACK_SPAWN_INTERVAL
+        )
+        # Replace only vision-confirmed deaths from REPLENISH_START_TURN on.
+        can_replenish = self.replace_debt > 0 and round_n >= REPLENISH_START_TURN
+        can_threat_spawn = (
+            threat
+            and SPAWN_EXTRA_UNDER_THREAT
+            and self.spawn_target < MAX_BUILDERS_THREAT
+        )
+        if (
+            not can_rush
+            and not can_interval
+            and not can_late
+            and not can_fallback
+            and not can_replenish
+            and not can_threat_spawn
+        ):
             return
 
         ti = ct.get_global_resources()
@@ -314,35 +356,47 @@ class Player:
             goal = Position(ct.get_map_width() // 2, ct.get_map_height() // 2)
             is_enemy = False
 
+        # Prefer replacing observed deaths over scheduled growth this turn.
+        is_replenish = can_replenish
         for spawn_pos in spawn_sites_toward(
             ct, pos, goal, map_id=self.hivemind.map_id, is_enemy_core=is_enemy
         ):
             if self.hivemind.spawn_builder(ct, spawn_pos):
                 self.num_spawned += 1
-                self.local_alive += 1
+                if is_replenish:
+                    self.replace_debt = max(0, self.replace_debt - 1)
+                else:
+                    self.spawn_target += 1
+                    self.last_growth_round = round_n
                 return
 
-    def _count_living_builders(self, ct: Controller) -> int:
-        """Alive builders: store heartbeat mask, vision, and local spawn floor.
+    def _observe_builder_deaths(self, ct: Controller) -> int:
+        """Count ally builders that vanished from interior core vision.
 
-        Store writes are buffered one turn; empty metronome commits must not
-        look like zero living. local_alive +=1 on spawn; sync to store when
-        the heartbeat mask is non-zero.
+        Leaving the fog edge does not count — that was spamming replenish
+        whenever raiders walked out of home vision.
         """
-        store_n = living_builder_count(ct)
         my_team = ct.get_team()
-        vision_n = 0
+        core = ct.get_position()
+        current: dict[int, Position] = {}
         for eid in ct.get_nearby_entities():
             if ct.get_entity_type(eid) != EntityType.BUILDER_BOT:
                 continue
             if ct.get_team(eid) != my_team:
                 continue
-            vision_n += 1
+            current[eid] = ct.get_position(eid)
 
-        if store_n > 0:
-            self.local_alive = store_n
-
-        return max(store_n, vision_n, self.local_alive)
+        deaths = 0
+        for eid, prev_pos in self._prev_vision_builders.items():
+            if eid in current:
+                continue
+            dx = abs(prev_pos.x - core.x)
+            dy = abs(prev_pos.y - core.y)
+            # Outer ring vanish ≈ walked into fog; interior vanish ≈ died.
+            if max(dx, dy) < CORE_VISION_RADIUS and ct.is_in_vision(prev_pos):
+                deaths += 1
+        self._prev_vision_builders = current
+        return deaths
 
     def _resolve_enemy_core(self, ct: Controller) -> Position | None:
         """Enemy core from slot 15, else same-turn HiveMind fingerprint cache."""

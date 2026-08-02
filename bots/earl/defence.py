@@ -5,10 +5,11 @@ enemy gunners in vision, heal, fire, then lay a per-side inward apron
 (3-deep belts, no barriers).
 
 Even builders may run PHALANX (see ACTIVE_RAID_ORDER in main): hunt enemy
-gunners/sentinels, fill wing gunners on all in-bounds sides from round 10
-(depth rings; approach side first within each depth), then approach apron,
-then one gunner beside each nearby ally harvester, clear encroaching enemy
-harvesters/belts in vision, then soft-idle.
+gunners/sentinels, fill wing gunners on all in-bounds sides once a team
+inbound relay has completed (and from round 10; depth rings; approach side
+first within each depth), then approach apron, then one gunner beside each
+nearby ally harvester, clear encroaching enemy harvesters/belts in vision,
+then soft-idle.
 """
 
 from __future__ import annotations
@@ -22,6 +23,19 @@ from attack import (
 from fcode import Controller, Direction, EntityType, Position
 
 DEFENDER_MIN_INDEX = 6  # indices 6+
+
+# Sticky: set when any inbound relay finishes (unlocks wing gunners).
+SLOT_RELAY_COMPLETE = 0
+
+
+def team_has_complete_relay(ct: Controller) -> bool:
+    """True after any economy builder finishes an inbound relay to the core."""
+    return ct.read_store(SLOT_RELAY_COMPLETE) > 0
+
+
+def mark_relay_complete(ct: Controller) -> None:
+    """Sticky team flag: first finished relay unlocks phalanx apron guns."""
+    ct.write_store(SLOT_RELAY_COMPLETE, 1)
 
 # Cardinal sides around the core, assignment order N → E → S → W
 SIDE_N = 0
@@ -637,11 +651,15 @@ def run_phalanx(
 
     round_n = ct.get_current_round()
 
-    # 2. Wing gunners on every in-bounds side (depth rings before stacking).
+    # 2. Wing gunners once an inbound relay has reached the core.
     sites = phalanx_all_gunner_sites(ct, ally_core, side)
     wing_living = sum(1 for s in sites if _has_allied_gunner(ct, s))
     missing = phalanx_missing_gunner_sites(ct, sites)
-    if round_n >= PHALANX_GUNNER_TURN and missing:
+    if (
+        round_n >= PHALANX_GUNNER_TURN
+        and team_has_complete_relay(ct)
+        and missing
+    ):
         site = _phalanx_assigned_site(my_index, missing)
         if site is not None:
             pos = ct.get_position()

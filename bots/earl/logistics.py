@@ -6,7 +6,7 @@ run_economy / clear_relay (see role.md).
 
 from __future__ import annotations
 
-from defence import available_sides, side_depth1_tiles
+from defence import available_sides, mark_relay_complete, side_depth1_tiles
 from fcode import Controller, Direction, EntityType, Environment, Position
 from features import ORE_LOCATIONS
 from pathing import astar_from_seeds, manhattan
@@ -805,6 +805,7 @@ def relay_toward_core(bot, ct: Controller) -> None:
                 bot.relay_built_to = -1
                 bot.relay_merging = False
                 return
+        mark_relay_complete(ct)
         clear_relay(bot)
         return
 

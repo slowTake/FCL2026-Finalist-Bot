@@ -63,9 +63,9 @@ Home defence for even builders once the enemy core is known
 (`ACTIVE_RAID_ORDER = "phalanx"`). Named phases (`PHALANX`):
 
 1. **hunt_turrets** — enemy gunner/sentinel in vision: fire if adjacent, else move.
-2. **place_phalanx_gunners** — from turn 10: fill every in-bounds side; depth
-   rings before stacking; up to 4 pads per flank at depths 1–4; face enemy;
-   sync living count to slot 3.
+2. **place_phalanx_gunners** — from turn 10, after first inbound relay completes
+   (slot 0): fill every in-bounds side; depth rings before stacking; up to 4
+   pads per flank at depths 1–4; face enemy; sync living count to slot 3.
 3. **assist_apron** — 3-deep inward conveyors on the enemy approach side
    (`LAY_APRON_BELTS` in `defence.py`; currently **off**).
 4. **guard_harvesters** — 1 gunner cardinally beside each ally harvester within

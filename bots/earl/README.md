@@ -7,7 +7,7 @@ gunners in `defence.py`; pre-600 **odd** builders pivot to raiders at **300**,
 pre-600 **even** at **600**, fire-and-forget; post-600 odds → economy, post-600
 evens → phalanx); set to **`raiders`** for the old offensive belt-raid →
 gunner/sentinel siege loop (`attack.py`); set to **`harrass`** for harvester
-siege + seek (`harrass.py`). Economy builders (1/3/5) mine under a staged
+siege + seek (`harrass.py`). Economy builders (1/3; index 5 harrasses) mine under a staged
 harvester cap (**3** until 200, **5** until 500, then unlimited) in
 [`logistics.py`](logistics.py) and idle-recheck ore every 50 turns; late
 spawns 6+ defend and lay a home apron (`defence.py`). Full role task lists:
@@ -18,11 +18,11 @@ harrass).
 
 | Slot | Owner | Purpose |
 |------|-------|---------|
-| 0–1 | — | Free |
+| 0 | Player | `SLOT_RELAY_COMPLETE` — 1 after first inbound relay finishes (unlocks wing guns) |
+| 1 | — | Free |
 | 2 | Player | `SLOT_HARVESTER_COUNT` — total harvesters we built |
 | 3 | Player | `SLOT_SENTINEL_COUNT` — living phalanx wing gunners or siege sentinels (ammo) |
-| 4 | HiveMind | `SLOT_LIVING_BUILDERS` — committed\|accum alive-builder bitmask |
-| 5–6 | — | Free |
+| 4–6 | — | Free |
 | 7 | HiveMind | Builder registry count (spawn increments; builders claim as `my_index` on the turn after birth — store write buffer) |
 | 8–9 | HiveMind | Packed enemy intel (up to 4 targets) |
 | 10–12 | HiveMind | Packed vision grid (passable bitmask broadcast) |
@@ -41,12 +41,14 @@ enemy core**. Enemy position comes from map fingerprint (`KNOWN_MAPS` in
 ASSUMED/KNOWN. Unknown maps fall back to map center. Tries candidates via
 `hivemind.spawn_builder` / `can_spawn`.
 
-**Living cap** (`builder_cap`): **5** until turn **10**, then **+1 every 25
-turns** up to **9** (caps at turns 10 / 35 / 60 / 85 → 6 / 7 / 8 / 9).
-**Always replenish** ASAP while living builders (slot 4 heartbeat mask) are
-below the current cap (deaths drop out after one metronome cycle; growth
-paced by the cap). Under turret threat, cap rises to **15 living** (hard
-lifetime `num_spawned` still **15**).
+**Schedule:** rush the first **5** as soon as Ti allows, then spawn **one more
+every 25 turns** starting at turn **10**, up to **9** (`spawn_target`).
+After 9, grow **one every 50 turns** up to **15**. After 15, grow **one
+every 200 turns** as a late fallback (until `MAX_TEAM_UNITS`). From turn
+**75**, **replace ASAP** when a builder vanishes from *interior* core vision
+(leaving the fog edge does not count — that was causing replenish spam).
+Before 75, only the scheduled growth gates run. Turret threat does **not**
+raise the early cap (`SPAWN_EXTRA_UNDER_THREAT = False`).
 
 From the ammo start turn the core tops team ammo to
 `5 + 20 × max(1, living count in slot 3)` via `convert_ammo` (before the
@@ -85,7 +87,8 @@ Even builders stay home once the enemy core is known:
 
 1. **Hunt turrets** — if an enemy gunner or sentinel is in vision, fire if
    orthogonally adjacent, else move to attack it.
-2. **Place wing gunners** from turn **10**: fill **every in-bounds side**
+2. **Place wing gunners** from turn **10**, but only after slot 0 shows a
+   finished inbound relay: fill **every in-bounds side**
    (not only the approach). Depth rings fill before stacking (all sides get
    depth-1 before approach depth-2); within a depth prefer the enemy approach
    side. Up to **4 pads per flank** at depths 1–4; face toward the enemy;
@@ -100,11 +103,10 @@ Even builders stay home once the enemy core is known:
 6. **Soft idle** — repair missing apron / rebuild dead pads; otherwise linger on
    the approach depth-1 strip.
 
-While an enemy gunner/sentinel is in **core vision**, the core keeps spawning
-extra builders past the normal 9 up to **15 living** (lifetime `num_spawned`
-hard-capped at 15). Even-index
-builders run phalanx (including 6+); odd late spawns still defend assigned sides
-until their pivot.
+While an enemy gunner/sentinel is in **core vision**, threat-spawn extras
+are **off** by default (`SPAWN_EXTRA_UNDER_THREAT`); set that flag to raise
+the living cap toward **15**. Past 15 the normal fallback cadence is every
+**200** turns; team size is still limited by `MAX_TEAM_UNITS`.
 
 **Pivot to raiders** (`run_attack_builder`) — fire-and-forget (no recall):
 - Round **300+**: pre-600 odd-index builders (1, 3, 5, 7, …)
@@ -114,7 +116,7 @@ until their pivot.
 - New **odds** → economy (mine / defender gate)
 - New **evens** → phalanx forever
 
-Home wing gunners stay; threat-spawn and phalanx ammo stay active while
+Home wing gunners stay; phalanx ammo stays active while
 `ACTIVE_RAID_ORDER = "phalanx"` (new evens keep the home role after 600).
 
 Gunner fire uses shared `run_gunner` (core → gunner → sentinel → builder →
