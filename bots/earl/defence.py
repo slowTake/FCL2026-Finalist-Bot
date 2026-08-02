@@ -37,6 +37,9 @@ APRON_DEPTHS = (1, 2, 3)
 # Wing gunner pads: one column/row per flank, one tile per depth (4 each side).
 WING_DEPTHS = (1, 2, 3, 4)
 
+# Temporary: skip laying / repairing core apron conveyor belts.
+LAY_APRON_BELTS = False
+
 # Named phases for the home-defence raid order (priority-gated in run_phalanx).
 PHALANX = (
     "hunt_turrets",
@@ -47,8 +50,8 @@ PHALANX = (
     "soft_idle",
 )
 PHALANX_GUNNER_TURN = 10
-# Chebyshev distance from core footprint — ~15×15 neighbourhood.
-HARVESTER_GUARD_CHEB = 15
+# Chebyshev distance from core footprint — ~20×20 neighbourhood.
+HARVESTER_GUARD_CHEB = 20
 _ENEMY_TURRET_TYPES = (EntityType.GUNNER, EntityType.SENTINEL)
 
 
@@ -252,6 +255,8 @@ def phalanx_missing_gunner_sites(
 
 def _apron_incomplete(ct: Controller, core_pos: Position, side: int) -> bool:
     """True if an in-vision apron belt is missing/wrong. Fogged tiles count as OK."""
+    if not LAY_APRON_BELTS:
+        return False
     for tile, facing in side_conveyor_specs(core_pos, side):
         if not _in_bounds(ct, tile):
             continue
@@ -280,6 +285,8 @@ def try_make_apron(
     ct: Controller, *, core_pos: Position, side: int
 ) -> bool:
     """Lay this side's apron conveyors. True if built or moved."""
+    if not LAY_APRON_BELTS:
+        return False
     pending: list[Position] = []
     conveyor_specs = apron_conveyor_specs(core_pos, side)
 
