@@ -60,8 +60,14 @@ def _heartbeat_living(ct: Controller, index: int) -> None:
 
 
 def _commit_living_cycle(ct: Controller) -> None:
-    """End of metronome cycle: committed = who heartbeated; clear accum."""
-    _, accum = _living_masks(ct.read_store(SLOT_LIVING_BUILDERS))
+    """End of metronome cycle: committed = who heartbeated; clear accum.
+
+    If nobody heartbeated (accum empty), keep the previous committed mask so
+    we do not wipe spawn marks and trigger a spawn storm.
+    """
+    committed, accum = _living_masks(ct.read_store(SLOT_LIVING_BUILDERS))
+    if accum == 0:
+        return
     ct.write_store(SLOT_LIVING_BUILDERS, _pack_living_masks(accum, 0))
 
 class HiveMind:
@@ -69,6 +75,7 @@ class HiveMind:
         self.local_map = {}
         self.global_turn = 0
         self.my_index = 0
+        self.birth_round: int | None = None
         self.map_id = 0
         self.map_name = "UNKNOWN"
         self.enemy_core_pos = None  # set on fingerprint from KNOWN_MAPS
@@ -243,9 +250,16 @@ class HiveMind:
         # 1. Sync global turn natively from the engine
         self.global_turn = ct.get_current_round()
 
-        # 2. Assign Builder Index on first turn alive
+        # 2. Assign builder index once the spawn write to slot 7 is visible.
+        # Store writes buffer one turn: reading on the spawn turn locks the
+        # previous total (k-1) forever. Claim exactly on birth_round + 1.
         if ct.get_entity_type() == EntityType.BUILDER_BOT and self.my_index == 0:
-            self.my_index = ct.read_store(7)
+            if self.birth_round is None:
+                self.birth_round = self.global_turn
+            elif self.global_turn == self.birth_round + 1:
+                idx = ct.read_store(7)
+                if idx > 0:
+                    self.my_index = idx
 
         # 3. Process Map Detection (Core Only)
         if is_core and self.global_turn == 0:

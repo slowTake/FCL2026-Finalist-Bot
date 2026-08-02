@@ -23,7 +23,7 @@ harrass).
 | 3 | Player | `SLOT_SENTINEL_COUNT` — living phalanx wing gunners or siege sentinels (ammo) |
 | 4 | HiveMind | `SLOT_LIVING_BUILDERS` — committed\|accum alive-builder bitmask |
 | 5–6 | — | Free |
-| 7 | HiveMind | Builder registry count (spawn increments; builders read as `my_index`) |
+| 7 | HiveMind | Builder registry count (spawn increments; builders claim as `my_index` on the turn after birth — store write buffer) |
 | 8–9 | HiveMind | Packed enemy intel (up to 4 targets) |
 | 10–12 | HiveMind | Packed vision grid (passable bitmask broadcast) |
 | 13 | HiveMind | Vision metronome — which builder broadcasts this even turn |

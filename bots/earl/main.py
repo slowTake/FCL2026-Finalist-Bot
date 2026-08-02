@@ -239,6 +239,8 @@ class Player:
     def __init__(self):
         self.hivemind = HiveMind()
         self.num_spawned = 0
+        # Core-local alive floor: +=1 on spawn; sync down when store heartbeats look valid.
+        self.local_alive = 0
 
         self.target: Position | None = None
         self.last_pos: Position | None = None
@@ -317,11 +319,30 @@ class Player:
         ):
             if self.hivemind.spawn_builder(ct, spawn_pos):
                 self.num_spawned += 1
+                self.local_alive += 1
                 return
 
     def _count_living_builders(self, ct: Controller) -> int:
-        """Alive builders from slot 4 heartbeat mask (committed | accumulating)."""
-        return living_builder_count(ct)
+        """Alive builders: store heartbeat mask, vision, and local spawn floor.
+
+        Store writes are buffered one turn; empty metronome commits must not
+        look like zero living. local_alive +=1 on spawn; sync to store when
+        the heartbeat mask is non-zero.
+        """
+        store_n = living_builder_count(ct)
+        my_team = ct.get_team()
+        vision_n = 0
+        for eid in ct.get_nearby_entities():
+            if ct.get_entity_type(eid) != EntityType.BUILDER_BOT:
+                continue
+            if ct.get_team(eid) != my_team:
+                continue
+            vision_n += 1
+
+        if store_n > 0:
+            self.local_alive = store_n
+
+        return max(store_n, vision_n, self.local_alive)
 
     def _resolve_enemy_core(self, ct: Controller) -> Position | None:
         """Enemy core from slot 15, else same-turn HiveMind fingerprint cache."""
