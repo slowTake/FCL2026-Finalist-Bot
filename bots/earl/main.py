@@ -5,24 +5,29 @@ steal any harvester), then pave a committed conveyor path back to the core.
 Wrong-facing allied belts are destroyed and rebuilt; enemy belts are cleared
 via stand-and-fire.
 
-Builder roles (see role.md): economy, phalanx, raiders, defender. Even
-builders abort economy once the enemy core is known. Active order is
+Builder roles (see role.md): economy, phalanx, raiders, harrass, defender.
+Even builders abort economy once the enemy core is known. Active order is
 ACTIVE_RAID_ORDER: "phalanx" (home apron + wing gunners; pre-600 odds →
 raiders at 300, pre-600 evens at 600 fire-and-forget; post-600 odds →
-economy, post-600 evens → phalanx) or "raiders" (belt raid → gunner/sentinel
-siege loop in attack.py). Economy builders (odd indices while off the raid
-path) mine under a staged harvester cap (3 → 5 → unlimited) in logistics.py;
-idle ore recheck every 50 turns. Indices 6+ defend the core from spawn.
+economy, post-600 evens → phalanx; index 5 harrasses until 300 then joins
+raiders), "raiders" (belt raid → gunner/sentinel siege loop in attack.py),
+or "harrass" (full raid-path order in harrass.py). Economy builders (odd
+indices while off the raid path) mine under a staged harvester cap
+(3 → 5 → unlimited) in logistics.py; idle ore recheck every 50 turns.
+Indices 6+ defend the core from spawn.
 
 Store slots:
   0–1                  Free
   2  SLOT_HARVESTER_COUNT Total harvesters built by the team (logistics.py)
   3  SLOT_SENTINEL_COUNT  Living phalanx wing gunners or siege sentinels (ammo)
-  4–6                  Free
+  4  SLOT_LIVING_BUILDERS Committed|accum alive-builder bitmask (hivemind)
+  5–6                  Free
   7–15                 HiveMind-owned — never write from Player
 
-Ally core from slot 15 via unpack_cores. Ore from ORE_LOCATIONS / local_map.
-Core spawns builders toward enemy core (else map center).
+Ally core from slot 15 via unpack_cores; enemy core from fingerprint /
+KNOWN_MAPS (same-turn cache) or slot 15. Ore from ORE_LOCATIONS / local_map.
+Core always replenishes up to a living cap that steps 5→9 every 25 turns
+from turn 10 (threat raises cap to 15).
 """
 
 from __future__ import annotations
@@ -44,6 +49,7 @@ from defence import (
     run_phalanx,
     core_under_turret_threat,
 )
+from harrass import run_harrasser
 from fcode import (
     Controller,
     Direction,
@@ -51,7 +57,7 @@ from fcode import (
     GameConstants,
     Position,
 )
-from hivemind import CoreState, HiveMind, unpack_cores
+from hivemind import CoreState, HiveMind, living_builder_count, unpack_cores
 from logistics import (
     PATH_MAX_ITERS,
     clear_relay,
@@ -64,10 +70,12 @@ from features import WALL_LOCATIONS
 DIRECTIONS = [d for d in Direction if d != Direction.CENTRE]
 CARDINALS = [Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST]
 
-# "phalanx" = home apron + wing gunners; "raiders" = offensive siege task list.
+# "harrass" = harvester siege + seek; "phalanx" = home apron + wing gunners;
+# "raiders" = offensive siege task list.
 ACTIVE_RAID_ORDER = "phalanx"
 PHALANX_ODD_TO_RAIDERS_TURN = 300
 PHALANX_EVEN_TO_RAIDERS_TURN = 600
+HARRASS_INDEX = 5
 
 SLOT_PACKED_CORES = 15
 
@@ -78,15 +86,30 @@ FIRST_INTERVAL_SPAWN = 10
 SPAWN_INTERVAL = 25
 
 
+def builder_cap(round_n: int) -> int:
+    """Living builder target: 5 until turn 10, then +1 every 25 turns up to 9."""
+    if round_n < FIRST_INTERVAL_SPAWN:
+        return MAX_BUILDERS_EARLY
+    steps = 1 + (round_n - FIRST_INTERVAL_SPAWN) // SPAWN_INTERVAL
+    return min(MAX_BUILDERS, MAX_BUILDERS_EARLY + steps)
+
+
 def effective_raid_order(
     round_n: int, my_index: int = 0, spawn_round: int | None = None
 ) -> str:
-    """Under phalanx: pre-600 cohort raids; post-600 odds economy, evens phalanx."""
+    """Under phalanx: pre-600 cohort raids; post-600 odds economy, evens phalanx.
+
+    Index HARRASS_INDEX runs harrass until PHALANX_ODD_TO_RAIDERS_TURN, then raiders.
+    """
     if ACTIVE_RAID_ORDER != "phalanx":
         return ACTIVE_RAID_ORDER
     spawned_before_600 = (
         spawn_round is None or spawn_round < PHALANX_EVEN_TO_RAIDERS_TURN
     )
+    if my_index == HARRASS_INDEX:
+        if round_n >= PHALANX_ODD_TO_RAIDERS_TURN:
+            return "raiders"
+        return "harrass"
     if my_index % 2 == 1:
         if spawned_before_600 and round_n >= PHALANX_ODD_TO_RAIDERS_TURN:
             return "raiders"
@@ -110,7 +133,7 @@ def on_raid_tasklist(
     round_n: int,
     spawn_round: int | None = None,
 ) -> bool:
-    """Who runs phalanx or raiders this turn (enemy core must be known)."""
+    """Who runs phalanx / harrass / raiders this turn (enemy core must be known)."""
     if enemy_core is None or my_index <= 0:
         return False
     if ACTIVE_RAID_ORDER != "phalanx":
@@ -118,6 +141,9 @@ def on_raid_tasklist(
     spawned_before_600 = (
         spawn_round is None or spawn_round < PHALANX_EVEN_TO_RAIDERS_TURN
     )
+    # Index 5: harrass early, then join odd raider pivot at 300 (pre-600 only).
+    if my_index == HARRASS_INDEX:
+        return spawned_before_600
     # Pre-600 odds raid from 300 (sticky). Post-600 odds stay off (economy).
     if my_index % 2 == 1:
         return spawned_before_600 and round_n >= PHALANX_ODD_TO_RAIDERS_TURN
@@ -176,36 +202,27 @@ def spawn_sites_toward(
             
     walls = set(WALL_LOCATIONS.get(map_id, []))
     def is_passable(p: Position) -> bool:
-        if (p.x, p.y) in footprint_keys:
-            return False
         if not in_bounds(ct, p):
             return False
         if (p.x, p.y) in walls:
             return False
         return True
         
-    def path_len(p: Position) -> int:
-        if p == goal:
-            return 0
-            
-        def is_goal_fn(cand: Position) -> bool:
-            if cand == goal:
-                return True
-            if is_enemy_core:
-                # Check if adjacent to the 2x2 enemy core
-                for dx in (0, 1):
-                    for dy in (0, 1):
-                        cx, cy = goal.x + dx, goal.y + dy
-                        if abs(cand.x - cx) + abs(cand.y - cy) == 1:
-                            return True
-            return False
-            
-        path = astar(p, goal, is_passable=is_passable, is_goal=is_goal_fn, max_iters=200)
-        if path is not None:
-            return len(path)
-        return p.distance_squared(goal) * 1000  # Fallback
-            
-    sites.sort(key=path_len)
+    def is_goal_fn(cand: Position) -> bool:
+        return (cand.x, cand.y) in footprint_keys
+
+    # Run ONE A* from goal to our core footprint
+    path = astar(goal, is_passable=is_passable, is_goal=is_goal_fn, max_iters=1000)
+    
+    if path and len(path) >= 2:
+        # path[0] is the goal. path[-1] is the tile inside our core footprint.
+        # path[-2] is the apron tile the path took right before hitting the core.
+        best_apron = path[-2]
+        sites.sort(key=lambda p: (0 if p == best_apron else 1, p.distance_squared(goal)))
+    else:
+        # Fallback if no path is found (e.g. fully blocked)
+        sites.sort(key=lambda p: p.distance_squared(goal))
+        
     return sites
 
 
@@ -222,6 +239,8 @@ class Player:
     def __init__(self):
         self.hivemind = HiveMind()
         self.num_spawned = 0
+        # Core-local alive floor: +=1 on spawn; sync down when store heartbeats look valid.
+        self.local_alive = 0
 
         self.target: Position | None = None
         self.last_pos: Position | None = None
@@ -245,6 +264,7 @@ class Player:
     def run(self, ct: Controller) -> None:
         try:
             self.hivemind.tick(ct)
+            my_id = ct.get_id()
             etype = ct.get_entity_type()
             if etype == EntityType.CORE:
                 self._run_core(ct)
@@ -272,69 +292,66 @@ class Player:
 
         living = self._count_living_builders(ct)
         threat = phalanx_home and core_under_turret_threat(ct)
-        # Lifetime safety net — living can undercount raiders out of vision.
+        cap = MAX_BUILDERS_THREAT if threat else builder_cap(round_n)
+        # Lifetime safety net — vision undercount cannot run away.
         if self.num_spawned >= MAX_BUILDERS_THREAT:
             return
-        if living >= MAX_BUILDERS_THREAT:
-            return
-        if living >= MAX_BUILDERS and not threat:
+        if living >= cap:
             return
         if ct.get_unit_count() >= GameConstants.MAX_TEAM_UNITS:
-            return
-
-        can_rush = self.num_spawned < MAX_BUILDERS_EARLY
-        can_interval = (
-            self.num_spawned >= MAX_BUILDERS_EARLY
-            and self.num_spawned < MAX_BUILDERS
-            and round_n >= FIRST_INTERVAL_SPAWN
-            and (round_n - FIRST_INTERVAL_SPAWN) % SPAWN_INTERVAL == 0
-        )
-        # Replace deaths back up to 9 living (after the initial 9 have been spawned).
-        can_replenish = (
-            self.num_spawned >= MAX_BUILDERS and living < MAX_BUILDERS
-        )
-        # Turret threat: ASAP up to 15 living for home defence.
-        can_threat_spawn = threat and living < MAX_BUILDERS_THREAT
-        if not can_rush and not can_interval and not can_replenish and not can_threat_spawn:
             return
 
         ti = ct.get_global_resources()
         if ti < ct.get_builder_bot_cost():
             return
+
         pos = ct.get_position()
-        _, enemy = unpack_cores(ct.read_store(SLOT_PACKED_CORES))
-        if enemy[0] != CoreState.UNKNOWN:
-            goal = Position(enemy[1], enemy[2])
+        enemy_pos = self._resolve_enemy_core(ct)
+        if enemy_pos is not None:
+            goal = enemy_pos
             is_enemy = True
         else:
             goal = Position(ct.get_map_width() // 2, ct.get_map_height() // 2)
             is_enemy = False
-        for spawn_pos in spawn_sites_toward(ct, pos, goal, map_id=self.hivemind.map_id, is_enemy_core=is_enemy):
+
+        for spawn_pos in spawn_sites_toward(
+            ct, pos, goal, map_id=self.hivemind.map_id, is_enemy_core=is_enemy
+        ):
             if self.hivemind.spawn_builder(ct, spawn_pos):
                 self.num_spawned += 1
+                self.local_alive += 1
                 return
 
     def _count_living_builders(self, ct: Controller) -> int:
-        """Ally builders known via local_map, plus any in core vision."""
+        """Alive builders: store heartbeat mask, vision, and local spawn floor.
+
+        Store writes are buffered one turn; empty metronome commits must not
+        look like zero living. local_alive +=1 on spawn; sync to store when
+        the heartbeat mask is non-zero.
+        """
+        store_n = living_builder_count(ct)
         my_team = ct.get_team()
-        seen: set[tuple[int, int]] = set()
-        for (x, y), info in self.hivemind.local_map.items():
-            ent = info.get("entity")
-            if not ent:
-                continue
-            if ent.get("type") != EntityType.BUILDER_BOT:
-                continue
-            if ent.get("team") != my_team:
-                continue
-            seen.add((x, y))
+        vision_n = 0
         for eid in ct.get_nearby_entities():
             if ct.get_entity_type(eid) != EntityType.BUILDER_BOT:
                 continue
             if ct.get_team(eid) != my_team:
                 continue
-            p = ct.get_position(eid)
-            seen.add((p.x, p.y))
-        return len(seen)
+            vision_n += 1
+
+        if store_n > 0:
+            self.local_alive = store_n
+
+        return max(store_n, vision_n, self.local_alive)
+
+    def _resolve_enemy_core(self, ct: Controller) -> Position | None:
+        """Enemy core from slot 15, else same-turn HiveMind fingerprint cache."""
+        _, enemy = unpack_cores(ct.read_store(SLOT_PACKED_CORES))
+        if enemy[0] != CoreState.UNKNOWN:
+            return Position(enemy[1], enemy[2])
+        if self.hivemind.enemy_core_pos is not None:
+            return self.hivemind.enemy_core_pos
+        return None
 
     # ------------------------------------------------------------------
     # Builder — role menu
@@ -358,6 +375,8 @@ class Player:
         round_n = ct.get_current_round()
         if self.spawn_round is None:
             self.spawn_round = round_n
+        
+        my_id = ct.get_id()
         if on_raid_tasklist(
             self.hivemind.my_index,
             self.enemy_core_pos,
@@ -373,6 +392,14 @@ class Player:
             )
             if order == "phalanx":
                 site = run_phalanx(
+                    ct,
+                    my_index=self.hivemind.my_index,
+                    local_map=self.hivemind.local_map,
+                    enemy_core=enemy,
+                    ally_core=self.core_pos,
+                )
+            elif order == "harrass":
+                site = run_harrasser(
                     ct,
                     my_index=self.hivemind.my_index,
                     local_map=self.hivemind.local_map,
@@ -413,9 +440,9 @@ class Player:
             self.core_pos = Position(ally[1], ally[2])
 
     def _read_enemy_core(self, ct: Controller) -> None:
-        _, enemy = unpack_cores(ct.read_store(SLOT_PACKED_CORES))
-        if enemy[0] != CoreState.UNKNOWN:
-            self.enemy_core_pos = Position(enemy[1], enemy[2])
+        enemy_pos = self._resolve_enemy_core(ct)
+        if enemy_pos is not None:
+            self.enemy_core_pos = enemy_pos
 
     def _try_heal(self, ct: Controller) -> None:
         pos = ct.get_position()

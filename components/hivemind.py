@@ -3,15 +3,21 @@ from enum import IntEnum
 from features import KNOWN_MAPS, MAP_ID_TO_NAME, WALL_LOCATIONS, ORE_LOCATIONS
 from vision import pack_vision_grid, unpack_vision_grid, pack_intel_slot, unpack_intel_slot, INT_TO_ENTITY, pack_infra, unpack_infra
 
+# (committed_mask << 16) | accumulating_mask — bit i set => builder index i alive.
+SLOT_LIVING_BUILDERS = 4
+
+
 class CoreState(IntEnum):
     UNKNOWN = 0
     ASSUMED = 1
     KNOWN = 2
 
+
 def pack_cores(ally_state, ally_x, ally_y, enemy_state, enemy_x, enemy_y) -> int:
     ally_bits = (ally_state << 14) | (ally_x << 7) | ally_y
     enemy_bits = (enemy_state << 14) | (enemy_x << 7) | enemy_y
     return (enemy_bits << 16) | ally_bits
+
 
 def unpack_cores(val: int):
     ally_bits = val & 0xFFFF
@@ -20,13 +26,59 @@ def unpack_cores(val: int):
     enemy = (CoreState(enemy_bits >> 14), (enemy_bits >> 7) & 0x7F, enemy_bits & 0x7F)
     return ally, enemy
 
+
+def _living_masks(val: int) -> tuple[int, int]:
+    return (val >> 16) & 0xFFFF, val & 0xFFFF
+
+
+def _pack_living_masks(committed: int, accum: int) -> int:
+    return ((committed & 0xFFFF) << 16) | (accum & 0xFFFF)
+
+
+def living_builder_count(ct: Controller) -> int:
+    """Alive builders from slot 4 (committed | accumulating heartbeat bits)."""
+    committed, accum = _living_masks(ct.read_store(SLOT_LIVING_BUILDERS))
+    return bin((committed | accum) & 0xFFFE).count("1")
+
+
+def _mark_builder_alive(ct: Controller, index: int) -> None:
+    """Set builder index bit in both masks (spawn / same-turn presence)."""
+    if index <= 0 or index > 15:
+        return
+    bit = 1 << index
+    committed, accum = _living_masks(ct.read_store(SLOT_LIVING_BUILDERS))
+    ct.write_store(SLOT_LIVING_BUILDERS, _pack_living_masks(committed | bit, accum | bit))
+
+
+def _heartbeat_living(ct: Controller, index: int) -> None:
+    """Metronome sole-writer: OR this index into the accumulating mask."""
+    if index <= 0 or index > 15:
+        return
+    bit = 1 << index
+    committed, accum = _living_masks(ct.read_store(SLOT_LIVING_BUILDERS))
+    ct.write_store(SLOT_LIVING_BUILDERS, _pack_living_masks(committed, accum | bit))
+
+
+def _commit_living_cycle(ct: Controller) -> None:
+    """End of metronome cycle: committed = who heartbeated; clear accum.
+
+    If nobody heartbeated (accum empty), keep the previous committed mask so
+    we do not wipe spawn marks and trigger a spawn storm.
+    """
+    committed, accum = _living_masks(ct.read_store(SLOT_LIVING_BUILDERS))
+    if accum == 0:
+        return
+    ct.write_store(SLOT_LIVING_BUILDERS, _pack_living_masks(accum, 0))
+
 class HiveMind:
     def __init__(self):
         self.local_map = {}
         self.global_turn = 0
         self.my_index = 0
+        self.birth_round: int | None = None
         self.map_id = 0
         self.map_name = "UNKNOWN"
+        self.enemy_core_pos = None  # set on fingerprint from KNOWN_MAPS
         self._map_detected = False
         self._walls_loaded = False
         self.last_communicated_infra = {}
@@ -47,6 +99,7 @@ class HiveMind:
         if fingerprint in KNOWN_MAPS:
             self.map_id, self.map_name, enemy_x, enemy_y = KNOWN_MAPS[fingerprint]
             enemy_state = CoreState.ASSUMED
+            self.enemy_core_pos = Position(enemy_x, enemy_y)
         
         print(f"HIVEMIND FINGERPRINT: {fingerprint} -> Map ID: {self.map_id} ({self.map_name})")
 
@@ -184,7 +237,9 @@ class HiveMind:
         if ct.can_spawn(pos):
             ct.spawn_builder(pos)
             total = ct.read_store(7)
-            ct.write_store(7, total + 1)
+            new_index = total + 1
+            ct.write_store(7, new_index)
+            _mark_builder_alive(ct, new_index)
             return True
         return False
 
@@ -195,9 +250,16 @@ class HiveMind:
         # 1. Sync global turn natively from the engine
         self.global_turn = ct.get_current_round()
 
-        # 2. Assign Builder Index on first turn alive
+        # 2. Assign builder index once the spawn write to slot 7 is visible.
+        # Store writes buffer one turn: reading on the spawn turn locks the
+        # previous total (k-1) forever. Claim exactly on birth_round + 1.
         if ct.get_entity_type() == EntityType.BUILDER_BOT and self.my_index == 0:
-            self.my_index = ct.read_store(7)
+            if self.birth_round is None:
+                self.birth_round = self.global_turn
+            elif self.global_turn == self.birth_round + 1:
+                idx = ct.read_store(7)
+                if idx > 0:
+                    self.my_index = idx
 
         # 3. Process Map Detection (Core Only)
         if is_core and self.global_turn == 0:
@@ -234,12 +296,18 @@ class HiveMind:
                 if current == 0:
                     current = 1
                 else:
-                    current = (current % total_builders) + 1
+                    nxt = (current % total_builders) + 1
+                    # Full cycle complete: commit heartbeats, drop dead indices.
+                    if nxt == 1:
+                        _commit_living_cycle(ct)
+                    current = nxt
                 ct.write_store(13, current)
 
         if not is_core and ct.get_entity_type() == EntityType.BUILDER_BOT:
             if self.my_index == ct.read_store(13):
                 if self.global_turn % 2 == 0:
+                    # Sole writer on even turns (core commits on odd) — heartbeat.
+                    _heartbeat_living(ct, self.my_index)
                     self._broadcast_vision(ct)
                 else:
                     self._broadcast_infrastructure(ct)

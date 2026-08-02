@@ -6,9 +6,10 @@ HiveMind `tick` and stuck tracking. Gate order: **raid path** → **defender**
 
 | Role | Who | Module |
 |------|-----|--------|
-| **economy** | Odd builders off the raid path (typically 1/3/5; also post-600 odds) | `logistics.py` (`ECONOMY`, `run_economy`) |
+| **economy** | Odd builders off the raid path (typically 1/3; also post-600 odds) | `logistics.py` (`ECONOMY`, `run_economy`) |
 | **phalanx** | Even builders (and pre-600 odds before their raider pivot) while `ACTIVE_RAID_ORDER = "phalanx"` | `defence.py` (`PHALANX`) |
 | **raiders** | Offensive siege when `effective_raid_order` is `"raiders"` | `attack.py` (`RAIDERS`) |
+| **harrass** | Index **5** once enemy core known until turn **300**, then raiders; or full order if `ACTIVE_RAID_ORDER = "harrass"` | `harrass.py` (`HARRASS`) |
 | **defender** | Late spawns `my_index >= 6` (when not on the raid path) | `defence.py` |
 
 `main.py` is the role menu: raid → defender → `run_economy`.
@@ -49,9 +50,10 @@ empty ores or steals; idle recheck may still re-relay **ally** harvesters.
 Constants: `HARVESTER_CAP_UNTIL_200`, `HARVESTER_CAP_UNTIL_500`,
 `HARVESTER_CAP_LIFT_TURN`, `HARVESTER_CAP_UNLIMITED_TURN` in `logistics.py`.
 
-Under default phalanx order, pre-600 **odd** economy builders pivot to
-**raiders** at turn **300** (fire-and-forget). Post-600 new odds stay on
-economy (unlimited after 500).
+Under default phalanx order, pre-600 **odd** economy builders (1/3) pivot to
+**raiders** at turn **300** (fire-and-forget). Index **5** harrasses until
+300, then joins that pivot. Post-600 new odds stay on economy (unlimited
+after 500).
 
 ---
 
@@ -101,6 +103,23 @@ Named phases (`RAIDERS`):
 
 Ammo from turn 30 (or turn 10 under phalanx): core tops pool to
 `5 + 20 × max(1, n)` living in slot 3.
+
+---
+
+## harrass
+
+Harvester siege (`harrass.py`). Named phases (`HARRASS`):
+
+1. **siege_enemy_harvester** — same as raiders: if an enemy harvester is in
+   vision and no ally gunner already covers it within gunner range, place a
+   gunner on an empty tile in range (prefer closer; index-staggered), facing
+   the harvester (`attack._run_siege_enemy_harvester`).
+2. **seek_harvesters** — when siege has no site: hunt enemy gunner → sentinel
+   → harvester → belt in vision; else push enemy core (`attack._run_raid_hunt`).
+
+**Assignment under phalanx:** builder index **5** (`HARRASS_INDEX`) once the
+enemy core is known, until turn **300**, then joins the odd **raiders** pivot.
+Also available as a full raid order via `ACTIVE_RAID_ORDER = "harrass"`.
 
 ---
 
