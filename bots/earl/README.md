@@ -6,11 +6,13 @@ belts to the **ally** core only. **Even builders** run the active raid order
 gunners in `defence.py`; pre-600 **odd** builders pivot to raiders at **300**,
 pre-600 **even** at **600**, fire-and-forget; post-600 odds → economy, post-600
 evens → phalanx); set to **`raiders`** for the old offensive belt-raid →
-gunner/sentinel siege loop (`attack.py`). Economy builders (1/3/5) mine under
-a staged harvester cap (**3** until 200, **5** until 500, then unlimited) in
+gunner/sentinel siege loop (`attack.py`); set to **`harrass`** for harvester
+siege + seek (`harrass.py`). Economy builders (1/3/5) mine under a staged
+harvester cap (**3** until 200, **5** until 500, then unlimited) in
 [`logistics.py`](logistics.py) and idle-recheck ore every 50 turns; late
 spawns 6+ defend and lay a home apron (`defence.py`). Full role task lists:
-[`role.md`](role.md). Core tops ammo from turn 10 (phalanx) or 30 (raiders).
+[`role.md`](role.md). Core tops ammo from turn 10 (phalanx) or 30 (raiders /
+harrass).
 
 ## Store slots
 
@@ -52,8 +54,8 @@ living-cap early return). Phalanx starts at turn **10**; raiders at **30**.
 Each turn (`_run_builder`), after HiveMind `tick` and stuck tracking. Role
 details and phase lists live in [`role.md`](role.md).
 
-0. **Raid gate** — `on_raid_tasklist` → `ACTIVE_RAID_ORDER` (`phalanx` or
-   `raiders`); abort relay/ore; move toward site and return.
+0. **Raid gate** — `on_raid_tasklist` → `ACTIVE_RAID_ORDER` (`harrass`,
+   `phalanx`, or `raiders`); abort relay/ore; move toward site and return.
 1. **Defender gate** (`my_index >= 6`) → `defence.py` side apron / linger.
 2. **Economy** (`run_economy` / `ECONOMY` in `logistics.py`) — odd builders
    off the raid path:
@@ -146,6 +148,17 @@ Examples: gunners 30–49, sentinels 50–69, gunners 70–89, …
 - **Gunner fire:** core → gunner → sentinel → builder → harvester → belts.
   Rotates toward core or combat targets in vision when off the fire line.
 - **Sentinel fire:** core → gunner → sentinel → builder → harvester (fixed facing).
+
+### Harrass (`harrass.py`)
+
+Packaged as the `HARRASS` task list (`run_harrasser`). Under default
+**phalanx**, builder **index 5** runs this once the enemy core is known until
+turn **300**, then joins the odd raiders pivot. Also selectable as
+`ACTIVE_RAID_ORDER = "harrass"` for the full even raid path.
+
+1. **Siege enemy harvester** — reuse `attack._run_siege_enemy_harvester`.
+2. **Seek harvesters** — when no siege site: reuse `attack._run_raid_hunt`
+   (hunt gunner → sentinel → harvester → belt; else push enemy core).
 
 ### Ore targeting
 
