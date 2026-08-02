@@ -6,9 +6,11 @@ belts to the **ally** core only. **Even builders** run the active raid order
 gunners in `defence.py`; pre-600 **odd** builders pivot to raiders at **300**,
 pre-600 **even** at **600**, fire-and-forget; post-600 odds → economy, post-600
 evens → phalanx); set to **`raiders`** for the old offensive belt-raid →
-gunner/sentinel siege loop (`attack.py`). Builders 1/3/5 stay on
-economy (idle ore recheck every 50 turns); late spawns 6+ defend and lay a home
-apron (`defence.py`). Core tops ammo from turn 10 (phalanx) or 30 (raiders).
+gunner/sentinel siege loop (`attack.py`). Economy builders (1/3/5) mine under
+a staged harvester cap (**3** until 200, **5** until 500, then unlimited) in
+[`logistics.py`](logistics.py) and idle-recheck ore every 50 turns; late
+spawns 6+ defend and lay a home apron (`defence.py`). Full role task lists:
+[`role.md`](role.md). Core tops ammo from turn 10 (phalanx) or 30 (raiders).
 
 ## Store slots
 
@@ -47,35 +49,30 @@ living-cap early return). Phalanx starts at turn **10**; raiders at **30**.
 
 ## Builder task order
 
-Each turn (`_run_builder`), after HiveMind `tick` and stuck tracking:
+Each turn (`_run_builder`), after HiveMind `tick` and stuck tracking. Role
+details and phase lists live in [`role.md`](role.md).
 
-0. **Defender gate** (`my_index >= 6`) → `defence.py`, each on an assigned
-   core side (`N→E→S→W`; in-bounds sides only — corner maps with 2 sides get
-   **two defenders per side** via `(index - 6) % len(sides)`):
-   1. **Enemy gunner in vision** — fire if orthogonally adjacent, else move
-      toward it (skip the rest this turn).
-   2. **Heal** adjacent friendlies.
-   3. **Fire** adjacent enemy buildings (not builder bots).
-   4. **Apron** on assigned side only: 3-deep inward conveyors (no barriers);
-      repair forever when missing.
-   5. **Linger** on that side’s depth-1 strip.
-   No ore / relay / siege. Wing gunners are phalanx-only.
-1. **Raider gate** (even `my_index`, enemy core known, any turn) → abort any
-   relay/ore task; run `ACTIVE_RAID_ORDER` (`phalanx` or `raiders`); move toward
-   the chosen site and return. Odd builders (1/3/5) keep the economy loop below.
-2. **Idle ore recheck** (not in relay, every 50 turns): clear `skipped_ores` /
-   `ore_site` and allow ally-harvester candidates so broken inbound belts can be
-   rebuilt. Does not abort a live relay.
-3. **If `in_relay`** → only run inbound relay (`_relay_toward_core`); return.
-4. **Ore-site task** (`_try_ore_site_task`) — sticky `ore_site` via `_pick_ore_site`:
-   - Empty → step off if on tile; adjacent → build harvester, then enter inbound relay.
-   - Any harvester (ally or enemy) → enter inbound relay (steal / claim / re-relay).
-   - Enemy belt on ore → stand on tile and `fire`.
-   - Allied belt on ore → adjacent `destroy`, then treat as empty next turns.
-   - Blocked → skip ore, pick another.
-5. **If relay just started** → run `_relay_toward_core`; return.
-6. **Heal** adjacent damaged friendlies (if action free).
-7. **Move** toward `ore_site` / `_pick_target` (no pave-while-walking).
+0. **Raid gate** — `on_raid_tasklist` → `ACTIVE_RAID_ORDER` (`phalanx` or
+   `raiders`); abort relay/ore; move toward site and return.
+1. **Defender gate** (`my_index >= 6`) → `defence.py` side apron / linger.
+2. **Economy** (`run_economy` / `ECONOMY` in `logistics.py`) — odd builders
+   off the raid path:
+   1. **If `in_relay`** → finish inbound relay (always, even at harvester cap).
+   2. **Idle ore recheck** (every 50 turns): clear skips; allow ally-harvester
+      chain repair. While at cap, do **not** seek new empty/steal sites.
+   3. **Ore-site task** — build / steal / clear belts (skipped when at cap
+      unless site is already a harvester for re-relay).
+   4. **Heal** → **move** toward site.
+
+### Harvester caps (economy)
+
+Built count from slot 2. At cap: finish active chains only; no new seeks.
+
+| Rounds | Cap |
+|--------|-----|
+| `< 200` | 3 |
+| `200–499` | 5 |
+| `≥ 500` | unlimited |
 
 ### Phalanx (`defence.py`) — default (`ACTIVE_RAID_ORDER = "phalanx"`)
 
@@ -91,7 +88,7 @@ Even builders stay home once the enemy core is known:
 3. **Assist apron** on the enemy approach side: 3-deep inward conveyors (no
    barriers).
 4. **Guard harvesters**: place **1 gunner** cardinally beside each ally harvester
-   within Chebyshev **15** of the core footprint (skip apron/core tiles; face
+   within Chebyshev **20** of the core footprint (skip apron/core tiles; face
    enemy). Stagger raiders across missing pads.
 5. **Clear economy** — if an enemy harvester is in vision, fire when adjacent
    else move to it; else path onto the nearest enemy belt and stand-fire.
@@ -123,10 +120,13 @@ harvester → belts; rotates toward core/combat in vision).
 Packaged as the `RAIDERS` task list (`run_raiders_tasklist` /
 `run_attack_builder`). Once the enemy core is known (`my_index` even, > 0):
 
-1. **Belt raid** (`round < 30`): head toward the enemy core; if an enemy
+1. **Siege enemy harvester** (top priority): if an enemy harvester is in vision
+   and no ally gunner covers it within gunner range, place a gunner on an empty
+   tile in range facing the harvester (index-staggered).
+2. **Belt raid** (`round < 30`): head toward the enemy core; if an enemy
    conveyor/splitter is in vision, divert to the **nearest** one and stand-fire
    (builders fire own tile only); then resume toward the core.
-2. **Siege loop** (from turn 30, every **40** turns):
+3. **Siege loop** (from turn 30, every **40** turns):
    - **Gunners** (first **20** turns of each cycle): place up to **3** ally
      gunners on empty tiles at Chebyshev distance **1–3** from the enemy 2×2
      footprint (**prefer closer**); **face into the known enemy core** (nearest
@@ -135,7 +135,7 @@ Packaged as the `RAIDERS` task list (`run_raiders_tasklist` /
    - **Sentinels** (last **20** turns of each cycle): place up to **5** siege
      sentinels at r² 16–32 facing into the enemy core (prefer max range); if no
      site fits, fall back to ~**3** tiles from the footprint; sync count to slot 3.
-3. **Hunt vision** (when gunner/sentinel placement is idle at cap): attack the
+4. **Hunt vision** (when gunner/sentinel placement is idle at cap): attack the
    nearest enemy **gunner → sentinel → harvester → belt** in vision (adjacent
    fire for buildings; stand-fire for belts); else push the enemy core.
 
@@ -153,6 +153,8 @@ Examples: gunners 30–49, sentinels 50–69, gunners 70–89, …
 - Prefer empty ore, then enemy/unknown harvester (steal).
 - Skip our harvesters and locally finished sites (`skipped_ores`), except on
   idle recheck when ally harvesters are allowed so inbound relays can be fixed.
+- While at the economy harvester cap, empty/steal picks are disabled; ally
+  recheck for chain repair still runs.
 - **Builder stagger:** each builder uses HiveMind `my_index` and takes the
   `(my_index - 1) % n`-th nearest eligible ore (builder 1 → nearest, builder 2
   → 2nd, …). Stops everyone racing the same node. Unregistered index `0` falls
@@ -167,9 +169,10 @@ finds no path. Relays search layable/joinable tiles toward the ally core.
 ### Inbound relay
 
 After building or claiming a harvester, A\* a conveyor path to an **ally**
-core-adjacent tile (`is_core_adjacent` requires our team). Entry side is
-**staggered by builder index** across in-bounds core faces (depth-1), falling
-back to any core-adjacent tile if that face is unreachable. If a path onto a
+core-adjacent tile (`is_core_adjacent` requires our team). Entry prefers the
+**nearest** core face; builder-index side stagger is only a tiebreak when
+lengths match (avoids routing around the core and tearing up inbound belts).
+Falling back to any core-adjacent tile if that face is unreachable. If a path onto a
 **visible allied belt** at least Chebyshev **4** from the core is at least
 **8** tiles shorter than the core path, prefer that merge spur instead (build
 up to the join; do not rebuild the existing network). Near-core / apron belts
