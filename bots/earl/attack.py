@@ -8,6 +8,9 @@ ACTIVE_RAID_ORDER = "raiders" in main.py (also after phalanx pivots):
   - From GUNNER_TURN: repeating RAID_LOOP — first GUNNER_PHASE_LEN turns place
     gunners, remainder place siege sentinels; when placement is idle (at cap),
     hunt enemy gunners / sentinels / harvesters / belts in vision.
+  - After PHALANX_RAID_PIVOT_TURN (300), the loop epoch restarts so the odd
+    pivot gets a fresh gunner→sentinel window. Siege gunner cap counts only
+    pads near the enemy core (home wings do not fill the cap).
 
 Default ACTIVE_RAID_ORDER is "phalanx" (home apron + wing gunners in defence.py).
 
@@ -26,6 +29,8 @@ from fcode import Controller, Direction, EntityType, Environment, Position
 GUNNER_TURN = 30
 RAID_LOOP = 40
 GUNNER_PHASE_LEN = 20  # first half of each loop
+# Mirror main.PHALANX_ODD_TO_RAIDERS_TURN — restart siege loop at odd pivot.
+PHALANX_RAID_PIVOT_TURN = 300
 MAX_CORE_GUNNERS = 3
 MAX_SIEGE_SENTINELS = 5
 SENTINEL_RANGE_SQ = 32
@@ -203,6 +208,23 @@ def count_our_gunners(local_map: dict, my_team) -> int:
             and ent.get("type") == EntityType.GUNNER
             and ent.get("team") == my_team
         ):
+            count += 1
+    return count
+
+
+def count_siege_gunners(local_map: dict, my_team, enemy_core: Position) -> int:
+    """Ally gunners within Chebyshev GUNNER_PLACE_MAX of the enemy 2×2."""
+    footprint = _core_footprint(enemy_core)
+    count = 0
+    for (x, y), info in local_map.items():
+        ent = info.get("entity") if isinstance(info, dict) else None
+        if (
+            not ent
+            or ent.get("type") != EntityType.GUNNER
+            or ent.get("team") != my_team
+        ):
+            continue
+        if _chebyshev_to_footprint(Position(x, y), footprint) <= GUNNER_PLACE_MAX:
             count += 1
     return count
 
@@ -816,7 +838,7 @@ def _run_gunner_phase(
     if _try_stand_fire_belt(ct):
         return ct.get_position()
 
-    if count_our_gunners(local_map, ct.get_team()) >= MAX_CORE_GUNNERS:
+    if count_siege_gunners(local_map, ct.get_team(), enemy_core) >= MAX_CORE_GUNNERS:
         return None
 
     site = pick_gunner_site(
@@ -963,7 +985,14 @@ def run_raiders_tasklist(
     round_n = ct.get_current_round()
     if round_n < GUNNER_TURN:
         return _run_belt_raid(ct, enemy_core=enemy_core)
-    cycle_t = (round_n - GUNNER_TURN) % RAID_LOOP
+    # After phalanx odd-pivot, restart the 40-turn loop so walkers get a full
+    # gunner window then sentinels (not a mid-cycle sentinel stub).
+    epoch = (
+        PHALANX_RAID_PIVOT_TURN
+        if round_n >= PHALANX_RAID_PIVOT_TURN
+        else GUNNER_TURN
+    )
+    cycle_t = (round_n - epoch) % RAID_LOOP
     if cycle_t < GUNNER_PHASE_LEN:
         site = _run_gunner_phase(
             ct,

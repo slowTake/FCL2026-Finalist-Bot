@@ -7,7 +7,8 @@ gunners in `defence.py`; pre-600 **odd** builders pivot to raiders at **300**,
 pre-600 **even** at **600**, fire-and-forget; post-600 odds → economy, post-600
 evens → phalanx); set to **`raiders`** for the old offensive belt-raid →
 gunner/sentinel siege loop (`attack.py`); set to **`harrass`** for harvester
-siege + seek (`harrass.py`). Economy builders (1/3; index 5 harrasses) mine under a staged
+siege + seek (`harrass.py`). Economy builders (1/3; index 5 harrasses — phalanx
+home until 50) mine under a staged
 harvester cap (**3** until 200, **5** until 500, then unlimited) in
 [`logistics.py`](logistics.py) and idle-recheck ore every 50 turns; late
 spawns 6+ defend and lay a home apron (`defence.py`). Full role task lists:
@@ -18,8 +19,8 @@ harrass).
 
 | Slot | Owner | Purpose |
 |------|-------|---------|
-| 0 | Player | `SLOT_RELAY_COMPLETE` — 1 after first inbound relay finishes (unlocks wing guns) |
-| 1 | — | Free |
+| 0 | Player | `SLOT_RELAY_COMPLETE` — 1 after first inbound relay finishes |
+| 1 | Player | `SLOT_PHALANX_BUILDER_THREAT` — 0 off; `1+side` arms wings/apron (20-turn sticky from core) |
 | 2 | Player | `SLOT_HARVESTER_COUNT` — total harvesters we built |
 | 3 | Player | `SLOT_SENTINEL_COUNT` — living phalanx wing/guard gunners or siege sentinels (bookkeeping) |
 | 4–6 | — | Free |
@@ -42,8 +43,8 @@ ASSUMED/KNOWN. Unknown maps fall back to map center. Tries candidates via
 `hivemind.spawn_builder` / `can_spawn`.
 
 **Schedule:** rush the first **5** as soon as Ti allows, then spawn **one more
-every 25 turns** starting at turn **10**, up to **9** (`spawn_target`).
-After 9, grow **one every 50 turns** up to **15**. After 15, grow **one
+every 25 turns** starting at turn **10**, up to **7** (`spawn_target`).
+After 7, grow **one every 50 turns** up to **9**. After 9, grow **one
 every 200 turns** as a late fallback (until `MAX_TEAM_UNITS`). From turn
 **75**, **replace ASAP** when a builder vanishes from *interior* core vision
 (leaving the fog edge does not count — that was causing replenish spam).
@@ -88,21 +89,19 @@ Even builders stay home once the enemy core is known:
 
 1. **Hunt turrets** — if an enemy gunner or sentinel is in vision, fire if
    orthogonally adjacent, else move to attack it.
-2. **Place wing gunners** from turn **10**, but only after slot 0 shows a
-   finished inbound relay: fill **every in-bounds side**
-   (not only the approach). Depth rings fill before stacking (all sides get
-   depth-1 before approach depth-2); within a depth prefer the enemy approach
-   side. Up to **4 pads per flank** at depths 1–4; face toward the enemy;
-   sync living count to slot 3. Raiders stagger across missing pads.
-3. **Assist apron** on the enemy approach side: 3-deep inward conveyors (no
-   barriers).
+2. **Place wing gunners** while threat is armed — core slot **1** (sticky
+   **20** turns) **or** this builder sees an enemy builder (same turn): pads
+   on that **threat side** (depths 1–4, fog OK to path); nearest open pad
+   (no stagger); face toward the enemy; sync living count to slot 3. Until
+   then, skip (soft-idle at home).
+3. **Assist apron** on the **threat side** while armed: 3-deep
+   inward conveyors (no barriers; `LAY_APRON_BELTS` currently **off**).
 4. **Guard harvesters**: place **1 gunner** cardinally beside each ally harvester
    within Chebyshev **20** of the core footprint (skip apron/core tiles; face
-   enemy). Stagger raiders across missing pads.
+   enemy). From turn **10**. Stagger raiders across missing pads.
 5. **Clear economy** — if an enemy harvester is in vision, fire when adjacent
    else move to it; else path onto the nearest enemy belt and stand-fire.
-6. **Soft idle** — repair missing apron / rebuild dead pads; otherwise linger on
-   the approach depth-1 strip.
+6. **Soft idle** — linger on threat/approach depth-1 strip.
 
 While an enemy gunner/sentinel is in **core vision**, threat-spawn extras
 are **off** by default (`SPAWN_EXTRA_UNDER_THREAT`); set that flag to raise
@@ -134,12 +133,13 @@ Packaged as the `RAIDERS` task list (`run_raiders_tasklist` /
 2. **Belt raid** (`round < 30`): head toward the enemy core; if an enemy
    conveyor/splitter is in vision, divert to the **nearest** one and stand-fire
    (builders fire own tile only); then resume toward the core.
-3. **Siege loop** (from turn 30, every **40** turns):
-   - **Gunners** (first **20** turns of each cycle): place up to **3** ally
-     gunners on empty tiles at Chebyshev distance **1–3** from the enemy 2×2
-     footprint (**prefer closer**); only sites that can **actually hit** the
-     core (`can_fire_from`, cardinals before diagonals); raiders side-stagger.
-     Still stand-fire if on a belt.
+3. **Siege loop** (from turn 30, every **40** turns; from turn **300** the
+   epoch restarts so odd-pivot raiders get a fresh gunner→sentinel window):
+   - **Gunners** (first **20** turns of each cycle): place up to **3** siege
+     gunners (count only pads within Chebyshev **3** of the enemy 2×2 — home
+     wings do not fill the cap) on empty tiles at distance **1–3**; only sites
+     that can **actually hit** the core (`can_fire_from`, cardinals before
+     diagonals); raiders side-stagger. Still stand-fire if on a belt.
    - **Sentinels** (last **20** turns of each cycle): place up to **5** siege
      sentinels at r² 16–32 facing into the enemy core (prefer max range); if no
      site fits, fall back to ~**3** tiles from the footprint; sync count to slot 3.
@@ -147,7 +147,8 @@ Packaged as the `RAIDERS` task list (`run_raiders_tasklist` /
    nearest enemy **gunner → sentinel → harvester → belt** in vision (adjacent
    fire for buildings; stand-fire for belts); else push the enemy core.
 
-Examples: gunners 30–49, sentinels 50–69, gunners 70–89, …
+Examples: gunners 30–49, sentinels 50–69, …; after 300: gunners 300–319,
+sentinels 320–339, …
 
 - **Ammo:** from turn 30 (phalanx: 10), core keeps pool at
   `12 + 2×gunners + 10×sentinels` from known ally turrets in `local_map`.
@@ -163,8 +164,10 @@ Packaged as the `HARRASS` task list (`run_harrasser`). Under default
 turn **300**, then joins the odd raiders pivot. Also selectable as
 `ACTIVE_RAID_ORDER = "harrass"` for the full even raid path.
 
-1. **Siege enemy harvester** — reuse `attack._run_siege_enemy_harvester`.
-2. **Seek harvesters** — when no siege site: reuse `attack._run_raid_hunt`
+1. **Phalanx home** (`round < 50`) — same duties as phalanx until
+   `HARRASS_START_TURN`.
+2. **Siege enemy harvester** — reuse `attack._run_siege_enemy_harvester`.
+3. **Seek harvesters** — when no siege site: reuse `attack._run_raid_hunt`
    (hunt gunner → sentinel → harvester → belt; else push enemy core).
 
 ### Ore targeting

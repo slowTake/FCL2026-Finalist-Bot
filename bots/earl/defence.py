@@ -5,11 +5,10 @@ enemy gunners in vision, heal, fire, then lay a per-side inward apron
 (3-deep belts, no barriers).
 
 Even builders may run PHALANX (see ACTIVE_RAID_ORDER in main): hunt enemy
-gunners/sentinels, fill wing gunners on all in-bounds sides once a team
-inbound relay has completed (and from round 10; depth rings; approach side
-first within each depth), then approach apron, then one gunner beside each
-nearby ally harvester, clear encroaching enemy harvesters/belts in vision,
-then soft-idle.
+gunners/sentinels; wing gunners and approach apron only while the core's
+sticky builder-threat switch is armed (enemy builder seen in core vision);
+then one gunner beside each nearby ally harvester, clear encroaching enemy
+harvesters/belts in vision, then soft-idle.
 """
 
 from __future__ import annotations
@@ -20,12 +19,15 @@ from attack import (
     _try_stand_fire_belt,
     build_gunner,
 )
-from fcode import Controller, Direction, EntityType, Position
+from fcode import Controller, Direction, EntityType, Environment, Position
 
 DEFENDER_MIN_INDEX = 6  # indices 6+
 
-# Sticky: set when any inbound relay finishes (unlocks wing gunners).
+# Sticky: set when any inbound relay finishes (economy / docs).
 SLOT_RELAY_COMPLETE = 0
+# Core-written: 0 = off; 1+side = phalanx wings/apron armed on that cardinal.
+SLOT_PHALANX_BUILDER_THREAT = 1
+PHALANX_THREAT_STICKY_TURNS = 20
 
 
 def team_has_complete_relay(ct: Controller) -> bool:
@@ -34,7 +36,7 @@ def team_has_complete_relay(ct: Controller) -> bool:
 
 
 def mark_relay_complete(ct: Controller) -> None:
-    """Sticky team flag: first finished relay unlocks phalanx apron guns."""
+    """Sticky team flag: first finished inbound relay."""
     ct.write_store(SLOT_RELAY_COMPLETE, 1)
 
 # Cardinal sides around the core, assignment order N → E → S → W
@@ -110,6 +112,17 @@ def _has_allied_gunner(ct: Controller, pos: Position) -> bool:
     )
 
 
+def _gunner_pad_ok(ct: Controller, tile: Position, *, allow_ally_gunner: bool) -> bool:
+    """True if tile is a valid wing/guard pad (not ore/wall; empty or ally gunner)."""
+    if not ct.is_in_vision(tile):
+        return False
+    if ct.get_tile_env(tile) != Environment.EMPTY:
+        return False
+    if ct.is_tile_empty(tile):
+        return True
+    return allow_ally_gunner and _has_allied_gunner(ct, tile)
+
+
 def side_conveyor_specs(
     core_pos: Position, side: int
 ) -> list[tuple[Position, Direction]]:
@@ -169,6 +182,102 @@ def enemy_approach_side(ally_core: Position, enemy_core: Position) -> int:
     return SIDE_S if dy >= 0 else SIDE_N
 
 
+def side_toward(ally_core: Position, target: Position) -> int:
+    """Dominant cardinal from ally 2×2 center toward a tile (e.g. enemy builder)."""
+    cx = ally_core.x + 0.5
+    cy = ally_core.y + 0.5
+    dx = (target.x + 0.5) - cx
+    dy = (target.y + 0.5) - cy
+    if abs(dx) >= abs(dy):
+        return SIDE_E if dx >= 0 else SIDE_W
+    return SIDE_S if dy >= 0 else SIDE_N
+
+
+def clear_phalanx_builder_threat(ct: Controller) -> None:
+    ct.write_store(SLOT_PHALANX_BUILDER_THREAT, 0)
+
+
+def phalanx_builder_threat(ct: Controller) -> int | None:
+    """Armed threat side from slot 1, or None if off."""
+    val = ct.read_store(SLOT_PHALANX_BUILDER_THREAT)
+    if val <= 0:
+        return None
+    side = val - 1
+    if side not in SIDE_ORDER:
+        return None
+    return side
+
+
+def _nearest_enemy_builder(ct: Controller) -> Position | None:
+    """Nearest enemy builder bot in this unit's vision."""
+    my_team = ct.get_team()
+    pos = ct.get_position()
+    best: Position | None = None
+    best_dist = 10**9
+    for eid in ct.get_nearby_entities():
+        if ct.get_entity_type(eid) != EntityType.BUILDER_BOT:
+            continue
+        if ct.get_team(eid) == my_team:
+            continue
+        tpos = ct.get_position(eid)
+        dist = pos.distance_squared(tpos)
+        if dist < best_dist:
+            best_dist = dist
+            best = tpos
+    return best
+
+
+def resolve_phalanx_threat_side(
+    ct: Controller, ally_core: Position
+) -> int | None:
+    """Core sticky slot, or same-turn side from a locally seen enemy builder."""
+    side = phalanx_builder_threat(ct)
+    if side is not None:
+        return side
+    builder = _nearest_enemy_builder(ct)
+    if builder is None:
+        return None
+    return side_toward(ally_core, builder)
+
+
+def update_phalanx_builder_threat(
+    ct: Controller,
+    *,
+    sticky_until: int,
+    last_side: int,
+) -> tuple[int, int]:
+    """Core: arm/refresh sticky threat from enemy builders in vision; write slot 1.
+
+    Returns updated (sticky_until, side).
+    """
+    round_n = ct.get_current_round()
+    core_pos = ct.get_position()
+    my_team = ct.get_team()
+    best: Position | None = None
+    best_dist = 10**9
+    for eid in ct.get_nearby_entities():
+        if ct.get_entity_type(eid) != EntityType.BUILDER_BOT:
+            continue
+        if ct.get_team(eid) == my_team:
+            continue
+        pos = ct.get_position(eid)
+        dist = core_pos.distance_squared(pos)
+        if dist < best_dist:
+            best_dist = dist
+            best = pos
+
+    if best is not None:
+        last_side = side_toward(core_pos, best)
+        sticky_until = round_n + PHALANX_THREAT_STICKY_TURNS
+
+    if round_n <= sticky_until and last_side in SIDE_ORDER:
+        ct.write_store(SLOT_PHALANX_BUILDER_THREAT, 1 + last_side)
+    else:
+        ct.write_store(SLOT_PHALANX_BUILDER_THREAT, 0)
+
+    return sticky_until, last_side
+
+
 def side_wing_tiles(core_pos: Position, side: int) -> list[Position]:
     """Flank columns/rows beside the belt strip — 4 pads per wing."""
     tiles: list[Position] = []
@@ -215,12 +324,55 @@ def phalanx_gunner_sites(
     for tile in side_wing_tiles(core_pos, side):
         if not _in_bounds(ct, tile):
             continue
-        if not ct.is_in_vision(tile):
-            continue
-        if not ct.is_tile_empty(tile) and not _has_allied_gunner(ct, tile):
+        if not _gunner_pad_ok(ct, tile, allow_ally_gunner=True):
             continue
         sites.append(tile)
     return sites
+
+
+def phalanx_threat_wing_targets(
+    ct: Controller,
+    core_pos: Position,
+    side: int,
+    local_map: dict,
+) -> tuple[list[Position], int]:
+    """Open wing pads on threat side (depth-1 first). Fogged pads stay walk targets.
+
+    Returns (targets needing a gunner, count of in-vision ally gunners on pads).
+    """
+    my_team = ct.get_team()
+    targets: list[Position] = []
+    living = 0
+    for depth in WING_DEPTHS:
+        for tile in side_wing_tiles_at_depth(core_pos, side, depth):
+            if not _in_bounds(ct, tile):
+                continue
+            key = (tile.x, tile.y)
+            if ct.is_in_vision(tile):
+                if _has_allied_gunner(ct, tile):
+                    living += 1
+                    continue
+                if ct.get_tile_env(tile) != Environment.EMPTY:
+                    continue
+                if not ct.is_tile_empty(tile):
+                    continue
+            else:
+                ent = local_map.get(key, {}).get("entity")
+                if (
+                    ent
+                    and ent.get("type") == EntityType.GUNNER
+                    and ent.get("team") == my_team
+                ):
+                    living += 1
+                    continue
+            targets.append(tile)
+    return targets, living
+
+
+def _nearest_wing_pad(pos: Position, pads: list[Position]) -> Position | None:
+    if not pads:
+        return None
+    return min(pads, key=lambda t: pos.distance_squared(t))
 
 
 def phalanx_all_gunner_sites(
@@ -251,9 +403,7 @@ def phalanx_all_gunner_sites(
                     continue
                 if not _in_bounds(ct, tile):
                     continue
-                if not ct.is_in_vision(tile):
-                    continue
-                if not ct.is_tile_empty(tile) and not _has_allied_gunner(ct, tile):
+                if not _gunner_pad_ok(ct, tile, allow_ally_gunner=True):
                     continue
                 seen.add(key)
                 sites.append(tile)
@@ -263,8 +413,8 @@ def phalanx_all_gunner_sites(
 def phalanx_missing_gunner_sites(
     ct: Controller, sites: list[Position]
 ) -> list[Position]:
-    """Wings in vision that still need a gunner (empty)."""
-    return [s for s in sites if ct.is_tile_empty(s)]
+    """Wings in vision that still need a gunner (empty, not ore)."""
+    return [s for s in sites if _gunner_pad_ok(ct, s, allow_ally_gunner=False)]
 
 
 def _apron_incomplete(ct: Controller, core_pos: Position, side: int) -> bool:
@@ -587,7 +737,7 @@ def _pick_harvester_gunner_site(
         if ct.is_in_vision(cand):
             if _has_allied_gunner(ct, cand):
                 return cand
-            if not ct.is_tile_empty(cand):
+            if not _gunner_pad_ok(ct, cand, allow_ally_gunner=False):
                 continue
         toward = cand.distance_squared(enemy_core)
         score = (toward, abs(cand.x - harvester.x) + abs(cand.y - harvester.y))
@@ -636,44 +786,46 @@ def run_phalanx(
     enemy_core: Position,
     ally_core: Position | None,
 ) -> Position | None:
-    """PHALANX: turrets → wings → apron → guards → clear economy → idle."""
+    """PHALANX: turrets → threat wings/apron → guards → clear → idle."""
     if ally_core is None:
         return None
 
-    side = enemy_approach_side(ally_core, enemy_core)
+    threat_side = resolve_phalanx_threat_side(ct, ally_core)
+    hold_side = (
+        threat_side
+        if threat_side is not None
+        else enemy_approach_side(ally_core, enemy_core)
+    )
 
     # 1. Attack nearby enemy gunners / sentinels first.
-    threat = _nearest_enemy_turret(ct)
-    if threat is not None:
-        if _try_fire_tile(ct, threat):
-            return _defence_hold_target(ct, ally_core, side)
-        return threat
+    turret = _nearest_enemy_turret(ct)
+    if turret is not None:
+        if _try_fire_tile(ct, turret):
+            return _defence_hold_target(ct, ally_core, hold_side)
+        return turret
 
     round_n = ct.get_current_round()
+    wing_living = 0
 
-    # 2. Wing gunners once an inbound relay has reached the core.
-    sites = phalanx_all_gunner_sites(ct, ally_core, side)
-    wing_living = sum(1 for s in sites if _has_allied_gunner(ct, s))
-    missing = phalanx_missing_gunner_sites(ct, sites)
-    if (
-        round_n >= PHALANX_GUNNER_TURN
-        and team_has_complete_relay(ct)
-        and missing
-    ):
-        site = _phalanx_assigned_site(my_index, missing)
-        if site is not None:
-            pos = ct.get_position()
-            if abs(pos.x - site.x) + abs(pos.y - site.y) == 1:
-                if build_gunner(ct, site, enemy_core):
-                    wing_living += 1
-            ct.write_store(SLOT_SENTINEL_COUNT, wing_living)
-            return site
+    # 2–3. Wing gunners + apron while threat armed (store sticky or local sight).
+    if threat_side is not None:
+        targets, wing_living = phalanx_threat_wing_targets(
+            ct, ally_core, threat_side, local_map
+        )
+        if targets:
+            site = _nearest_wing_pad(ct.get_position(), targets)
+            if site is not None:
+                pos = ct.get_position()
+                if abs(pos.x - site.x) + abs(pos.y - site.y) == 1:
+                    if build_gunner(ct, site, enemy_core):
+                        wing_living += 1
+                ct.write_store(SLOT_SENTINEL_COUNT, wing_living)
+                return site
 
-    # 3. Approach-side apron belts.
-    if _phalanx_apron_incomplete(ct, ally_core, side):
-        if _phalanx_try_apron(ct, core_pos=ally_core, side=side):
-            return None
-        return _defence_hold_target(ct, ally_core, side)
+        if _phalanx_apron_incomplete(ct, ally_core, threat_side):
+            if _phalanx_try_apron(ct, core_pos=ally_core, side=threat_side):
+                return None
+            return _defence_hold_target(ct, ally_core, threat_side)
 
     harvesters = _allied_harvesters_near_core(ct, ally_core, local_map)
     guard_living = sum(1 for h in harvesters if _harvester_has_gunner(ct, h))
@@ -700,7 +852,7 @@ def run_phalanx(
     if clear is not None:
         return clear
 
-    return _defence_hold_target(ct, ally_core, side)
+    return _defence_hold_target(ct, ally_core, hold_side)
 
 
 def run_defender(
