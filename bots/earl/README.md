@@ -21,7 +21,7 @@ harrass).
 | 0 | Player | `SLOT_RELAY_COMPLETE` — 1 after first inbound relay finishes (unlocks wing guns) |
 | 1 | — | Free |
 | 2 | Player | `SLOT_HARVESTER_COUNT` — total harvesters we built |
-| 3 | Player | `SLOT_SENTINEL_COUNT` — living phalanx wing gunners or siege sentinels (ammo) |
+| 3 | Player | `SLOT_SENTINEL_COUNT` — living phalanx wing/guard gunners or siege sentinels (bookkeeping) |
 | 4–6 | — | Free |
 | 7 | HiveMind | Builder registry count (spawn increments; builders claim as `my_index` on the turn after birth — store write buffer) |
 | 8–9 | HiveMind | Packed enemy intel (up to 4 targets) |
@@ -51,8 +51,9 @@ Before 75, only the scheduled growth gates run. Turret threat does **not**
 raise the early cap (`SPAWN_EXTRA_UNDER_THREAT = False`).
 
 From the ammo start turn the core tops team ammo to
-`5 + 20 × max(1, living count in slot 3)` via `convert_ammo` (before the
-living-cap early return). Phalanx starts at turn **10**; raiders at **30**.
+`12 + 2×ally gunners + 10×ally sentinels` (counts from HiveMind `local_map`)
+via `convert_ammo` (before the living-cap early return). Phalanx starts at
+turn **10**; raiders at **30**.
 
 ## Builder task order
 
@@ -148,8 +149,9 @@ Packaged as the `RAIDERS` task list (`run_raiders_tasklist` /
 
 Examples: gunners 30–49, sentinels 50–69, gunners 70–89, …
 
-- **Ammo:** from turn 30, core keeps pool at `5 + 20 × max(1, n)` (prestock 25,
-  then +20 per living sentinel). Turrets use global ammo.
+- **Ammo:** from turn 30 (phalanx: 10), core keeps pool at
+  `12 + 2×gunners + 10×sentinels` from known ally turrets in `local_map`.
+  Turrets use global ammo.
 - **Gunner fire:** core → gunner → sentinel → builder → harvester → belts.
   Rotates toward core or combat targets in vision when off the fire line.
 - **Sentinel fire:** core → gunner → sentinel → builder → harvester (fixed facing).

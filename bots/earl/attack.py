@@ -11,8 +11,8 @@ ACTIVE_RAID_ORDER = "raiders" in main.py (also after phalanx pivots):
 
 Default ACTIVE_RAID_ORDER is "phalanx" (home apron + wing gunners in defence.py).
 
-Core tops ammo to 5 + 20 × max(1, n) from a caller-chosen min_turn
-(default GUNNER_TURN; phalanx uses turn 10).
+Core tops ammo to 12 + 2×gunners + 10×sentinels (from local_map) from a
+caller-chosen min_turn (default GUNNER_TURN; phalanx uses turn 10).
 Turret fire: core first; else gunner → sentinel → builder (then harvester;
 gunners also belts). Gunners rotate toward core or combat targets in vision
 (gunner/sentinel/builder/harvester) when off the current fire line; sentinels stay
@@ -33,8 +33,9 @@ SENTINEL_PLACE_MIN_SQ = 16  # prefer d≈4+
 SENTINEL_PLACE_FALLBACK_MIN_SQ = 9  # allow d≈3 when nothing else fits
 GUNNER_PLACE_MIN = 1
 GUNNER_PLACE_MAX = 3
-AMMO_PER_SENTINEL = 20
-AMMO_FLOOR_BONUS = 5
+AMMO_FLOOR_BONUS = 12
+AMMO_PER_GUNNER = 2
+AMMO_PER_SENTINEL = 10
 SLOT_SENTINEL_COUNT = 3
 
 _CARDINALS = frozenset(
@@ -434,7 +435,7 @@ def build_gunner(
 
 
 def sync_sentinel_count(ct: Controller, local_map: dict) -> int:
-    """Write living ally sentinel count to store for core ammo top-up."""
+    """Write living ally sentinel count to store (raid bookkeeping)."""
     n = min(
         count_our_sentinels(local_map, ct.get_team()),
         MAX_SIEGE_SENTINELS,
@@ -443,19 +444,25 @@ def sync_sentinel_count(ct: Controller, local_map: dict) -> int:
     return n
 
 
-def ammo_target(n: int) -> int:
-    """Team ammo floor: 5 + 20 × max(1, living sentinels)."""
-    living = max(0, min(n, MAX_SIEGE_SENTINELS))
-    return AMMO_FLOOR_BONUS + AMMO_PER_SENTINEL * max(1, living)
+def ammo_target(gunners: int, sentinels: int) -> int:
+    """Team ammo floor: 12 + 2×ally gunners + 10×ally sentinels."""
+    g = max(0, gunners)
+    s = max(0, sentinels)
+    return AMMO_FLOOR_BONUS + AMMO_PER_GUNNER * g + AMMO_PER_SENTINEL * s
 
 
-def top_up_ammo(ct: Controller, *, min_turn: int | None = None) -> None:
+def top_up_ammo(
+    ct: Controller, *, local_map: dict, min_turn: int | None = None
+) -> None:
     """Core: top ammo from min_turn (default GUNNER_TURN) onward."""
     start = GUNNER_TURN if min_turn is None else min_turn
     if ct.get_current_round() < start:
         return
-    n = ct.read_store(SLOT_SENTINEL_COUNT)
-    target = ammo_target(n)
+    my_team = ct.get_team()
+    target = ammo_target(
+        count_our_gunners(local_map, my_team),
+        count_our_sentinels(local_map, my_team),
+    )
     ammo = ct.get_global_ammo()
     if ammo >= target:
         return

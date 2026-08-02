@@ -102,7 +102,7 @@ Named phases (`RAIDERS`):
    gunner → sentinel → harvester → belt; else push enemy core.
 
 Ammo from turn 30 (or turn 10 under phalanx): core tops pool to
-`5 + 20 × max(1, n)` living in slot 3.
+`12 + 2×gunners + 10×sentinels` from known ally turrets in `local_map`.
 
 ---
 

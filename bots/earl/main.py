@@ -20,7 +20,8 @@ Store slots:
   0  SLOT_RELAY_COMPLETE  1 once any inbound relay finished (phalanx guns)
   1                    Free
   2  SLOT_HARVESTER_COUNT Total harvesters built by the team (logistics.py)
-  3  SLOT_SENTINEL_COUNT  Living phalanx wing gunners or siege sentinels (ammo)
+  3  SLOT_SENTINEL_COUNT  Living phalanx wing/guard gunners or siege sentinels
+                          (bookkeeping; ammo uses local_map counts)
   4–6                  Free
   7–15                 HiveMind-owned — never write from Player
 
@@ -297,7 +298,7 @@ class Player:
         ammo_turn = (
             PHALANX_GUNNER_TURN if phalanx_home else GUNNER_TURN
         )
-        top_up_ammo(ct, min_turn=ammo_turn)
+        top_up_ammo(ct, local_map=self.hivemind.local_map, min_turn=ammo_turn)
 
         living_debt = self._observe_builder_deaths(ct)
         if round_n >= REPLENISH_START_TURN:
