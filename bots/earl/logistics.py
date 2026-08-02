@@ -10,6 +10,7 @@ from attack import _run_siege_enemy_harvester
 from defence import available_sides, mark_relay_complete, side_depth1_tiles
 from fcode import Controller, Direction, EntityType, Environment, Position
 from features import ORE_LOCATIONS
+from harrass import run_harrasser
 from pathing import astar_from_seeds, manhattan
 
 CARDINALS = [Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST]
@@ -42,10 +43,13 @@ HARVESTER_CAP_TO_3_TURN = 100
 HARVESTER_CAP_TO_4_TURN = 200
 HARVESTER_CAP_TO_5_TURN = 250
 HARVESTER_CAP_UNLIMITED_TURN = 400
+# After first inbound relay completes, wait this many turns then run harrass.
+ECONOMY_TO_HARRASS_DELAY = 100
 
 # Named phases for the economy role (priority-gated in run_economy).
 ECONOMY = (
     "finish_relay",
+    "harrass_after_relay",
     "snipe_enemy_harvester",
     "idle_ore_recheck",
     "ore_site",
@@ -145,12 +149,30 @@ def abort_relay(bot) -> None:
 
 
 def run_economy(bot, ct: Controller) -> None:
-    """ECONOMY role turn: finish relays, snipe harvesters, ore under cap, heal, move."""
+    """ECONOMY role turn: finish relays, graduate to harrass, snipe, ore, heal, move."""
     round_n = ct.get_current_round()
     at_cap = economy_at_harvester_cap(ct, round_n)
 
     if bot.in_relay:
         relay_toward_core(bot, ct)
+        return
+
+    if (
+        bot.relay_finished_round is not None
+        and round_n >= bot.relay_finished_round + ECONOMY_TO_HARRASS_DELAY
+        and bot.enemy_core_pos is not None
+    ):
+        site = run_harrasser(
+            ct,
+            my_index=bot.hivemind.my_index,
+            local_map=bot.hivemind.local_map,
+            enemy_core=bot.enemy_core_pos,
+            ally_core=bot.core_pos,
+        )
+        if site is not None:
+            bot.ore_site = None
+            bot.target = site
+        bot._move_toward_target(ct, retarget=False)
         return
 
     if bot.enemy_core_pos is not None:
@@ -843,6 +865,8 @@ def relay_toward_core(bot, ct: Controller) -> None:
                 bot.relay_merging = False
                 return
         mark_relay_complete(ct)
+        if bot.relay_finished_round is None:
+            bot.relay_finished_round = ct.get_current_round()
         clear_relay(bot)
         return
 

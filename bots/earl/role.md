@@ -22,21 +22,24 @@ in `attack.py`.
 Mine and inbound-relay (`logistics.py`). Named phases (`ECONOMY`):
 
 1. **finish_relay** — if `in_relay`, only pave the inbound chain to the ally core.
-2. **snipe_enemy_harvester** — if enemy core known and an uncovered enemy
+2. **harrass_after_relay** — after the **first** completed inbound relay plus
+   **100** turns (`ECONOMY_TO_HARRASS_DELAY`), permanently run `run_harrasser`
+   (core/harvester siege) instead of mining. Requires enemy core known.
+3. **snipe_enemy_harvester** — if enemy core known and an uncovered enemy
    harvester is in vision, path/place a gunner that can hit it
    (`attack._run_siege_enemy_harvester`; same helper as harrass). Skips mining
    that turn.
-3. **idle_ore_recheck** — every 50 turns: clear `skipped_ores` / `ore_site` and
+4. **idle_ore_recheck** — every 50 turns: clear `skipped_ores` / `ore_site` and
    allow ally-harvester candidates so broken inbound belts can be rebuilt.
-4. **ore_site** — sticky site via `pick_ore_site` / `try_ore_site_task`
+5. **ore_site** — sticky site via `pick_ore_site` / `try_ore_site_task`
    (ranked by core then builder distance; dense odd-index stagger):
    - Empty → step off if on tile; adjacent → build harvester, then enter relay.
    - Any harvester (ally or enemy) → enter inbound relay (steal / claim / re-relay).
    - Enemy belt on ore → stand on tile and `fire`.
    - Allied belt on ore → adjacent `destroy`, then treat as empty next turns.
    - Blocked → skip ore, pick another.
-5. **heal** — adjacent damaged friendlies (if action free).
-6. **move** — toward `ore_site` / target (no pave-while-walking).
+6. **heal** — adjacent damaged friendlies (if action free).
+7. **move** — toward `ore_site` / target (no pave-while-walking).
 
 ### Harvester caps (built count, store slot 2)
 

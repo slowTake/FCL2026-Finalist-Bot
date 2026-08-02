@@ -63,13 +63,15 @@ details and phase lists live in [`role.md`](role.md).
    move toward site and return.
 1. **Economy** (`run_economy` / `ECONOMY` in `logistics.py`) — odd builders:
    1. **If `in_relay`** → finish inbound relay (always, even at harvester cap).
-   2. **Snipe enemy harvester** — uncovered enemy harvester in vision →
+   2. **Harrass after relay** — first completed relay + **100** turns →
+      permanently `run_harrasser` (sticky).
+   3. **Snipe enemy harvester** — uncovered enemy harvester in vision →
       place/path gunner (`attack._run_siege_enemy_harvester`).
-   3. **Idle ore recheck** (every 50 turns): clear skips; allow ally-harvester
+   4. **Idle ore recheck** (every 50 turns): clear skips; allow ally-harvester
       chain repair. While at cap, do **not** seek new empty/steal sites.
-   4. **Ore-site task** — build / steal / clear belts (skipped when at cap
+   5. **Ore-site task** — build / steal / clear belts (skipped when at cap
       unless site is already a harvester for re-relay).
-   5. **Heal** → **move** toward site.
+   6. **Heal** → **move** toward site.
 
 ### Harvester caps (economy)
 

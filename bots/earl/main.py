@@ -239,6 +239,7 @@ class Player:
         self.relay_stuck = 0
         self.relay_built_to = -1  # highest path index known complete this relay
         self.relay_merging = False
+        self.relay_finished_round: int | None = None
         self.spawn_round: int | None = None
         self.phalanx_threat_until = -1
         self.phalanx_threat_side = 0
