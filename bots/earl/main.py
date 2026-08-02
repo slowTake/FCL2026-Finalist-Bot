@@ -5,17 +5,12 @@ steal any harvester), then pave a committed conveyor path back to the core.
 Wrong-facing allied belts are destroyed and rebuilt; enemy belts are cleared
 via stand-and-fire.
 
-Builder roles (see role.md): economy, phalanx, raiders, harrass, defender.
-Even builders abort economy once the enemy core is known. Active order is
-ACTIVE_RAID_ORDER: "phalanx" (home apron + wing gunners; pre-600 odds →
-raiders at 300, pre-600 evens at 600 fire-and-forget; post-600 odds →
-economy, post-600 evens → phalanx; index 5 harrasses (phalanx home until 50)
-until 300 then joins raiders), "raiders" (belt raid → gunner/sentinel siege
-loop in attack.py),
-or "harrass" (full raid-path order in harrass.py). Economy builders (odd
-indices while off the raid path) mine under a staged harvester cap
-(1 → 2 → 3 → 4 → 5 → unlimited) in logistics.py; idle ore recheck every 50 turns.
-Indices 6+ defend the core from spawn.
+Builder roles (see role.md): economy, phalanx; optional raiders/harrass via
+ACTIVE_RAID_ORDER. Default **"phalanx"**: even builders → home phalanx once
+the enemy core is known; odd builders → economy (mine + snipe uncovered
+enemy harvesters in vision). Overrides: "raiders" (belt raid → gunner/sentinel
+siege in attack.py), "harrass" (harrass.py). Economy harvester caps
+(2 → 3 → 4 → 5 → 6 → unlimited) in logistics.py; idle ore recheck every 50 turns.
 
 Store slots:
   0  SLOT_RELAY_COMPLETE  1 once any inbound relay finished
@@ -50,8 +45,6 @@ from attack import (
 from defence import (
     PHALANX_GUNNER_TURN,
     clear_phalanx_builder_threat,
-    is_defender,
-    run_defender,
     run_phalanx,
     core_under_turret_threat,
     update_phalanx_builder_threat,
@@ -77,12 +70,8 @@ from features import WALL_LOCATIONS
 DIRECTIONS = [d for d in Direction if d != Direction.CENTRE]
 CARDINALS = [Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST]
 
-# "harrass" = harvester siege + seek; "phalanx" = home apron + wing gunners;
-# "raiders" = offensive siege task list.
+# "phalanx" = even home defence / odd economy; "raiders" / "harrass" = overrides.
 ACTIVE_RAID_ORDER = "phalanx"
-PHALANX_ODD_TO_RAIDERS_TURN = 300
-PHALANX_EVEN_TO_RAIDERS_TURN = 600
-HARRASS_INDEX = 5
 
 SLOT_PACKED_CORES = 15
 
@@ -111,32 +100,18 @@ _BLOCKING_TURRET_TYPES = (EntityType.GUNNER, EntityType.SENTINEL)
 def effective_raid_order(
     round_n: int, my_index: int = 0, spawn_round: int | None = None
 ) -> str:
-    """Under phalanx: pre-600 cohort raids; post-600 odds economy, evens phalanx.
+    """Raid-path order for builders already on the raid task list.
 
-    Index HARRASS_INDEX runs harrass until PHALANX_ODD_TO_RAIDERS_TURN, then raiders.
+    Under default phalanx: always home phalanx. Overrides return ACTIVE_RAID_ORDER.
     """
+    del round_n, my_index, spawn_round
     if ACTIVE_RAID_ORDER != "phalanx":
         return ACTIVE_RAID_ORDER
-    spawned_before_600 = (
-        spawn_round is None or spawn_round < PHALANX_EVEN_TO_RAIDERS_TURN
-    )
-    if my_index == HARRASS_INDEX:
-        if round_n >= PHALANX_ODD_TO_RAIDERS_TURN:
-            return "raiders"
-        return "harrass"
-    if my_index % 2 == 1:
-        if spawned_before_600 and round_n >= PHALANX_ODD_TO_RAIDERS_TURN:
-            return "raiders"
-        return "phalanx"
-    if not spawned_before_600:
-        return "phalanx"
-    if round_n >= PHALANX_EVEN_TO_RAIDERS_TURN:
-        return "raiders"
     return "phalanx"
 
 
 def home_phalanx_active(round_n: int) -> bool:
-    """True while home phalanx role is active (new evens refill after 600)."""
+    """True while home phalanx role is active."""
     del round_n
     return ACTIVE_RAID_ORDER == "phalanx"
 
@@ -148,21 +123,13 @@ def on_raid_tasklist(
     spawn_round: int | None = None,
 ) -> bool:
     """Who runs phalanx / harrass / raiders this turn (enemy core must be known)."""
+    del round_n, spawn_round
     if enemy_core is None or my_index <= 0:
         return False
     if ACTIVE_RAID_ORDER != "phalanx":
         return is_raider(my_index, enemy_core)
-    spawned_before_600 = (
-        spawn_round is None or spawn_round < PHALANX_EVEN_TO_RAIDERS_TURN
-    )
-    # Index 5: harrass early, then join odd raider pivot at 300 (pre-600 only).
-    if my_index == HARRASS_INDEX:
-        return spawned_before_600
-    # Pre-600 odds raid from 300 (sticky). Post-600 odds stay off (economy).
-    if my_index % 2 == 1:
-        return spawned_before_600 and round_n >= PHALANX_ODD_TO_RAIDERS_TURN
-    # Evens always on the raid path (phalanx or raiders by spawn cohort).
-    return True
+    # Default: every even is phalanx forever.
+    return my_index % 2 == 0
 
 
 def is_economy(
@@ -171,8 +138,8 @@ def is_economy(
     round_n: int,
     spawn_round: int | None = None,
 ) -> bool:
-    """Odd (or unraiding) builders on the mine/relay loop — not defender/raid."""
-    if my_index <= 0 or is_defender(my_index):
+    """Odd builders on the mine/relay loop — not on the raid path."""
+    if my_index <= 0:
         return False
     return not on_raid_tasklist(my_index, enemy_core, round_n, spawn_round)
 
@@ -277,6 +244,7 @@ class Player:
         self.relay_stuck = 0
         self.relay_built_to = -1  # highest path index known complete this relay
         self.relay_merging = False
+        self.relay_finished_round: int | None = None
         self.spawn_round: int | None = None
         self.phalanx_threat_until = -1
         self.phalanx_threat_side = 0
@@ -447,11 +415,16 @@ class Player:
             self.stuck = 0
         self.last_pos = pos
 
+<<<<<<< HEAD
         if self.stuck >= BLOCKING_TURRET_STUCK:
             self._try_clear_blocking_ally_turret(ct)
 
         # Raid path: pre-600 odds → raiders from 300; pre-600 evens phalanx
         # then raiders at 600 (fire-and-forget). Post-600: odds economy, evens phalanx.
+=======
+        # Raid path: under phalanx, every even runs home defence; odds economy.
+        # ACTIVE_RAID_ORDER "raiders" / "harrass" overrides via is_raider.
+>>>>>>> origin/main
         round_n = ct.get_current_round()
         if self.spawn_round is None:
             self.spawn_round = round_n
@@ -497,19 +470,6 @@ class Player:
             if site is not None:
                 self.target = site
             self._move_toward_target(ct, retarget=False)
-            return
-
-        if is_defender(self.hivemind.my_index):
-            clear_relay(self)
-            self.ore_site = None
-            hold = run_defender(
-                ct,
-                core_pos=self.core_pos,
-                my_index=self.hivemind.my_index,
-            )
-            if hold is not None:
-                self.target = hold
-                self._move_toward_target(ct, retarget=False)
             return
 
         run_economy(self, ct)
