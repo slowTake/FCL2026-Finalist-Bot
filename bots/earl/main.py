@@ -9,16 +9,17 @@ Builder roles (see role.md): economy, phalanx, raiders, harrass, defender.
 Even builders abort economy once the enemy core is known. Active order is
 ACTIVE_RAID_ORDER: "phalanx" (home apron + wing gunners; pre-600 odds →
 raiders at 300, pre-600 evens at 600 fire-and-forget; post-600 odds →
-economy, post-600 evens → phalanx; index 5 harrasses until 300 then joins
-raiders), "raiders" (belt raid → gunner/sentinel siege loop in attack.py),
+economy, post-600 evens → phalanx; index 5 harrasses (phalanx home until 50)
+until 300 then joins raiders), "raiders" (belt raid → gunner/sentinel siege
+loop in attack.py),
 or "harrass" (full raid-path order in harrass.py). Economy builders (odd
 indices while off the raid path) mine under a staged harvester cap
 (3 → 5 → unlimited) in logistics.py; idle ore recheck every 50 turns.
 Indices 6+ defend the core from spawn.
 
 Store slots:
-  0  SLOT_RELAY_COMPLETE  1 once any inbound relay finished (phalanx guns)
-  1                    Free
+  0  SLOT_RELAY_COMPLETE  1 once any inbound relay finished
+  1  SLOT_PHALANX_BUILDER_THREAT  0 off; 1+side = wings/apron armed (sticky)
   2  SLOT_HARVESTER_COUNT Total harvesters built by the team (logistics.py)
   3  SLOT_SENTINEL_COUNT  Living phalanx wing/guard gunners or siege sentinels
                           (bookkeeping; ammo uses local_map counts)
@@ -27,8 +28,8 @@ Store slots:
 
 Ally core from slot 15 via unpack_cores; enemy core from fingerprint /
 KNOWN_MAPS (same-turn cache) or slot 15. Ore from ORE_LOCATIONS / local_map.
-Core rushes 5 builders, then interval-spawns to 9, then grows one every
-50 turns up to 15, then one every 200 turns as a late fallback. From turn
+Core rushes 5 builders, then interval-spawns to 7, then grows one every
+50 turns up to 9, then one every 200 turns as a late fallback. From turn
 75, deaths are replaced ASAP only when a builder vanishes from interior
 core vision (walking out of fog does not count). Threat-spawn extras are
 off (`SPAWN_EXTRA_UNDER_THREAT`).
@@ -48,10 +49,12 @@ from attack import (
 )
 from defence import (
     PHALANX_GUNNER_TURN,
+    clear_phalanx_builder_threat,
     is_defender,
     run_defender,
     run_phalanx,
     core_under_turret_threat,
+    update_phalanx_builder_threat,
 )
 from harrass import run_harrasser
 from fcode import (
@@ -84,8 +87,8 @@ HARRASS_INDEX = 5
 SLOT_PACKED_CORES = 15
 
 MAX_BUILDERS_EARLY = 5
-MAX_BUILDERS = 9
-MAX_BUILDERS_THREAT = 15
+MAX_BUILDERS = 7
+MAX_BUILDERS_THREAT = 9
 # When True, spawn ASAP up to MAX_BUILDERS_THREAT if enemy turret in core vision.
 SPAWN_EXTRA_UNDER_THREAT = False
 FIRST_INTERVAL_SPAWN = 10
@@ -270,6 +273,8 @@ class Player:
         self.relay_built_to = -1  # highest path index known complete this relay
         self.relay_merging = False
         self.spawn_round: int | None = None
+        self.phalanx_threat_until = -1
+        self.phalanx_threat_side = 0
 
     def run(self, ct: Controller) -> None:
         try:
@@ -295,6 +300,18 @@ class Player:
         # Ammo before spawn early-return so top-up continues after builder cap.
         round_n = ct.get_current_round()
         phalanx_home = home_phalanx_active(round_n)
+        if phalanx_home:
+            self.phalanx_threat_until, self.phalanx_threat_side = (
+                update_phalanx_builder_threat(
+                    ct,
+                    sticky_until=self.phalanx_threat_until,
+                    last_side=self.phalanx_threat_side,
+                )
+            )
+        else:
+            clear_phalanx_builder_threat(ct)
+            self.phalanx_threat_until = -1
+
         ammo_turn = (
             PHALANX_GUNNER_TURN if phalanx_home else GUNNER_TURN
         )
@@ -316,13 +333,13 @@ class Player:
             and round_n >= FIRST_INTERVAL_SPAWN
             and (round_n - FIRST_INTERVAL_SPAWN) % SPAWN_INTERVAL == 0
         )
-        # After 9: grow one every LATE_SPAWN_INTERVAL turns (up to 15).
+        # After 7: grow one every LATE_SPAWN_INTERVAL turns (up to 9).
         can_late = (
             self.spawn_target >= MAX_BUILDERS
             and self.spawn_target < MAX_BUILDERS_THREAT
             and round_n - self.last_growth_round >= LATE_SPAWN_INTERVAL
         )
-        # After 15: slow trickle every FALLBACK_SPAWN_INTERVAL turns.
+        # After 9: slow trickle every FALLBACK_SPAWN_INTERVAL turns.
         can_fallback = (
             self.spawn_target >= MAX_BUILDERS_THREAT
             and round_n - self.last_growth_round >= FALLBACK_SPAWN_INTERVAL

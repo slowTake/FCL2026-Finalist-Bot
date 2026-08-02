@@ -9,7 +9,7 @@ HiveMind `tick` and stuck tracking. Gate order: **raid path** → **defender**
 | **economy** | Odd builders off the raid path (typically 1/3; also post-600 odds) | `logistics.py` (`ECONOMY`, `run_economy`) |
 | **phalanx** | Even builders (and pre-600 odds before their raider pivot) while `ACTIVE_RAID_ORDER = "phalanx"` | `defence.py` (`PHALANX`) |
 | **raiders** | Offensive siege when `effective_raid_order` is `"raiders"` | `attack.py` (`RAIDERS`) |
-| **harrass** | Index **5** once enemy core known until turn **300**, then raiders; or full order if `ACTIVE_RAID_ORDER = "harrass"` | `harrass.py` (`HARRASS`) |
+| **harrass** | Index **5**: phalanx home until **50**, then siege/seek until **300**, then raiders; or full order if `ACTIVE_RAID_ORDER = "harrass"` | `harrass.py` (`HARRASS`) |
 | **defender** | Late spawns `my_index >= 6` (when not on the raid path) | `defence.py` |
 
 `main.py` is the role menu: raid → defender → `run_economy`.
@@ -51,9 +51,9 @@ Constants: `HARVESTER_CAP_UNTIL_200`, `HARVESTER_CAP_UNTIL_500`,
 `HARVESTER_CAP_LIFT_TURN`, `HARVESTER_CAP_UNLIMITED_TURN` in `logistics.py`.
 
 Under default phalanx order, pre-600 **odd** economy builders (1/3) pivot to
-**raiders** at turn **300** (fire-and-forget). Index **5** harrasses until
-300, then joins that pivot. Post-600 new odds stay on economy (unlimited
-after 500).
+**raiders** at turn **300** (fire-and-forget). Index **5** runs harrass
+(phalanx home until **50**, then siege/seek) until 300, then joins that pivot.
+Post-600 new odds stay on economy (unlimited after 500).
 
 ---
 
@@ -63,17 +63,16 @@ Home defence for even builders once the enemy core is known
 (`ACTIVE_RAID_ORDER = "phalanx"`). Named phases (`PHALANX`):
 
 1. **hunt_turrets** — enemy gunner/sentinel in vision: fire if adjacent, else move.
-2. **place_phalanx_gunners** — from turn 10, after first inbound relay completes
-   (slot 0): fill every in-bounds side; depth rings before stacking; up to 4
-   pads per flank at depths 1–4; face enemy; sync living count to slot 3.
-3. **assist_apron** — 3-deep inward conveyors on the enemy approach side
+2. **place_phalanx_gunners** — while threat armed (core slot 1 sticky **or**
+   local enemy builder sight): wing pads on that side (depths 1–4, path into
+   fog); nearest open pad; face enemy; sync living count to slot 3.
+3. **assist_apron** — 3-deep inward conveyors on the threat side while armed
    (`LAY_APRON_BELTS` in `defence.py`; currently **off**).
-4. **guard_harvesters** — 1 gunner cardinally beside each ally harvester within
-   Chebyshev 20 of the core footprint.
+4. **guard_harvesters** — from turn 10: 1 gunner cardinally beside each ally
+   harvester within Chebyshev 20 of the core footprint.
 5. **clear_economy** — enemy harvester in vision → fire/move; else stand-fire
    nearest enemy belt.
-6. **soft_idle** — repair missing apron / rebuild dead pads; else linger on
-   approach depth-1 strip.
+6. **soft_idle** — linger on threat/approach depth-1 strip (idle until threat).
 
 **Pivot to raiders** (fire-and-forget):
 
@@ -94,8 +93,9 @@ Named phases (`RAIDERS`):
    tile in range (prefer closer; index-staggered), facing the harvester.
 2. **belt_raid** (`round < 30`) — push enemy core; divert to nearest enemy
    conveyor/splitter in vision and stand-fire; resume toward core.
-3. **place_gunners** — first 20 turns of each 40-turn loop from turn 30: up to
-   3 ally gunners at Chebyshev 1–3 from enemy footprint with verified core LOS.
+3. **place_gunners** — first 20 turns of each 40-turn loop (epoch 30, or 300
+   after odd pivot): up to 3 siege gunners (near enemy core only) at Chebyshev
+   1–3 with verified core LOS.
 4. **place_siege_sentinels** — last 20 turns of each loop: up to 5 sentinels at
    r² 16–32 (fallback ~3 tiles); sync count to slot 3.
 5. **hunt_vision** — when placement is idle at cap: attack nearest enemy
@@ -110,11 +110,13 @@ Ammo from turn 30 (or turn 10 under phalanx): core tops pool to
 
 Harvester siege (`harrass.py`). Named phases (`HARRASS`):
 
-1. **siege_enemy_harvester** — same as raiders: if an enemy harvester is in
+1. **phalanx_home** (`round < 50`) — delegate to `run_phalanx` until
+   `HARRASS_START_TURN`.
+2. **siege_enemy_harvester** — same as raiders: if an enemy harvester is in
    vision and no ally gunner already covers it within gunner range, place a
    gunner on an empty tile in range (prefer closer; index-staggered), facing
    the harvester (`attack._run_siege_enemy_harvester`).
-2. **seek_harvesters** — when siege has no site: hunt enemy gunner → sentinel
+3. **seek_harvesters** — when siege has no site: hunt enemy gunner → sentinel
    → harvester → belt in vision; else push enemy core (`attack._run_raid_hunt`).
 
 **Assignment under phalanx:** builder index **5** (`HARRASS_INDEX`) once the
