@@ -5,14 +5,16 @@ steal any harvester), then pave a committed conveyor path back to the core.
 Wrong-facing allied belts are destroyed and rebuilt; enemy belts are cleared
 via stand-and-fire.
 
-Builder roles (see role.md): economy, phalanx, raiders, defender. Even
-builders abort economy once the enemy core is known. Active order is
+Builder roles (see role.md): economy, phalanx, raiders, harrass, defender.
+Even builders abort economy once the enemy core is known. Active order is
 ACTIVE_RAID_ORDER: "phalanx" (home apron + wing gunners; pre-600 odds →
 raiders at 300, pre-600 evens at 600 fire-and-forget; post-600 odds →
-economy, post-600 evens → phalanx) or "raiders" (belt raid → gunner/sentinel
-siege loop in attack.py). Economy builders (odd indices while off the raid
-path) mine under a staged harvester cap (3 → 5 → unlimited) in logistics.py;
-idle ore recheck every 50 turns. Indices 6+ defend the core from spawn.
+economy, post-600 evens → phalanx; index 5 harrasses until 300 then joins
+raiders), "raiders" (belt raid → gunner/sentinel siege loop in attack.py),
+or "harrass" (full raid-path order in harrass.py). Economy builders (odd
+indices while off the raid path) mine under a staged harvester cap
+(3 → 5 → unlimited) in logistics.py; idle ore recheck every 50 turns.
+Indices 6+ defend the core from spawn.
 
 Store slots:
   0–1                  Free
@@ -44,6 +46,7 @@ from defence import (
     run_phalanx,
     core_under_turret_threat,
 )
+from harrass import run_harrasser
 from fcode import (
     Controller,
     Direction,
@@ -64,10 +67,12 @@ from features import WALL_LOCATIONS, ORE_LOCATIONS
 DIRECTIONS = [d for d in Direction if d != Direction.CENTRE]
 CARDINALS = [Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST]
 
-# "phalanx" = home apron + wing gunners; "raiders" = offensive siege task list.
+# "harrass" = harvester siege + seek; "phalanx" = home apron + wing gunners;
+# "raiders" = offensive siege task list.
 ACTIVE_RAID_ORDER = "phalanx"
 PHALANX_ODD_TO_RAIDERS_TURN = 300
 PHALANX_EVEN_TO_RAIDERS_TURN = 600
+HARRASS_INDEX = 5
 
 SLOT_PACKED_CORES = 15
 
@@ -81,12 +86,19 @@ SPAWN_INTERVAL = 25
 def effective_raid_order(
     round_n: int, my_index: int = 0, spawn_round: int | None = None
 ) -> str:
-    """Under phalanx: pre-600 cohort raids; post-600 odds economy, evens phalanx."""
+    """Under phalanx: pre-600 cohort raids; post-600 odds economy, evens phalanx.
+
+    Index HARRASS_INDEX runs harrass until PHALANX_ODD_TO_RAIDERS_TURN, then raiders.
+    """
     if ACTIVE_RAID_ORDER != "phalanx":
         return ACTIVE_RAID_ORDER
     spawned_before_600 = (
         spawn_round is None or spawn_round < PHALANX_EVEN_TO_RAIDERS_TURN
     )
+    if my_index == HARRASS_INDEX:
+        if round_n >= PHALANX_ODD_TO_RAIDERS_TURN:
+            return "raiders"
+        return "harrass"
     if my_index % 2 == 1:
         if spawned_before_600 and round_n >= PHALANX_ODD_TO_RAIDERS_TURN:
             return "raiders"
@@ -110,7 +122,7 @@ def on_raid_tasklist(
     round_n: int,
     spawn_round: int | None = None,
 ) -> bool:
-    """Who runs phalanx or raiders this turn (enemy core must be known)."""
+    """Who runs phalanx / harrass / raiders this turn (enemy core must be known)."""
     if enemy_core is None or my_index <= 0:
         return False
     if ACTIVE_RAID_ORDER != "phalanx":
@@ -118,6 +130,9 @@ def on_raid_tasklist(
     spawned_before_600 = (
         spawn_round is None or spawn_round < PHALANX_EVEN_TO_RAIDERS_TURN
     )
+    # Index 5: harrass early, then join odd raider pivot at 300 (pre-600 only).
+    if my_index == HARRASS_INDEX:
+        return spawned_before_600
     # Pre-600 odds raid from 300 (sticky). Post-600 odds stay off (economy).
     if my_index % 2 == 1:
         return spawned_before_600 and round_n >= PHALANX_ODD_TO_RAIDERS_TURN
@@ -383,6 +398,14 @@ class Player:
             )
             if order == "phalanx":
                 site = run_phalanx(
+                    ct,
+                    my_index=self.hivemind.my_index,
+                    local_map=self.hivemind.local_map,
+                    enemy_core=enemy,
+                    ally_core=self.core_pos,
+                )
+            elif order == "harrass":
+                site = run_harrasser(
                     ct,
                     my_index=self.hivemind.my_index,
                     local_map=self.hivemind.local_map,
