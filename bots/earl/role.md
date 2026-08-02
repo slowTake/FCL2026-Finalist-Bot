@@ -31,8 +31,8 @@ Mine and inbound-relay (`logistics.py`). Named phases (`ECONOMY`):
    that turn.
 4. **idle_ore_recheck** — every 50 turns: clear `skipped_ores` / `ore_site` and
    allow ally-harvester candidates so broken inbound belts can be rebuilt.
-5. **ore_site** — sticky site via `pick_ore_site` / `try_ore_site_task`
-   (ranked by core then builder distance; dense odd-index stagger):
+3. **ore_site** — sticky site via `pick_ore_site` / `try_ore_site_task`
+   (vision-first, then nearest by core then builder distance):
    - Empty → step off if on tile; adjacent → build harvester, then enter relay.
    - Any harvester (ally or enemy) → enter inbound relay (steal / claim / re-relay).
    - Enemy belt on ore → stand on tile and `fire`.

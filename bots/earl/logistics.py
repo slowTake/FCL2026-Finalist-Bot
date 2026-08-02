@@ -343,12 +343,12 @@ def try_ore_site_task(bot, ct: Controller, *, at_cap: bool = False) -> None:
 def pick_ore_site(
     bot, ct: Controller, pos: Position, *, at_cap: bool = False
 ) -> Position | None:
-    """Nth-nearest known ore by dense economy rank: prefer empty, then steal.
+    """Nearest known ore: prefer empty, then steal; vision before fog.
 
-    Sorted by (Chebyshev to ally core, builder distance). Odd economy indices
-    map densely: 1→nearest, 3→2nd, 5→3rd via (idx-1)//2. On idle recheck, fall
-    back to ally harvesters so inbound belts can be rebuilt. At harvester cap,
-    only ally (chain repair) candidates.
+    Sorted by (Chebyshev to ally core, builder distance). In-vision candidates
+    beat fogged map ores. On idle recheck, fall back to ally harvesters so
+    inbound belts can be rebuilt. At harvester cap, only ally (chain repair)
+    candidates.
     """
     map_id = bot.hivemind.map_id
     if map_id <= 0:
@@ -357,13 +357,18 @@ def pick_ore_site(
     my_team = ct.get_team()
     allow_ally = bot.ore_recheck_allow_ally
     bot.ore_recheck_allow_ally = False
-    empty: list[tuple[tuple[int, int], Position]] = []
-    steal: list[tuple[tuple[int, int], Position]] = []
-    ally: list[tuple[tuple[int, int], Position]] = []
+    empty_vis: list[tuple[tuple[int, int], Position]] = []
+    empty_fog: list[tuple[tuple[int, int], Position]] = []
+    steal_vis: list[tuple[tuple[int, int], Position]] = []
+    steal_fog: list[tuple[tuple[int, int], Position]] = []
+    ally_vis: list[tuple[tuple[int, int], Position]] = []
+    ally_fog: list[tuple[tuple[int, int], Position]] = []
 
     for ox, oy in ORE_LOCATIONS.get(map_id, []):
         if (ox, oy) in bot.skipped_ores:
             continue
+        ore_pos = Position(ox, oy)
+        in_vis = ct.is_in_vision(ore_pos)
         tile_info = bot.hivemind.local_map.get((ox, oy), {})
         ent = tile_info.get("entity")
         if (
@@ -372,33 +377,40 @@ def pick_ore_site(
             and ent.get("team") == my_team
         ):
             if allow_ally:
-                ore_pos = Position(ox, oy)
-                ally.append((_ore_sort_key(bot, pos, ore_pos), ore_pos))
+                bucket = ally_vis if in_vis else ally_fog
+                bucket.append((_ore_sort_key(bot, pos, ore_pos), ore_pos))
             continue
         # Synced blocked tile with no entity — treat as already claimed
         if not ent and tile_info.get("passable") is False:
             continue
 
-        ore_pos = Position(ox, oy)
         d = _ore_sort_key(bot, pos, ore_pos)
         if ent and ent.get("type") == EntityType.HARVESTER:
-            steal.append((d, ore_pos))
+            bucket = steal_vis if in_vis else steal_fog
         else:
-            empty.append((d, ore_pos))
+            bucket = empty_vis if in_vis else empty_fog
+        bucket.append((d, ore_pos))
+
+    def _best(pool: list[tuple[tuple[int, int], Position]]) -> Position | None:
+        if not pool:
+            return None
+        pool.sort(key=lambda t: t[0])
+        return pool[0][1]
 
     if at_cap:
-        candidates = ally if allow_ally else []
-    else:
-        candidates = empty if empty else steal
-        if not candidates and allow_ally:
-            candidates = ally
-    if not candidates:
-        return None
-    candidates.sort(key=lambda t: t[0])
-    idx = bot.hivemind.my_index
-    # Dense rank so odd economy bots (1,3,5…) take consecutive nearest ores.
-    pick = 0 if idx <= 0 else ((idx - 1) // 2) % len(candidates)
-    return candidates[pick][1]
+        if not allow_ally:
+            return None
+        return _best(ally_vis) or _best(ally_fog)
+
+    site = _best(empty_vis) or _best(empty_fog)
+    if site is not None:
+        return site
+    site = _best(steal_vis) or _best(steal_fog)
+    if site is not None:
+        return site
+    if allow_ally:
+        return _best(ally_vis) or _best(ally_fog)
+    return None
 
 
 # ------------------------------------------------------------------

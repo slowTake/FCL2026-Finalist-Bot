@@ -175,13 +175,12 @@ harvester snipe instead of this full order.
 - Rank by **(Chebyshev to ally core, then builder distance)** so near-core
   nodes win, with nearby-to-builder breaking ties; if core unknown, builder
   distance only.
+- **Vision first:** in-vision empty/steal ores beat fogged known map ores.
 - Skip our harvesters and locally finished sites (`skipped_ores`), except on
   idle recheck when ally harvesters are allowed so inbound relays can be fixed.
 - While at the economy harvester cap, empty/steal picks are disabled; ally
   recheck for chain repair still runs.
-- **Dense economy stagger:** odd indices map via `(my_index - 1) // 2` so
-  builder 1 → nearest, 3 → 2nd, 5 → 3rd (avoids skipping the 2nd-closest).
-  Unregistered index `0` falls back to nearest.
+- Always take the nearest candidate (no index stagger).
 
 ### Pathfinding (`pathing.py`)
 
