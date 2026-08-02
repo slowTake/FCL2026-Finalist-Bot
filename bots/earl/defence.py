@@ -4,12 +4,12 @@ Late spawns (indices >= DEFENDER_MIN_INDEX) stay near the ally core: hunt
 enemy gunners in vision, heal, fire, then lay a per-side inward apron
 (3-deep belts, no barriers).
 
-Even builders may run PHALANX (see ACTIVE_RAID_ORDER in main): hunt enemy
-gunners/sentinels; wing gunners and approach apron only while the core's
-sticky builder-threat switch is armed (enemy builder seen in core vision).
-Soft fill uses depths 1–3 (up to 3 pads per flank); live builder or turret
-rush lifts to depths 1–5. Then one gunner beside each nearby ally harvester,
-clear encroaching enemy harvesters/belts in vision, then soft-idle.
+Even builders may run PHALANX (see ACTIVE_RAID_ORDER in main): while the
+core's sticky builder-threat switch is armed, place wing gunners first then
+hunt enemy gunners/sentinels; approach apron only while armed.
+Soft fill uses depths 1–5; live builder or turret rush uses the same depths.
+Then one gunner beside each nearby ally harvester, clear encroaching enemy
+harvesters/belts in vision, then soft-idle.
 """
 
 from __future__ import annotations
@@ -52,8 +52,8 @@ DIRECTIONS = [d for d in Direction if d != Direction.CENTRE]
 
 APRON_DEPTHS = (1, 2, 3)
 # Wing gunner pads: one column/row per flank, one tile per depth.
-# Soft fill under sticky threat; rush (live builder/turret) uses deeper pads.
-WING_SOFT_DEPTHS = (1, 2, 3)
+# Soft fill under sticky threat; rush (live builder/turret) same depths for now.
+WING_SOFT_DEPTHS = (1, 2, 3, 4, 5)
 WING_RUSH_DEPTHS = (1, 2, 3, 4, 5)
 WING_DEPTHS = WING_RUSH_DEPTHS  # full set for site enumeration / apron keys
 
@@ -62,8 +62,8 @@ LAY_APRON_BELTS = False
 
 # Named phases for the home-defence raid order (priority-gated in run_phalanx).
 PHALANX = (
-    "hunt_turrets",
     "place_phalanx_gunners",
+    "hunt_turrets",
     "assist_apron",
     "guard_harvesters",
     "clear_economy",
@@ -792,7 +792,7 @@ def run_phalanx(
     enemy_core: Position,
     ally_core: Position | None,
 ) -> Position | None:
-    """PHALANX: turrets → threat wings/apron → guards → clear → idle."""
+    """PHALANX: threat wings → turrets → apron → guards → clear → idle."""
     if ally_core is None:
         return None
 
@@ -803,18 +803,11 @@ def run_phalanx(
         else enemy_approach_side(ally_core, enemy_core)
     )
 
-    # 1. Attack nearby enemy gunners / sentinels first.
-    turret = _nearest_enemy_turret(ct)
-    if turret is not None:
-        if _try_fire_tile(ct, turret):
-            return _defence_hold_target(ct, ally_core, hold_side)
-        return turret
-
     round_n = ct.get_current_round()
     wing_living = 0
 
-    # 2–3. Wing gunners + apron while threat armed (store sticky or local sight).
-    # Soft fill depths 1–3; live builder/turret rush opens depths 1–5.
+    # 1. Wing gunners while threat armed — place before hunting their turrets.
+    # Soft fill depths 1–5; live builder/turret rush uses the same depths.
     if threat_side is not None:
         rushed = (
             _nearest_enemy_builder(ct) is not None
@@ -834,6 +827,15 @@ def run_phalanx(
                 ct.write_store(SLOT_SENTINEL_COUNT, wing_living)
                 return site
 
+    # 2. Attack nearby enemy gunners / sentinels (after open wing pads filled).
+    turret = _nearest_enemy_turret(ct)
+    if turret is not None:
+        if _try_fire_tile(ct, turret):
+            return _defence_hold_target(ct, ally_core, hold_side)
+        return turret
+
+    # 3. Apron while threat armed.
+    if threat_side is not None:
         if _phalanx_apron_incomplete(ct, ally_core, threat_side):
             if _phalanx_try_apron(ct, core_pos=ally_core, side=threat_side):
                 return None
