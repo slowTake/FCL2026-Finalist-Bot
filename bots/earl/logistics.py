@@ -31,10 +31,16 @@ EARLY_TITANIUM_BUFFER_END_TURN = 50
 # ----------------
 
 # Economy harvester caps by round (None = unlimited). Built count from slot 2.
-HARVESTER_CAP_UNTIL_200 = 3
-HARVESTER_CAP_UNTIL_500 = 5
-HARVESTER_CAP_LIFT_TURN = 200
-HARVESTER_CAP_UNLIMITED_TURN = 500
+HARVESTER_CAP_1 = 1
+HARVESTER_CAP_2 = 2
+HARVESTER_CAP_3 = 3
+HARVESTER_CAP_4 = 4
+HARVESTER_CAP_5 = 5
+HARVESTER_CAP_TO_2_TURN = 50
+HARVESTER_CAP_TO_3_TURN = 100
+HARVESTER_CAP_TO_4_TURN = 200
+HARVESTER_CAP_TO_5_TURN = 250
+HARVESTER_CAP_UNLIMITED_TURN = 400
 
 # Named phases for the economy role (priority-gated in run_economy).
 ECONOMY = (
@@ -79,12 +85,26 @@ def _chebyshev_to_core_footprint(pos: Position, core_pos: Position) -> int:
     )
 
 
+def _ore_sort_key(bot, pos: Position, ore: Position) -> tuple[int, int]:
+    """Prefer nearer ally core, then nearer builder (builder-only if no core)."""
+    builder_d = pos.distance_squared(ore)
+    if bot.core_pos is not None:
+        return (_chebyshev_to_core_footprint(ore, bot.core_pos), builder_d)
+    return (builder_d, 0)
+
+
 def harvester_cap(round_n: int) -> int | None:
     """Max harvesters economy may seek this turn; None = no limit."""
-    if round_n < HARVESTER_CAP_LIFT_TURN:
-        return HARVESTER_CAP_UNTIL_200
+    if round_n < HARVESTER_CAP_TO_2_TURN:
+        return HARVESTER_CAP_1
+    if round_n < HARVESTER_CAP_TO_3_TURN:
+        return HARVESTER_CAP_2
+    if round_n < HARVESTER_CAP_TO_4_TURN:
+        return HARVESTER_CAP_3
+    if round_n < HARVESTER_CAP_TO_5_TURN:
+        return HARVESTER_CAP_4
     if round_n < HARVESTER_CAP_UNLIMITED_TURN:
-        return HARVESTER_CAP_UNTIL_500
+        return HARVESTER_CAP_5
     return None
 
 
@@ -153,7 +173,7 @@ def run_economy(bot, ct: Controller) -> None:
 
 
 def pick_economy_target(bot, ct: Controller) -> Position:
-    """Nearest known empty/steal ore; hold at core if capped or nothing left."""
+    """Nearest known empty/steal ore (to ally core); hold at core if capped."""
     pos = ct.get_position()
     at_cap = economy_at_harvester_cap(ct, ct.get_current_round())
 
@@ -172,7 +192,7 @@ def pick_economy_target(bot, ct: Controller) -> Position:
                     continue
                 if ct.get_tile_building_id(tile) is not None:
                     continue
-                d = pos.distance_squared(tile)
+                d = _ore_sort_key(bot, pos, tile)
                 if d < best_dist:
                     best_dist = d
                     best_ore = tile
@@ -286,11 +306,12 @@ def try_ore_site_task(bot, ct: Controller, *, at_cap: bool = False) -> None:
 def pick_ore_site(
     bot, ct: Controller, pos: Position, *, at_cap: bool = False
 ) -> Position | None:
-    """Nth-nearest known ore by builder index: prefer empty, then steal.
+    """Nth-nearest known ore by dense economy rank: prefer empty, then steal.
 
-    On idle recheck, fall back to ally harvesters so inbound belts can be
-    rebuilt. Builder my_index N takes candidates[(N-1) % len]; 0 → nearest.
-    At harvester cap, only ally (chain repair) candidates are eligible.
+    Sorted by (Chebyshev to ally core, builder distance). Odd economy indices
+    map densely: 1→nearest, 3→2nd, 5→3rd via (idx-1)//2. On idle recheck, fall
+    back to ally harvesters so inbound belts can be rebuilt. At harvester cap,
+    only ally (chain repair) candidates.
     """
     map_id = bot.hivemind.map_id
     if map_id <= 0:
@@ -299,9 +320,9 @@ def pick_ore_site(
     my_team = ct.get_team()
     allow_ally = bot.ore_recheck_allow_ally
     bot.ore_recheck_allow_ally = False
-    empty: list[tuple[int, Position]] = []
-    steal: list[tuple[int, Position]] = []
-    ally: list[tuple[int, Position]] = []
+    empty: list[tuple[tuple[int, int], Position]] = []
+    steal: list[tuple[tuple[int, int], Position]] = []
+    ally: list[tuple[tuple[int, int], Position]] = []
 
     for ox, oy in ORE_LOCATIONS.get(map_id, []):
         if (ox, oy) in bot.skipped_ores:
@@ -315,14 +336,14 @@ def pick_ore_site(
         ):
             if allow_ally:
                 ore_pos = Position(ox, oy)
-                ally.append((pos.distance_squared(ore_pos), ore_pos))
+                ally.append((_ore_sort_key(bot, pos, ore_pos), ore_pos))
             continue
         # Synced blocked tile with no entity — treat as already claimed
         if not ent and tile_info.get("passable") is False:
             continue
 
         ore_pos = Position(ox, oy)
-        d = pos.distance_squared(ore_pos)
+        d = _ore_sort_key(bot, pos, ore_pos)
         if ent and ent.get("type") == EntityType.HARVESTER:
             steal.append((d, ore_pos))
         else:
@@ -338,7 +359,8 @@ def pick_ore_site(
         return None
     candidates.sort(key=lambda t: t[0])
     idx = bot.hivemind.my_index
-    pick = 0 if idx <= 0 else (idx - 1) % len(candidates)
+    # Dense rank so odd economy bots (1,3,5…) take consecutive nearest ores.
+    pick = 0 if idx <= 0 else ((idx - 1) // 2) % len(candidates)
     return candidates[pick][1]
 
 

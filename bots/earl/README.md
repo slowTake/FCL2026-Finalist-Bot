@@ -9,7 +9,8 @@ evens → phalanx); set to **`raiders`** for the old offensive belt-raid →
 gunner/sentinel siege loop (`attack.py`); set to **`harrass`** for harvester
 siege + seek (`harrass.py`). Economy builders (1/3; index 5 harrasses — phalanx
 home until 50) mine under a staged
-harvester cap (**3** until 200, **5** until 500, then unlimited) in
+harvester cap (**1** until 50, **2** until 100, **3** until 200, **4** until
+250, **5** until 400, then unlimited) in
 [`logistics.py`](logistics.py) and idle-recheck ore every 50 turns; late
 spawns 6+ defend and lay a home apron (`defence.py`). Full role task lists:
 [`role.md`](role.md). Core tops ammo from turn 10 (phalanx) or 30 (raiders /
@@ -91,9 +92,10 @@ Even builders stay home once the enemy core is known:
    orthogonally adjacent, else move to attack it.
 2. **Place wing gunners** while threat is armed — core slot **1** (sticky
    **20** turns) **or** this builder sees an enemy builder (same turn): pads
-   on that **threat side** (depths 1–4, fog OK to path); nearest open pad
-   (no stagger); face toward the enemy; sync living count to slot 3. Until
-   then, skip (soft-idle at home).
+   on that **threat side** — soft depths **1–3** (up to 3 per flank); live
+   builder/turret rush lifts to depths **1–5**; fog OK to path; nearest open
+   pad (no stagger); face toward the enemy; sync living count to slot 3.
+   Home wings do not fill the siege gunner cap. Until armed, skip (soft-idle).
 3. **Assist apron** on the **threat side** while armed: 3-deep
    inward conveyors (no barriers; `LAY_APRON_BELTS` currently **off**).
 4. **Guard harvesters**: place **1 gunner** cardinally beside each ally harvester
@@ -119,8 +121,9 @@ the living cap toward **15**. Past 15 the normal fallback cadence is every
 Home wing gunners stay; phalanx ammo stays active while
 `ACTIVE_RAID_ORDER = "phalanx"` (new evens keep the home role after 600).
 
-Gunner fire uses shared `run_gunner` (core → gunner → sentinel → builder →
-harvester → belts; rotates toward core/combat/harvester in vision).
+Gunner fire uses shared `run_gunner`: non-belt on current line
+(core → gunner → sentinel → builder → harvester) → rotate to core/combat →
+belts last (belts never block a rotate).
 
 ### Raiders (`attack.py`) — `ACTIVE_RAID_ORDER = "raiders"`
 
@@ -128,14 +131,15 @@ Packaged as the `RAIDERS` task list (`run_raiders_tasklist` /
 `run_attack_builder`). Once the enemy core is known (`my_index` even, > 0):
 
 1. **Siege enemy harvester** (top priority): if an enemy harvester is in vision
-   and no ally gunner covers it within gunner range, place a gunner on an empty
-   tile in range facing the harvester (index-staggered).
+   and no ally gunner can already **hit** it (`can_fire_from`, not mere range),
+   place a gunner on an empty in-range tile that can hit it (index-staggered;
+   nearest uncovered harvester first).
 2. **Belt raid** (`round < 30`): head toward the enemy core; if an enemy
    conveyor/splitter is in vision, divert to the **nearest** one and stand-fire
    (builders fire own tile only); then resume toward the core.
 3. **Siege loop** (from turn 30, every **40** turns; from turn **300** the
    epoch restarts so odd-pivot raiders get a fresh gunner→sentinel window):
-   - **Gunners** (first **20** turns of each cycle): place up to **3** siege
+   - **Gunners** (first **20** turns of each cycle): place up to **8** siege
      gunners (count only pads within Chebyshev **3** of the enemy 2×2 — home
      wings do not fill the cap) on empty tiles at distance **1–3**; only sites
      that can **actually hit** the core (`can_fire_from`, cardinals before
@@ -153,8 +157,8 @@ sentinels 320–339, …
 - **Ammo:** from turn 30 (phalanx: 10), core keeps pool at
   `12 + 2×gunners + 10×sentinels` from known ally turrets in `local_map`.
   Turrets use global ammo.
-- **Gunner fire:** core → gunner → sentinel → builder → harvester → belts.
-  Rotates toward core or combat targets in vision when off the fire line.
+- **Gunner fire:** non-belt on current line (core → gunner → sentinel →
+  builder → harvester) → rotate to core/combat → belts last.
 - **Sentinel fire:** core → gunner → sentinel → builder → harvester (fixed facing).
 
 ### Harrass (`harrass.py`)
@@ -166,22 +170,27 @@ turn **300**, then joins the odd raiders pivot. Also selectable as
 
 1. **Phalanx home** (`round < 50`) — same duties as phalanx until
    `HARRASS_START_TURN`.
-2. **Siege enemy harvester** — reuse `attack._run_siege_enemy_harvester`.
-3. **Seek harvesters** — when no siege site: reuse `attack._run_raid_hunt`
+2. **Siege enemy core** — when Chebyshev ≤ **3** of the enemy footprint:
+   reuse `attack._run_raid_core_siege` (raider gunner/sentinel loop).
+3. **Siege enemy harvester** — reuse `attack._run_siege_enemy_harvester`
+   (cover = can hit via `can_fire_from`; nearest uncovered first).
+4. **Seek harvesters** — when no siege site: reuse `attack._run_raid_hunt`
    (hunt gunner → sentinel → harvester → belt; else push enemy core).
 
 ### Ore targeting
 
 - Known sites from `ORE_LOCATIONS` once the map is fingerprinted.
 - Prefer empty ore, then enemy/unknown harvester (steal).
+- Rank by **(Chebyshev to ally core, then builder distance)** so near-core
+  nodes win, with nearby-to-builder breaking ties; if core unknown, builder
+  distance only.
 - Skip our harvesters and locally finished sites (`skipped_ores`), except on
   idle recheck when ally harvesters are allowed so inbound relays can be fixed.
 - While at the economy harvester cap, empty/steal picks are disabled; ally
   recheck for chain repair still runs.
-- **Builder stagger:** each builder uses HiveMind `my_index` and takes the
-  `(my_index - 1) % n`-th nearest eligible ore (builder 1 → nearest, builder 2
-  → 2nd, …). Stops everyone racing the same node. Unregistered index `0` falls
-  back to nearest.
+- **Dense economy stagger:** odd indices map via `(my_index - 1) // 2` so
+  builder 1 → nearest, 3 → 2nd, 5 → 3rd (avoids skipping the 2nd-closest).
+  Unregistered index `0` falls back to nearest.
 
 ### Pathfinding (`pathing.py`)
 

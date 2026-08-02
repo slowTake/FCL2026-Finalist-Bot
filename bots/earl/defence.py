@@ -6,9 +6,10 @@ enemy gunners in vision, heal, fire, then lay a per-side inward apron
 
 Even builders may run PHALANX (see ACTIVE_RAID_ORDER in main): hunt enemy
 gunners/sentinels; wing gunners and approach apron only while the core's
-sticky builder-threat switch is armed (enemy builder seen in core vision);
-then one gunner beside each nearby ally harvester, clear encroaching enemy
-harvesters/belts in vision, then soft-idle.
+sticky builder-threat switch is armed (enemy builder seen in core vision).
+Soft fill uses depths 1–3 (up to 3 pads per flank); live builder or turret
+rush lifts to depths 1–5. Then one gunner beside each nearby ally harvester,
+clear encroaching enemy harvesters/belts in vision, then soft-idle.
 """
 
 from __future__ import annotations
@@ -50,8 +51,11 @@ CARDINALS = [Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST]
 DIRECTIONS = [d for d in Direction if d != Direction.CENTRE]
 
 APRON_DEPTHS = (1, 2, 3)
-# Wing gunner pads: one column/row per flank, one tile per depth (4 each side).
-WING_DEPTHS = (1, 2, 3, 4)
+# Wing gunner pads: one column/row per flank, one tile per depth.
+# Soft fill under sticky threat; rush (live builder/turret) uses deeper pads.
+WING_SOFT_DEPTHS = (1, 2, 3)
+WING_RUSH_DEPTHS = (1, 2, 3, 4, 5)
+WING_DEPTHS = WING_RUSH_DEPTHS  # full set for site enumeration / apron keys
 
 # Temporary: skip laying / repairing core apron conveyor belts.
 LAY_APRON_BELTS = False
@@ -279,7 +283,7 @@ def update_phalanx_builder_threat(
 
 
 def side_wing_tiles(core_pos: Position, side: int) -> list[Position]:
-    """Flank columns/rows beside the belt strip — 4 pads per wing."""
+    """Flank columns/rows beside the belt strip — up to rush depth per wing."""
     tiles: list[Position] = []
     for depth in WING_DEPTHS:
         tiles.extend(side_wing_tiles_at_depth(core_pos, side, depth))
@@ -335,15 +339,17 @@ def phalanx_threat_wing_targets(
     core_pos: Position,
     side: int,
     local_map: dict,
+    *,
+    depths: tuple[int, ...] = WING_SOFT_DEPTHS,
 ) -> tuple[list[Position], int]:
-    """Open wing pads on threat side (depth-1 first). Fogged pads stay walk targets.
+    """Open wing pads on threat side (shallow depths first). Fog OK to path.
 
-    Returns (targets needing a gunner, count of in-vision ally gunners on pads).
+    Returns (targets needing a gunner, count of known ally gunners on pads).
     """
     my_team = ct.get_team()
     targets: list[Position] = []
     living = 0
-    for depth in WING_DEPTHS:
+    for depth in depths:
         for tile in side_wing_tiles_at_depth(core_pos, side, depth):
             if not _in_bounds(ct, tile):
                 continue
@@ -808,9 +814,15 @@ def run_phalanx(
     wing_living = 0
 
     # 2–3. Wing gunners + apron while threat armed (store sticky or local sight).
+    # Soft fill depths 1–3; live builder/turret rush opens depths 1–5.
     if threat_side is not None:
+        rushed = (
+            _nearest_enemy_builder(ct) is not None
+            or core_under_turret_threat(ct)
+        )
+        wing_depths = WING_RUSH_DEPTHS if rushed else WING_SOFT_DEPTHS
         targets, wing_living = phalanx_threat_wing_targets(
-            ct, ally_core, threat_side, local_map
+            ct, ally_core, threat_side, local_map, depths=wing_depths
         )
         if targets:
             site = _nearest_wing_pad(ct.get_position(), targets)
