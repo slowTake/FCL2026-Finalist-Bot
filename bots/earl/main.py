@@ -62,7 +62,7 @@ from logistics import (
     run_economy,
 )
 from pathing import astar, manhattan
-from features import WALL_LOCATIONS
+from features import WALL_LOCATIONS, ORE_LOCATIONS
 
 DIRECTIONS = [d for d in Direction if d != Direction.CENTRE]
 CARDINALS = [Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST]
@@ -191,36 +191,27 @@ def spawn_sites_toward(
             
     walls = set(WALL_LOCATIONS.get(map_id, []))
     def is_passable(p: Position) -> bool:
-        if (p.x, p.y) in footprint_keys:
-            return False
         if not in_bounds(ct, p):
             return False
         if (p.x, p.y) in walls:
             return False
         return True
         
-    def path_len(p: Position) -> int:
-        if p == goal:
-            return 0
-            
-        def is_goal_fn(cand: Position) -> bool:
-            if cand == goal:
-                return True
-            if is_enemy_core:
-                # Check if adjacent to the 2x2 enemy core
-                for dx in (0, 1):
-                    for dy in (0, 1):
-                        cx, cy = goal.x + dx, goal.y + dy
-                        if abs(cand.x - cx) + abs(cand.y - cy) == 1:
-                            return True
-            return False
-            
-        path = astar(p, goal, is_passable=is_passable, is_goal=is_goal_fn, max_iters=200)
-        if path is not None:
-            return len(path)
-        return p.distance_squared(goal) * 1000  # Fallback
-            
-    sites.sort(key=path_len)
+    def is_goal_fn(cand: Position) -> bool:
+        return (cand.x, cand.y) in footprint_keys
+
+    # Run ONE A* from goal to our core footprint
+    path = astar(goal, is_passable=is_passable, is_goal=is_goal_fn, max_iters=1000)
+    
+    if path and len(path) >= 2:
+        # path[0] is the goal. path[-1] is the tile inside our core footprint.
+        # path[-2] is the apron tile the path took right before hitting the core.
+        best_apron = path[-2]
+        sites.sort(key=lambda p: (0 if p == best_apron else 1, p.distance_squared(goal)))
+    else:
+        # Fallback if no path is found (e.g. fully blocked)
+        sites.sort(key=lambda p: p.distance_squared(goal))
+        
     return sites
 
 
@@ -260,6 +251,7 @@ class Player:
     def run(self, ct: Controller) -> None:
         try:
             self.hivemind.tick(ct)
+            my_id = ct.get_id()
             etype = ct.get_entity_type()
             if etype == EntityType.CORE:
                 self._run_core(ct)
@@ -319,11 +311,27 @@ class Player:
         pos = ct.get_position()
         _, enemy = unpack_cores(ct.read_store(SLOT_PACKED_CORES))
         if enemy[0] != CoreState.UNKNOWN:
-            goal = Position(enemy[1], enemy[2])
-            is_enemy = True
+            enemy_pos = Position(enemy[1], enemy[2])
         else:
-            goal = Position(ct.get_map_width() // 2, ct.get_map_height() // 2)
-            is_enemy = False
+            enemy_pos = None
+
+        idx = self.num_spawned + 1
+        is_enemy = False
+
+        if not is_defender(idx) and not is_raider(idx, enemy_pos):
+            # Predict economy role: target nearest ore
+            ores = ORE_LOCATIONS.get(self.hivemind.map_id, [])
+            if ores:
+                closest = min(ores, key=lambda o: manhattan(pos, Position(o[0], o[1])))
+                goal = Position(closest[0], closest[1])
+            else:
+                goal = enemy_pos if enemy_pos else Position(ct.get_map_width() // 2, ct.get_map_height() // 2)
+                if enemy_pos: is_enemy = True
+        else:
+            # Predict raider/defender role: target enemy core if known, else center
+            goal = enemy_pos if enemy_pos else Position(ct.get_map_width() // 2, ct.get_map_height() // 2)
+            if enemy_pos: is_enemy = True
+
         for spawn_pos in spawn_sites_toward(ct, pos, goal, map_id=self.hivemind.map_id, is_enemy_core=is_enemy):
             if self.hivemind.spawn_builder(ct, spawn_pos):
                 self.num_spawned += 1
@@ -373,6 +381,8 @@ class Player:
         round_n = ct.get_current_round()
         if self.spawn_round is None:
             self.spawn_round = round_n
+        
+        my_id = ct.get_id()
         if on_raid_tasklist(
             self.hivemind.my_index,
             self.enemy_core_pos,
