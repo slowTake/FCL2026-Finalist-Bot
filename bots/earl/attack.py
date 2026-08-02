@@ -2,8 +2,8 @@
 
 RAIDERS task list (even my_index, enemy core known) — select via
 ACTIVE_RAID_ORDER = "raiders" in main.py (also after phalanx pivots):
-  - Top priority: if an enemy harvester is in vision, place a gunner in range
-    aimed at it (siege_enemy_harvester).
+  - Top priority: if an uncovered enemy harvester is in vision, place a gunner
+    that can hit it (siege_enemy_harvester; cover = can_fire_from, not range).
   - Before GUNNER_TURN: push the enemy core; stand-fire enemy belts on the way.
   - From GUNNER_TURN: repeating RAID_LOOP — first GUNNER_PHASE_LEN turns place
     gunners, remainder place siege sentinels; when placement is idle (at cap),
@@ -16,10 +16,9 @@ Default ACTIVE_RAID_ORDER is "phalanx" (home apron + wing gunners in defence.py)
 
 Core tops ammo to 12 + 2×gunners + 10×sentinels (from local_map) from a
 caller-chosen min_turn (default GUNNER_TURN; phalanx uses turn 10).
-Turret fire: core first; else gunner → sentinel → builder (then harvester;
-gunners also belts). Gunners rotate toward core or combat targets in vision
-(gunner/sentinel/builder/harvester) when off the current fire line; sentinels stay
-fixed-facing.
+Turret fire: non-belt on the current line first (core → gunner → sentinel →
+builder → harvester); then rotate toward hittable core/combat in vision;
+then belts. Sentinels stay fixed-facing (core → … → harvester, no belts).
 """
 
 from __future__ import annotations
@@ -31,7 +30,7 @@ RAID_LOOP = 40
 GUNNER_PHASE_LEN = 20  # first half of each loop
 # Mirror main.PHALANX_ODD_TO_RAIDERS_TURN — restart siege loop at odd pivot.
 PHALANX_RAID_PIVOT_TURN = 300
-MAX_CORE_GUNNERS = 3
+MAX_CORE_GUNNERS = 8
 MAX_SIEGE_SENTINELS = 5
 SENTINEL_RANGE_SQ = 32
 SENTINEL_PLACE_MIN_SQ = 16  # prefer d≈4+
@@ -62,8 +61,9 @@ _COMBAT_TYPES = (
     EntityType.BUILDER_BOT,
 )
 
-# Rotate onto combat threats when hittable (turrets before builders).
+# Rotate onto hittable threats (core first, then turrets / builders / harvesters).
 _COMBAT_ROTATE_TYPES = (
+    EntityType.CORE,
     EntityType.GUNNER,
     EntityType.SENTINEL,
     EntityType.BUILDER_BOT,
@@ -71,14 +71,15 @@ _COMBAT_ROTATE_TYPES = (
 )
 
 _COMBAT_FIRE_PRIORITY = {
+    EntityType.CORE: 1,
     EntityType.GUNNER: 2,
     EntityType.SENTINEL: 3,
     EntityType.BUILDER_BOT: 4,
     EntityType.HARVESTER: 5,
 }
 
-_GUNNER_FALLBACK_FIRE_PRIORITY = {
-    EntityType.HARVESTER: 5,
+# Post-rotate only — belts must not block rotating off an empty combat line.
+_GUNNER_BELT_FIRE_PRIORITY = {
     EntityType.CONVEYOR: 6,
     EntityType.SPLITTER: 6,
 }
@@ -663,7 +664,7 @@ def _try_rotate_toward_core(ct: Controller) -> bool:
 
 
 def _try_rotate_toward_combat(ct: Controller) -> bool:
-    """Rotate onto nearest hittable enemy gunner/sentinel/builder/harvester."""
+    """Rotate onto nearest hittable core/gunner/sentinel/builder/harvester."""
     target = _best_vision_target(
         ct, _COMBAT_FIRE_PRIORITY, _COMBAT_ROTATE_TYPES, must_hit=True
     )
@@ -676,49 +677,81 @@ def run_sentinel(ct: Controller) -> None:
 
 
 def run_gunner(ct: Controller) -> None:
-    """Fire core/combat on line; rotate to turrets before re-aiming at core."""
-    if _try_fire_priority(ct, {EntityType.CORE: 1}):
-        return
+    """Non-belt on current line → rotate to core/combat → belts only."""
+    # 1. Kill whatever we're already pointed at (not belts).
     if _try_fire_priority(ct, _COMBAT_FIRE_PRIORITY):
         return
-    # Home / harvester gunners: turn onto enemy sentinels/gunners first.
+    # 2. Empty combat line (or only belts): rotate toward a better target.
     if _try_rotate_toward_combat(ct):
         return
     if _try_rotate_toward_core(ct):
         return
-    _try_fire_priority(ct, _GUNNER_FALLBACK_FIRE_PRIORITY)
+    # 3. Nothing to rotate to — clear belts on this facing.
+    _try_fire_priority(ct, _GUNNER_BELT_FIRE_PRIORITY)
 
 
-def _nearest_enemy_harvester(ct: Controller) -> Position | None:
-    """Nearest enemy harvester in vision."""
+def _gunner_can_hit_tile(
+    ct: Controller, site: Position, tile: Position
+) -> bool:
+    """True if some gunner facing from site can fire at tile."""
+    dist = site.distance_squared(tile)
+    if dist < 1 or dist > GUNNER_RANGE_SQ:
+        return False
+    preferred = facing_8way(site, tile)
+    ordered = (preferred,) + tuple(d for d in _FACE_DIRS if d != preferred)
+    for facing in ordered:
+        if ct.can_fire_from(site, facing, EntityType.GUNNER, tile):
+            return True
+    return False
+
+
+def _enemy_harvesters_nearest_first(ct: Controller) -> list[Position]:
+    """Enemy harvesters in vision, nearest first."""
     my_team = ct.get_team()
     pos = ct.get_position()
-    best: Position | None = None
-    best_dist = 10**9
+    found: list[Position] = []
     for eid in _iter_nearby_enemy_ids(ct):
         if ct.get_team(eid) == my_team:
             continue
         if ct.get_entity_type(eid) != EntityType.HARVESTER:
             continue
-        tile = ct.get_position(eid)
-        dist = pos.distance_squared(tile)
-        if dist < best_dist:
-            best_dist = dist
-            best = tile
-    return best
+        found.append(ct.get_position(eid))
+    found.sort(key=lambda t: pos.distance_squared(t))
+    return found
+
+
+def _nearest_enemy_harvester(ct: Controller) -> Position | None:
+    """Nearest enemy harvester in vision."""
+    found = _enemy_harvesters_nearest_first(ct)
+    return found[0] if found else None
+
+
+def _local_map_ally_gunner_credible(
+    ct: Controller, tile: Position, my_team
+) -> bool:
+    """False when vision shows the local_map gunner ghost is gone / wrong."""
+    if not ct.is_in_vision(tile):
+        return True
+    bid = ct.get_tile_building_id(tile)
+    if bid is None:
+        return False
+    return (
+        ct.get_entity_type(bid) == EntityType.GUNNER
+        and ct.get_team(bid) == my_team
+    )
 
 
 def _ally_gunner_covers_harvester(
     ct: Controller, local_map: dict, harvester: Position
 ) -> bool:
-    """True if an ally gunner is already within GUNNER_RANGE_SQ of harvester."""
+    """True if an ally gunner can already hit the harvester (not merely in range)."""
     my_team = ct.get_team()
     for eid in ct.get_nearby_entities():
         if ct.get_entity_type(eid) != EntityType.GUNNER:
             continue
         if ct.get_team(eid) != my_team:
             continue
-        if ct.get_position(eid).distance_squared(harvester) <= GUNNER_RANGE_SQ:
+        if _gunner_can_hit_tile(ct, ct.get_position(eid), harvester):
             return True
     for (x, y), info in local_map.items():
         ent = info.get("entity")
@@ -726,7 +759,10 @@ def _ally_gunner_covers_harvester(
             continue
         if ent.get("type") != EntityType.GUNNER or ent.get("team") != my_team:
             continue
-        if Position(x, y).distance_squared(harvester) <= GUNNER_RANGE_SQ:
+        gpos = Position(x, y)
+        if not _local_map_ally_gunner_credible(ct, gpos, my_team):
+            continue
+        if _gunner_can_hit_tile(ct, gpos, harvester):
             return True
     return False
 
@@ -738,7 +774,11 @@ def pick_harvester_siege_site(
     my_index: int,
     local_map: dict,
 ) -> Position | None:
-    """Empty tile in gunner range of harvester; prefer closer + index stagger."""
+    """Empty tile in gunner range of harvester; prefer closer + index stagger.
+
+    In-vision pads must be able to hit the harvester (`can_fire_from`); fogged
+    pads stay walk targets without LOS verification.
+    """
     best: Position | None = None
     best_score = float("inf")
     my_team = ct.get_team()
@@ -772,6 +812,8 @@ def pick_harvester_siege_site(
                     continue
                 if ct.get_tile_env(cand) != Environment.EMPTY:
                     continue
+                if not _gunner_can_hit_tile(ct, cand, harvester):
+                    continue
             facing = facing_8way(cand, harvester)
             diag_pen = 0 if facing in _CARDINALS else 500
             side = siege_cand_side(cand, harvester)
@@ -795,24 +837,23 @@ def _run_siege_enemy_harvester(
     local_map: dict,
     enemy_core: Position,
 ) -> Position | None:
-    """If enemy harvester in vision uncovered, place a gunner aimed at it."""
-    harvester = _nearest_enemy_harvester(ct)
-    if harvester is None:
-        return None
-    if _ally_gunner_covers_harvester(ct, local_map, harvester):
-        return None
-    site = pick_harvester_siege_site(
-        ct,
-        harvester=harvester,
-        my_index=my_index,
-        local_map=local_map,
-    )
-    if site is None:
-        return None
-    pos = ct.get_position()
-    if abs(pos.x - site.x) + abs(pos.y - site.y) == 1:
-        build_gunner(ct, site, enemy_core, aim_target=harvester)
-    return site
+    """If an uncovered enemy harvester is in vision, place a gunner aimed at it."""
+    for harvester in _enemy_harvesters_nearest_first(ct):
+        if _ally_gunner_covers_harvester(ct, local_map, harvester):
+            continue
+        site = pick_harvester_siege_site(
+            ct,
+            harvester=harvester,
+            my_index=my_index,
+            local_map=local_map,
+        )
+        if site is None:
+            continue
+        pos = ct.get_position()
+        if abs(pos.x - site.x) + abs(pos.y - site.y) == 1:
+            build_gunner(ct, site, enemy_core, aim_target=harvester)
+        return site
+    return None
 
 
 def _run_belt_raid(
@@ -964,6 +1005,43 @@ RAIDERS = (
 )
 
 
+def _run_raid_core_siege(
+    ct: Controller,
+    *,
+    my_index: int,
+    local_map: dict,
+    enemy_core: Position,
+    ally_core: Position | None,
+) -> Position | None:
+    """Gunner/sentinel core siege on the raider RAID_LOOP clock.
+
+    After phalanx odd-pivot, the epoch restarts so walkers get a full gunner
+    window then sentinels. Returns a move/build site, or None when idle at cap /
+    no sentinel site (caller falls through to hunt / other work).
+    """
+    round_n = ct.get_current_round()
+    epoch = (
+        PHALANX_RAID_PIVOT_TURN
+        if round_n >= PHALANX_RAID_PIVOT_TURN
+        else GUNNER_TURN
+    )
+    cycle_t = (round_n - epoch) % RAID_LOOP
+    if cycle_t < GUNNER_PHASE_LEN:
+        return _run_gunner_phase(
+            ct,
+            my_index=my_index,
+            local_map=local_map,
+            enemy_core=enemy_core,
+        )
+    return _run_sentinel_phase(
+        ct,
+        my_index=my_index,
+        local_map=local_map,
+        enemy_core=enemy_core,
+        ally_core=ally_core,
+    )
+
+
 def run_raiders_tasklist(
     ct: Controller,
     *,
@@ -985,25 +1063,7 @@ def run_raiders_tasklist(
     round_n = ct.get_current_round()
     if round_n < GUNNER_TURN:
         return _run_belt_raid(ct, enemy_core=enemy_core)
-    # After phalanx odd-pivot, restart the 40-turn loop so walkers get a full
-    # gunner window then sentinels (not a mid-cycle sentinel stub).
-    epoch = (
-        PHALANX_RAID_PIVOT_TURN
-        if round_n >= PHALANX_RAID_PIVOT_TURN
-        else GUNNER_TURN
-    )
-    cycle_t = (round_n - epoch) % RAID_LOOP
-    if cycle_t < GUNNER_PHASE_LEN:
-        site = _run_gunner_phase(
-            ct,
-            my_index=my_index,
-            local_map=local_map,
-            enemy_core=enemy_core,
-        )
-        if site is not None:
-            return site
-        return _run_raid_hunt(ct, enemy_core=enemy_core)
-    site = _run_sentinel_phase(
+    site = _run_raid_core_siege(
         ct,
         my_index=my_index,
         local_map=local_map,

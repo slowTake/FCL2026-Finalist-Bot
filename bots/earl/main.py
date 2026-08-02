@@ -14,7 +14,7 @@ until 300 then joins raiders), "raiders" (belt raid → gunner/sentinel siege
 loop in attack.py),
 or "harrass" (full raid-path order in harrass.py). Economy builders (odd
 indices while off the raid path) mine under a staged harvester cap
-(3 → 4 → 5 → unlimited) in logistics.py; idle ore recheck every 50 turns.
+(1 → 2 → 3 → 4 → 5 → unlimited) in logistics.py; idle ore recheck every 50 turns.
 Indices 6+ defend the core from spawn.
 
 Store slots:
