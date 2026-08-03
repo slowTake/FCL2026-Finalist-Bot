@@ -334,6 +334,7 @@ class Player:
         return False
 
     def _walk_passable(self, ct: Controller, pos: Position, current_pos: Position | None = None, treat_builders_as_blockers: bool = False) -> bool:
+        # Stricter than is_tile_passable: cores (incl. allied) blocked; only belts/splitters walkable; units block when adjacent (or treat_builders_as_blockers).
         if not in_bounds(ct, pos):
             return False
             
