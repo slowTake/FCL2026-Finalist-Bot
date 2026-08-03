@@ -462,6 +462,8 @@ class Player:
         """Prefer A* when far; greedy fallback."""
         if self._astar_move_toward(ct, target):
             return True
+        if self.cached_path is not None:
+            return False
         return self._greedy_move_toward(ct, target)
 
     # ------------------------------------------------------------------
