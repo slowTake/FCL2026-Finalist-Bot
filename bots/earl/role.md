@@ -111,9 +111,9 @@ wave). Named phases (`RAIDERS`):
    600 after each even-wave clock): up to 8 siege gunners via
    `place_gunner_aggressive` (near enemy core only) at Chebyshev 1–3 with
    verified core LOS.
-3. **place_siege_sentinels** — last 20 turns of each loop: up to 5 sentinels at
-   r² 16–32 (fallback ~3 tiles); sync count to slot 3.
-   (`place_sentinel_aggressive` TBD).
+3. **place_siege_sentinels** — last 20 turns of each loop: up to 5 sentinels via
+   `place_sentinel_aggressive` at r² 16–32 (fallback ~3 tiles); sync count to
+   slot 3.
 4. **belt_raid** (last) — divert to nearest enemy conveyor/splitter in vision
    and stand-fire; else push enemy core. Also the pre-30 fallthrough when the
    siege loop is inactive.

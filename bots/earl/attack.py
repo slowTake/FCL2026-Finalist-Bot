@@ -6,8 +6,8 @@ ACTIVE_RAID_ORDER = "raiders" in main.py (also after phalanx pivots):
     that can hit it via place_gunner_aggressive (on-pad places adjacent;
     cover = can_fire_from, not range).
   - From GUNNER_TURN: repeating RAID_LOOP — first GUNNER_PHASE_LEN turns place
-    gunners (also place_gunner_aggressive), remainder place siege sentinels
-    (sentinel aggressive TBD).
+    gunners (place_gunner_aggressive), remainder place siege sentinels
+    (place_sentinel_aggressive).
   - Last: belt_raid — stand-fire / path to enemy belts, else push enemy core
     (also the pre-GUNNER_TURN fallthrough when core siege is inactive).
   - After PHALANX_WAVE1_TURN / PHALANX_WAVE2_TURN (300 / 600), the loop epoch
@@ -286,6 +286,7 @@ def pick_siege_site(
     ally_core: Position | None,
     my_index: int,
     local_map: dict,
+    exclude: Position | None = None,
 ) -> Position | None:
     """Ring tile in sentinel range; each raider prefers a different side.
 
@@ -299,6 +300,7 @@ def pick_siege_site(
         my_index=my_index,
         local_map=local_map,
         min_dist_sq=SENTINEL_PLACE_MIN_SQ,
+        exclude=exclude,
     )
     if site is not None:
         return site
@@ -309,6 +311,7 @@ def pick_siege_site(
         my_index=my_index,
         local_map=local_map,
         min_dist_sq=SENTINEL_PLACE_FALLBACK_MIN_SQ,
+        exclude=exclude,
     )
 
 
@@ -320,6 +323,7 @@ def _pick_siege_site(
     my_index: int,
     local_map: dict,
     min_dist_sq: int,
+    exclude: Position | None = None,
 ) -> Position | None:
     cx, cy = enemy_core.x, enemy_core.y
     footprint = _core_footprint(enemy_core)
@@ -328,6 +332,8 @@ def _pick_siege_site(
     my_team = ct.get_team()
     prefer = siege_preferred_side(my_index)
     w, h = ct.get_map_width(), ct.get_map_height()
+    ex = exclude.x if exclude is not None else None
+    ey = exclude.y if exclude is not None else None
 
     # Outer rings first (5..3); fallback min allows d=3 tiles through the filter.
     ring: list[Position] = []
@@ -349,6 +355,8 @@ def _pick_siege_site(
         if key in seen:
             continue
         seen.add(key)
+        if ex is not None and cand.x == ex and cand.y == ey:
+            continue
         if not (0 <= cand.x < w and 0 <= cand.y < h):
             continue
         dist = min(cand.distance_squared(t) for t in footprint)
@@ -885,6 +893,35 @@ def place_gunner_aggressive(
     return site
 
 
+def place_sentinel_aggressive(
+    ct: Controller,
+    *,
+    site: Position,
+    enemy_core: Position,
+    pick_alt: Callable[[Position], Position | None] | None = None,
+) -> Position:
+    """Path/place a sentinel without softlocking on the pad.
+
+    Same stance as ``place_gunner_aggressive``: on-pad places on an adjacent
+    valid ring tile; adjacent builds; else path to ``site``.
+    """
+    pos = ct.get_position()
+    if pos.x == site.x and pos.y == site.y:
+        if _try_build_sentinel_on_adjacent_pad(ct, enemy_core=enemy_core):
+            return pos
+        if pick_alt is not None:
+            alt = pick_alt(pos)
+            if alt is not None:
+                return alt
+        return pos
+    if abs(pos.x - site.x) + abs(pos.y - site.y) == 1:
+        if build_sentinel(ct, site, enemy_core):
+            n = min(ct.read_store(SLOT_SENTINEL_COUNT) + 1, MAX_SIEGE_SENTINELS)
+            ct.write_store(SLOT_SENTINEL_COUNT, n)
+        return pos
+    return site
+
+
 def _try_build_gunner_on_adjacent_pad(
     ct: Controller,
     *,
@@ -925,6 +962,41 @@ def _try_build_gunner_on_adjacent_pad(
             prefer.append(n)
     for pad in prefer + fallback:
         if build_gunner(ct, pad, enemy_core, aim_target=aim_target):
+            return True
+    return False
+
+
+def _try_build_sentinel_on_adjacent_pad(
+    ct: Controller, *, enemy_core: Position
+) -> bool:
+    """From current tile, try build_sentinel on an adjacent valid siege pad."""
+    pos = ct.get_position()
+    w, h = ct.get_map_width(), ct.get_map_height()
+    footprint = _core_footprint(enemy_core)
+    pads: list[Position] = []
+    for d in (
+        Direction.NORTH,
+        Direction.EAST,
+        Direction.SOUTH,
+        Direction.WEST,
+    ):
+        n = pos.add(d)
+        if not (0 <= n.x < w and 0 <= n.y < h):
+            continue
+        if not ct.is_in_vision(n):
+            continue
+        if not ct.is_tile_empty(n):
+            continue
+        if ct.get_tile_env(n) != Environment.EMPTY:
+            continue
+        dist = min(n.distance_squared(t) for t in footprint)
+        if dist < SENTINEL_PLACE_FALLBACK_MIN_SQ or dist > SENTINEL_RANGE_SQ:
+            continue
+        pads.append(n)
+    for pad in pads:
+        if build_sentinel(ct, pad, enemy_core):
+            n = min(ct.read_store(SLOT_SENTINEL_COUNT) + 1, MAX_SIEGE_SENTINELS)
+            ct.write_store(SLOT_SENTINEL_COUNT, n)
             return True
     return False
 
@@ -1060,13 +1132,19 @@ def _run_sentinel_phase(
     if site is None:
         return None
 
-    pos = ct.get_position()
-    if abs(pos.x - site.x) + abs(pos.y - site.y) == 1:
-        if build_sentinel(ct, site, enemy_core):
-            n = min(ct.read_store(SLOT_SENTINEL_COUNT) + 1, MAX_SIEGE_SENTINELS)
-            ct.write_store(SLOT_SENTINEL_COUNT, n)
-
-    return site
+    return place_sentinel_aggressive(
+        ct,
+        site=site,
+        enemy_core=enemy_core,
+        pick_alt=lambda ex: pick_siege_site(
+            ct,
+            enemy_core=enemy_core,
+            ally_core=ally_core,
+            my_index=my_index,
+            local_map=local_map,
+            exclude=ex,
+        ),
+    )
 
 
 # Named phases for the offensive raid order (priority-gated in run_raiders_tasklist).

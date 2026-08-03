@@ -160,9 +160,9 @@ Packaged as the `RAIDERS` task list (`run_raiders_tasklist` /
      (`can_fire_from`, cardinals before diagonals); raiders side-stagger. Still
      stand-fire if on a belt.
    - **Sentinels** (last **20** turns of each cycle): place up to **5** siege
-     sentinels at r² 16–32 facing into the enemy core (prefer max range); if no
-     site fits, fall back to ~**3** tiles from the footprint; sync count to slot 3.
-     (`place_sentinel_aggressive` TBD — same on-pad stance as gunners).
+     sentinels via `place_sentinel_aggressive` at r² 16–32 facing into the
+     enemy core (prefer max range); if no site fits, fall back to ~**3** tiles
+     from the footprint; sync count to slot 3.
 3. **Belt raid** (last): if an enemy conveyor/splitter is in vision, divert to
    the **nearest** one and stand-fire (builders fire own tile only); else push
    the enemy core. Also the pre-30 fallthrough when the siege loop is inactive.
