@@ -148,19 +148,21 @@ Packaged as the `RAIDERS` task list (`run_raiders_tasklist` /
 
 1. **Siege enemy harvester** (top priority): if an enemy harvester is in vision
    and no ally gunner can already **hit** it (`can_fire_from`, not mere range):
-   fire/destroy if orthogonally adjacent; else path/place a gunner on an empty
-   in-range pad (prefer LOS-ok; fall back to any empty pad so bots already
-   behind the core are not stuck while fog approachers can still place).
+   `place_gunner_aggressive` on an empty in-range pad (prefer LOS-ok; fall back
+   to any empty pad; on-pad places adjacent). **Melee only if no pad** (hold
+   when adjacent). Else path toward the harvester for melee.
 2. **Siege loop** (from turn 30, every **40** turns; epochs restart at **300**
    and **600** so each even wave gets a fresh gunner→sentinel window):
    - **Gunners** (first **20** turns of each cycle): place up to **8** siege
-     gunners (count only pads within Chebyshev **3** of the enemy 2×2 — home
-     wings do not fill the cap) on empty tiles at distance **1–3**; only sites
-     that can **actually hit** the core (`can_fire_from`, cardinals before
-     diagonals); raiders side-stagger. Still stand-fire if on a belt.
+     gunners via `place_gunner_aggressive` (count only pads within Chebyshev **3**
+     of the enemy 2×2 — home wings do not fill the cap) on empty tiles at
+     distance **1–3**; only sites that can **actually hit** the core
+     (`can_fire_from`, cardinals before diagonals); raiders side-stagger. Still
+     stand-fire if on a belt.
    - **Sentinels** (last **20** turns of each cycle): place up to **5** siege
-     sentinels at r² 16–32 facing into the enemy core (prefer max range); if no
-     site fits, fall back to ~**3** tiles from the footprint; sync count to slot 3.
+     sentinels via `place_sentinel_aggressive` at r² 16–32 facing into the
+     enemy core (prefer max range); if no site fits, fall back to ~**3** tiles
+     from the footprint; sync count to slot 3.
 3. **Belt raid** (last): if an enemy conveyor/splitter is in vision, divert to
    the **nearest** one and stand-fire (builders fire own tile only); else push
    the enemy core. Also the pre-30 fallthrough when the siege loop is inactive.
@@ -184,10 +186,11 @@ but may sticky-graduate into this order via the relay+100 / age-200 OR gate.
 1. **Phalanx home** (`round < 50`) — same duties as phalanx until
    `HARRASS_START_TURN`.
 2. **Siege enemy harvester** — reuse `attack._run_siege_enemy_harvester`
-   first (adjacent melee; gunner pads prefer LOS then empty fallback;
-   nearest uncovered first).
+   / `place_gunner_aggressive` (gunner pad before melee; on-pad places
+   adjacent; nearest uncovered first).
 3. **Siege enemy core** — reuse `attack._run_raid_core_siege` (raider
-   gunner/sentinel loop; no near-core gate — path/place while approaching).
+   gunner/sentinel loop via `place_gunner_aggressive` for gunners; no near-core
+   gate — path/place while approaching).
 4. **Push enemy core** — when no siege site: path toward the enemy core.
 
 ### Ore targeting

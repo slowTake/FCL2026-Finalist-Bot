@@ -3,9 +3,11 @@
 RAIDERS task list (even my_index, enemy core known) — select via
 ACTIVE_RAID_ORDER = "raiders" in main.py (also after phalanx pivots):
   - Top priority: if an uncovered enemy harvester is in vision, place a gunner
-    that can hit it (siege_enemy_harvester; cover = can_fire_from, not range).
+    that can hit it via place_gunner_aggressive (on-pad places adjacent;
+    cover = can_fire_from, not range).
   - From GUNNER_TURN: repeating RAID_LOOP — first GUNNER_PHASE_LEN turns place
-    gunners, remainder place siege sentinels.
+    gunners (place_gunner_aggressive), remainder place siege sentinels
+    (place_sentinel_aggressive).
   - Last: belt_raid — stand-fire / path to enemy belts, else push enemy core
     (also the pre-GUNNER_TURN fallthrough when core siege is inactive).
   - After PHALANX_WAVE1_TURN / PHALANX_WAVE2_TURN (300 / 600), the loop epoch
@@ -23,6 +25,8 @@ then belts. Sentinels stay fixed-facing (core → … → harvester, no belts).
 """
 
 from __future__ import annotations
+
+from collections.abc import Callable
 
 from fcode import Controller, Direction, EntityType, Environment, Position
 
@@ -282,6 +286,7 @@ def pick_siege_site(
     ally_core: Position | None,
     my_index: int,
     local_map: dict,
+    exclude: Position | None = None,
 ) -> Position | None:
     """Ring tile in sentinel range; each raider prefers a different side.
 
@@ -295,6 +300,7 @@ def pick_siege_site(
         my_index=my_index,
         local_map=local_map,
         min_dist_sq=SENTINEL_PLACE_MIN_SQ,
+        exclude=exclude,
     )
     if site is not None:
         return site
@@ -305,6 +311,7 @@ def pick_siege_site(
         my_index=my_index,
         local_map=local_map,
         min_dist_sq=SENTINEL_PLACE_FALLBACK_MIN_SQ,
+        exclude=exclude,
     )
 
 
@@ -316,6 +323,7 @@ def _pick_siege_site(
     my_index: int,
     local_map: dict,
     min_dist_sq: int,
+    exclude: Position | None = None,
 ) -> Position | None:
     cx, cy = enemy_core.x, enemy_core.y
     footprint = _core_footprint(enemy_core)
@@ -324,6 +332,8 @@ def _pick_siege_site(
     my_team = ct.get_team()
     prefer = siege_preferred_side(my_index)
     w, h = ct.get_map_width(), ct.get_map_height()
+    ex = exclude.x if exclude is not None else None
+    ey = exclude.y if exclude is not None else None
 
     # Outer rings first (5..3); fallback min allows d=3 tiles through the filter.
     ring: list[Position] = []
@@ -345,6 +355,8 @@ def _pick_siege_site(
         if key in seen:
             continue
         seen.add(key)
+        if ex is not None and cand.x == ex and cand.y == ey:
+            continue
         if not (0 <= cand.x < w and 0 <= cand.y < h):
             continue
         dist = min(cand.distance_squared(t) for t in footprint)
@@ -383,6 +395,7 @@ def pick_gunner_site(
     enemy_core: Position,
     my_index: int,
     local_map: dict,
+    exclude: Position | None = None,
 ) -> Position | None:
     """Empty tile Chebyshev 1–3 from enemy footprint; must be able to hit core."""
     footprint = _core_footprint(enemy_core)
@@ -394,10 +407,14 @@ def pick_gunner_site(
     pos = ct.get_position()
     w, h = ct.get_map_width(), ct.get_map_height()
     cx, cy = enemy_core.x, enemy_core.y
+    ex = exclude.x if exclude is not None else None
+    ey = exclude.y if exclude is not None else None
 
     for x in range(cx - GUNNER_PLACE_MAX - 1, cx + 2 + GUNNER_PLACE_MAX + 1):
         for y in range(cy - GUNNER_PLACE_MAX - 1, cy + 2 + GUNNER_PLACE_MAX + 1):
             if not (0 <= x < w and 0 <= y < h):
+                continue
+            if ex is not None and x == ex and y == ey:
                 continue
             key = (x, y)
             if key in fp_keys:
@@ -777,6 +794,7 @@ def pick_harvester_siege_site(
     harvester: Position,
     my_index: int,
     local_map: dict,
+    exclude: Position | None = None,
 ) -> Position | None:
     """Empty tile in gunner range of harvester; prefer closer + index stagger.
 
@@ -795,12 +813,16 @@ def pick_harvester_siege_site(
     # Chebyshev span covering GUNNER_RANGE_SQ (r²≤13 → |dx|,|dy| ≤ 3)
     span = 4
     hx, hy = harvester.x, harvester.y
+    ex = exclude.x if exclude is not None else None
+    ey = exclude.y if exclude is not None else None
 
     for x in range(hx - span, hx + span + 1):
         for y in range(hy - span, hy + span + 1):
             if not (0 <= x < w and 0 <= y < h):
                 continue
             if x == hx and y == hy:
+                continue
+            if ex is not None and x == ex and y == ey:
                 continue
             cand = Position(x, y)
             dist = cand.distance_squared(harvester)
@@ -840,6 +862,145 @@ def pick_harvester_siege_site(
     return best_los if best_los is not None else best_fallback
 
 
+def place_gunner_aggressive(
+    ct: Controller,
+    *,
+    site: Position,
+    enemy_core: Position,
+    aim_target: Position | None = None,
+    pick_alt: Callable[[Position], Position | None] | None = None,
+) -> Position:
+    """Path/place a gunner without softlocking on the pad.
+
+    If standing on ``site``, place on an adjacent empty pad that can hit the
+    aim (harvester via ``_gunner_can_hit_tile``, core via ``best_gunner_facing``).
+    If adjacent to ``site``, build there. Always returns a move/hold target.
+    """
+    pos = ct.get_position()
+    if pos.x == site.x and pos.y == site.y:
+        if _try_build_gunner_on_adjacent_pad(
+            ct, enemy_core=enemy_core, aim_target=aim_target
+        ):
+            return pos
+        if pick_alt is not None:
+            alt = pick_alt(pos)
+            if alt is not None:
+                return alt
+        return pos
+    if abs(pos.x - site.x) + abs(pos.y - site.y) == 1:
+        build_gunner(ct, site, enemy_core, aim_target=aim_target)
+        return pos
+    return site
+
+
+def place_sentinel_aggressive(
+    ct: Controller,
+    *,
+    site: Position,
+    enemy_core: Position,
+    pick_alt: Callable[[Position], Position | None] | None = None,
+) -> Position:
+    """Path/place a sentinel without softlocking on the pad.
+
+    Same stance as ``place_gunner_aggressive``: on-pad places on an adjacent
+    valid ring tile; adjacent builds; else path to ``site``.
+    """
+    pos = ct.get_position()
+    if pos.x == site.x and pos.y == site.y:
+        if _try_build_sentinel_on_adjacent_pad(ct, enemy_core=enemy_core):
+            return pos
+        if pick_alt is not None:
+            alt = pick_alt(pos)
+            if alt is not None:
+                return alt
+        return pos
+    if abs(pos.x - site.x) + abs(pos.y - site.y) == 1:
+        if build_sentinel(ct, site, enemy_core):
+            n = min(ct.read_store(SLOT_SENTINEL_COUNT) + 1, MAX_SIEGE_SENTINELS)
+            ct.write_store(SLOT_SENTINEL_COUNT, n)
+        return pos
+    return site
+
+
+def _try_build_gunner_on_adjacent_pad(
+    ct: Controller,
+    *,
+    enemy_core: Position,
+    aim_target: Position | None,
+) -> bool:
+    """From current tile, try build_gunner on an adjacent valid offensive pad."""
+    pos = ct.get_position()
+    w, h = ct.get_map_width(), ct.get_map_height()
+    prefer: list[Position] = []
+    fallback: list[Position] = []
+    for d in (
+        Direction.NORTH,
+        Direction.EAST,
+        Direction.SOUTH,
+        Direction.WEST,
+    ):
+        n = pos.add(d)
+        if not (0 <= n.x < w and 0 <= n.y < h):
+            continue
+        if not ct.is_in_vision(n):
+            continue
+        if not ct.is_tile_empty(n):
+            continue
+        if ct.get_tile_env(n) != Environment.EMPTY:
+            continue
+        if aim_target is not None:
+            dist = n.distance_squared(aim_target)
+            if dist < 1 or dist > GUNNER_RANGE_SQ:
+                continue
+            if _gunner_can_hit_tile(ct, n, aim_target):
+                prefer.append(n)
+            else:
+                fallback.append(n)
+        else:
+            if best_gunner_facing(ct, n, enemy_core) is None:
+                continue
+            prefer.append(n)
+    for pad in prefer + fallback:
+        if build_gunner(ct, pad, enemy_core, aim_target=aim_target):
+            return True
+    return False
+
+
+def _try_build_sentinel_on_adjacent_pad(
+    ct: Controller, *, enemy_core: Position
+) -> bool:
+    """From current tile, try build_sentinel on an adjacent valid siege pad."""
+    pos = ct.get_position()
+    w, h = ct.get_map_width(), ct.get_map_height()
+    footprint = _core_footprint(enemy_core)
+    pads: list[Position] = []
+    for d in (
+        Direction.NORTH,
+        Direction.EAST,
+        Direction.SOUTH,
+        Direction.WEST,
+    ):
+        n = pos.add(d)
+        if not (0 <= n.x < w and 0 <= n.y < h):
+            continue
+        if not ct.is_in_vision(n):
+            continue
+        if not ct.is_tile_empty(n):
+            continue
+        if ct.get_tile_env(n) != Environment.EMPTY:
+            continue
+        dist = min(n.distance_squared(t) for t in footprint)
+        if dist < SENTINEL_PLACE_FALLBACK_MIN_SQ or dist > SENTINEL_RANGE_SQ:
+            continue
+        pads.append(n)
+    for pad in pads:
+        if build_sentinel(ct, pad, enemy_core):
+            n = min(ct.read_store(SLOT_SENTINEL_COUNT) + 1, MAX_SIEGE_SENTINELS)
+            ct.write_store(SLOT_SENTINEL_COUNT, n)
+            return True
+    return False
+
+
 def _try_melee_harvester(ct: Controller, harvester: Position) -> bool:
     """Fire or destroy an orthogonally adjacent enemy harvester. True if acted."""
     pos = ct.get_position()
@@ -863,26 +1024,38 @@ def _run_siege_enemy_harvester(
     local_map: dict,
     enemy_core: Position,
 ) -> Position | None:
-    """If an uncovered enemy harvester is in vision, melee or place a gunner on it."""
+    """If an uncovered enemy harvester is in vision, place a gunner or melee it.
+
+    Gunner pads win over adjacent melee — melee only when no placeable pad.
+    """
     for harvester in _enemy_harvesters_nearest_first(ct):
         if _ally_gunner_covers_harvester(ct, local_map, harvester):
             continue
         pos = ct.get_position()
-        if abs(pos.x - harvester.x) + abs(pos.y - harvester.y) == 1:
-            _try_melee_harvester(ct, harvester)
-            return harvester
         site = pick_harvester_siege_site(
             ct,
             harvester=harvester,
             my_index=my_index,
             local_map=local_map,
         )
-        if site is None:
-            # Still pull toward the harvester so we can melee next turns.
-            return harvester
-        if abs(pos.x - site.x) + abs(pos.y - site.y) == 1:
-            build_gunner(ct, site, enemy_core, aim_target=harvester)
-        return site
+        if site is not None:
+            return place_gunner_aggressive(
+                ct,
+                site=site,
+                enemy_core=enemy_core,
+                aim_target=harvester,
+                pick_alt=lambda ex: pick_harvester_siege_site(
+                    ct,
+                    harvester=harvester,
+                    my_index=my_index,
+                    local_map=local_map,
+                    exclude=ex,
+                ),
+            )
+        if abs(pos.x - harvester.x) + abs(pos.y - harvester.y) == 1:
+            _try_melee_harvester(ct, harvester)
+            return pos
+        return harvester
     return None
 
 
@@ -921,10 +1094,19 @@ def _run_gunner_phase(
     if site is None:
         return enemy_core
 
-    pos = ct.get_position()
-    if abs(pos.x - site.x) + abs(pos.y - site.y) == 1:
-        build_gunner(ct, site, enemy_core)
-    return site
+    return place_gunner_aggressive(
+        ct,
+        site=site,
+        enemy_core=enemy_core,
+        aim_target=None,
+        pick_alt=lambda ex: pick_gunner_site(
+            ct,
+            enemy_core=enemy_core,
+            my_index=my_index,
+            local_map=local_map,
+            exclude=ex,
+        ),
+    )
 
 
 def _run_sentinel_phase(
@@ -950,13 +1132,19 @@ def _run_sentinel_phase(
     if site is None:
         return None
 
-    pos = ct.get_position()
-    if abs(pos.x - site.x) + abs(pos.y - site.y) == 1:
-        if build_sentinel(ct, site, enemy_core):
-            n = min(ct.read_store(SLOT_SENTINEL_COUNT) + 1, MAX_SIEGE_SENTINELS)
-            ct.write_store(SLOT_SENTINEL_COUNT, n)
-
-    return site
+    return place_sentinel_aggressive(
+        ct,
+        site=site,
+        enemy_core=enemy_core,
+        pick_alt=lambda ex: pick_siege_site(
+            ct,
+            enemy_core=enemy_core,
+            ally_core=ally_core,
+            my_index=my_index,
+            local_map=local_map,
+            exclude=ex,
+        ),
+    )
 
 
 # Named phases for the offensive raid order (priority-gated in run_raiders_tasklist).
