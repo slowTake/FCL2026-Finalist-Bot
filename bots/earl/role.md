@@ -29,7 +29,7 @@ Mine and inbound-relay (`logistics.py`). Named phases (`ECONOMY`):
    enemy core known.
 3. **snipe_enemy_harvester** — if enemy core known and an uncovered enemy
    harvester is in vision, path/place a gunner that can hit it
-   (`attack._run_siege_enemy_harvester`; same helper as harrass). Skips mining
+   (`place_gunner_aggressive` via `_run_siege_enemy_harvester`). Skips mining
    that turn.
 4. **idle_ore_recheck** — every 50 turns: clear `skipped_ores` / `ore_site` and
    allow ally-harvester candidates so broken inbound belts can be rebuilt.
@@ -104,15 +104,16 @@ Offensive siege when `ACTIVE_RAID_ORDER = "raiders"` (or after a phalanx even
 wave). Named phases (`RAIDERS`):
 
 1. **siege_enemy_harvester** — if an enemy harvester is in vision and no ally
-   gunner can already hit it (`can_fire_from`): fire/destroy if orthogonally
-   adjacent; else place a gunner on an empty in-range pad (prefer LOS-ok;
-   fall back to any empty pad / fog walk target so on-site bots are not stuck
-   behind the core). Index-staggered; nearest uncovered first.
+   gunner can already hit it (`can_fire_from`): `place_gunner_aggressive` on an
+   empty in-range pad (prefer LOS-ok; on-pad places adjacent). Melee only when
+   no pad exists. Index-staggered; nearest uncovered first.
 2. **place_gunners** — first 20 turns of each 40-turn loop (epoch 30, or 300 /
-   600 after each even-wave clock): up to 8 siege gunners (near enemy core
-   only) at Chebyshev 1–3 with verified core LOS.
+   600 after each even-wave clock): up to 8 siege gunners via
+   `place_gunner_aggressive` (near enemy core only) at Chebyshev 1–3 with
+   verified core LOS.
 3. **place_siege_sentinels** — last 20 turns of each loop: up to 5 sentinels at
    r² 16–32 (fallback ~3 tiles); sync count to slot 3.
+   (`place_sentinel_aggressive` TBD).
 4. **belt_raid** (last) — divert to nearest enemy conveyor/splitter in vision
    and stand-fire; else push enemy core. Also the pre-30 fallthrough when the
    siege loop is inactive.
@@ -130,11 +131,12 @@ phases (`HARRASS`):
 1. **phalanx_home** (`round < 50`) — delegate to `run_phalanx` until
    `HARRASS_START_TURN`.
 2. **siege_enemy_harvester** — same as raiders
-   (`attack._run_siege_enemy_harvester`); uncovered enemy harvester in vision
-   first (adjacent melee, then gunner pad with LOS fallback).
+   (`attack._run_siege_enemy_harvester` / `place_gunner_aggressive`); uncovered
+   enemy harvester in vision first (gunner pad before melee; on-pad places
+   adjacent).
 3. **siege_enemy_core** — raider core gunner/sentinel siege
-   (`attack._run_raid_core_siege`); same loop as raiders, no near-core gate
-   (path/place while approaching).
+   (`attack._run_raid_core_siege`; gunners via `place_gunner_aggressive`); same
+   loop as raiders, no near-core gate (path/place while approaching).
 4. **push_enemy_core** — when siege has no site: path toward the enemy core.
 
 Not assigned by index under default phalanx (odds may sticky-graduate via
