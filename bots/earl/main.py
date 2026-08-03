@@ -115,6 +115,47 @@ def in_bounds(ct: Controller, pos: Position) -> bool:
     return 0 <= pos.x < ct.get_map_width() and 0 <= pos.y < ct.get_map_height()
 
 
+class LoggingController:
+    def __init__(self, ct: Controller):
+        self._ct = ct
+        self.action_log = "idle()"
+        
+    def move(self, d: Direction):
+        self.action_log = f"move({d.name})"
+        return self._ct.move(d)
+
+    def build(self, t: EntityType, d: Direction):
+        self.action_log = f"build({t.name}, {d.name})"
+        return self._ct.build(t, d)
+        
+    def fire(self, p: Position):
+        self.action_log = f"fire({p.x}, {p.y})"
+        return self._ct.fire(p)
+        
+    def heal(self, p: Position):
+        self.action_log = f"heal({p.x}, {p.y})"
+        return self._ct.heal(p)
+        
+    def rotate(self, d: Direction):
+        self.action_log = f"rotate({d.name})"
+        return self._ct.rotate(d)
+        
+    def spawn(self, t: EntityType, p: Position):
+        self.action_log = f"spawn({t.name}, {p.x}, {p.y})"
+        return self._ct.spawn(t, p)
+
+    def mine(self, p: Position):
+        self.action_log = f"mine({p.x}, {p.y})"
+        return self._ct.mine(p)
+        
+    def repair(self, p: Position):
+        self.action_log = f"repair({p.x}, {p.y})"
+        return self._ct.repair(p)
+
+    def __getattr__(self, name):
+        return getattr(self._ct, name)
+
+
 class Player:
     def __init__(self):
         self.hivemind = HiveMind()
@@ -150,7 +191,7 @@ class Player:
         try:
             self.hivemind.tick(ct)
             my_id = ct.get_id()
-            etype = ct.get_entity_type()
+            etype = ct.get_entity_type(my_id)
             if etype == EntityType.CORE:
                 self._run_core(ct)
             elif etype == EntityType.BUILDER_BOT:
@@ -216,11 +257,12 @@ class Player:
     # ------------------------------------------------------------------
 
     def _run_builder(self, ct: Controller) -> None:
-        pos = ct.get_position()
+        logging_ct = LoggingController(ct)
+        pos = logging_ct.get_position()
         if self.core_pos is None:
-            self._read_core_pos(ct)
+            self._read_core_pos(logging_ct)
         if self.enemy_core_pos is None:
-            self._read_enemy_core(ct)
+            self._read_enemy_core(logging_ct)
 
         if self.last_pos == pos:
             self.stuck += 1
@@ -228,7 +270,8 @@ class Player:
             self.stuck = 0
         self.last_pos = pos
 
-        run_builder_roles(self, ct)
+        run_builder_roles(self, logging_ct)
+        print(f"[{logging_ct.get_current_round()}] Builder {logging_ct.get_id()} at {pos}: {logging_ct.action_log}")
 
     def _read_core_pos(self, ct: Controller) -> None:
         ally, _ = unpack_cores(ct.read_store(SLOT_PACKED_CORES))
