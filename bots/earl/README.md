@@ -4,9 +4,9 @@ Starter economy loop + HiveMind (`components/` symlinks) + **inbound steal-relay
 belts to the **ally** core only. Default **`ACTIVE_RAID_ORDER = "phalanx"`**
 ([`roles.py`](roles.py)): **even** builders → home phalanx (`defence.py`) once
 the enemy core is known; fire-and-forget even waves leave at **300** / **600**
-by spawn cohort (later even spawns refill phalanx and never raid); **odd**
-builders → economy (`logistics.py`); optional harrass graduate via
-`USE_ECONOMY_HARRASS_GRADUATE` (currently **off**). Set to **`raiders`** for the offensive belt-raid
+by spawn cohort; **spawn ≥ 600** (any index) → economy; **odd** builders
+(spawned earlier) → economy (`logistics.py`); optional harrass graduate via
+`USE_ECONOMY_HARRASS_GRADUATE` (currently **on**). Set to **`raiders`** for the offensive belt-raid
 → gunner/sentinel siege loop (`attack.py`); set to **`harrass`** for harvester
 siege + seek (`harrass.py`). Economy harvester caps (**2** until 50, **3**
 until 100, **4** until 200, **5** until 250, **6** until 400, then unlimited);
@@ -63,14 +63,15 @@ turn **10**; raiders at **30**.
 Each turn (`_run_builder` → `roles.run_builder_roles`), after HiveMind `tick`
 and stuck tracking. Role details and phase lists live in [`role.md`](role.md).
 
-0. **Raid gate** — `on_raid_tasklist` in `roles.py` (default: even indices once
-   enemy core known → `phalanx` or fire-and-forget `raiders` by spawn cohort at
-   300/600; or full `raiders` / `harrass` override); abort relay/ore; move
-   toward site and return.
-1. **Economy** (`run_economy` / `ECONOMY` in `logistics.py`) — odd builders:
+0. **Raid gate** — `on_raid_tasklist` in `roles.py` (default: even indices
+   spawned before **600** once enemy core known → `phalanx` or fire-and-forget
+   `raiders` by spawn cohort at 300/600; spawn ≥ 600 → economy; or full
+   `raiders` / `harrass` override); abort relay/ore; move toward site and return.
+1. **Economy** (`run_economy` / `ECONOMY` in `logistics.py`) — odd builders and
+   any builder spawned at/after **600**:
    1. **If `in_relay`** → finish inbound relay (always, even at harvester cap).
    2. **Harrass graduate** — when `USE_ECONOMY_HARRASS_GRADUATE` (currently
-      **off**): sticky `run_harrasser` after first completed relay + **100**
+      **on**): sticky `run_harrasser` after first completed relay + **100**
       turns **or** age ≥ **200** from spawn (whichever first; needs enemy
       core known).
    3. **Snipe enemy harvester** — uncovered enemy harvester in vision →
@@ -108,7 +109,7 @@ by `spawn_round` cohort (via `effective_raid_order`):
 |--------|----------|
 | `spawn < 300` | Phalanx until **300**, then sticky raiders |
 | `300 ≤ spawn < 600` | Phalanx until **600**, then sticky raiders |
-| `spawn ≥ 600` | Phalanx forever (home refill after wave 2) |
+| `spawn ≥ 600` | **Economy** (all indices; no phalanx refill) |
 
 While still on phalanx:
 
@@ -238,7 +239,9 @@ After building or claiming a harvester, A\* a conveyor path to an **ally**
 core-adjacent tile (`is_core_adjacent` requires our team). Entry prefers the
 **nearest** core face; builder-index side stagger is only a tiebreak when
 lengths match (avoids routing around the core and tearing up inbound belts).
-Falling back to any core-adjacent tile if that face is unreachable. If a path onto a
+Falling back to any core-adjacent tile if that face is unreachable. Relay A\*
+uses HiveMind `local_map` blockers in fog so paths route around known
+gunners/walls (unknown fog stays optimistic). If a path onto a
 **visible allied belt** at least Chebyshev **4** from the core is at least
 **8** tiles shorter than the core path, prefer that merge spur instead (build
 up to the join). After the spur joins, the builder **continues** with a

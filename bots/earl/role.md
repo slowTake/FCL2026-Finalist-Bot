@@ -25,7 +25,7 @@ Mine and inbound-relay (`logistics.py`). Named phases (`ECONOMY`):
 
 1. **finish_relay** — if `in_relay`, only pave the inbound chain to the ally core.
 2. **harrass_after_relay** — when `USE_ECONOMY_HARRASS_GRADUATE` (currently
-   **off**): sticky `run_harrasser` after the **first** completed inbound
+   **on**): sticky `run_harrasser` after the **first** completed inbound
    relay plus **100** turns (`ECONOMY_TO_HARRASS_DELAY`) **or** age ≥ **200**
    from spawn (`ECONOMY_MIN_AGE_BEFORE_HARRASS`) — whichever fires first.
    Requires enemy core known.
@@ -68,9 +68,9 @@ empty ores or steals; idle recheck may still re-relay **ally** harvesters.
 Constants: `HARVESTER_CAP_1`…`_5` (values 2…6), `HARVESTER_CAP_TO_2_TURN` (50),
 `TO_3` (100), `TO_4` (200), `TO_5` (250), `UNLIMITED` (400) in `logistics.py`.
 
-Under default phalanx order, **odd** builders stay on the economy role menu
-forever (including late spawns); they may graduate to sticky harrass inside
-`run_economy` via the OR gate above.
+Under default phalanx order, **odd** builders and **any** builder with
+`spawn_round ≥ 600` stay on the economy role menu; they may graduate to sticky
+harrass inside `run_economy` via the OR gate above.
 
 ---
 
@@ -97,8 +97,8 @@ Home defence for **even** builders once the enemy core is known
 
 Fire-and-forget even waves (`PHALANX_WAVE1_TURN` / `PHALANX_WAVE2_TURN` in
 `roles.py`): spawn `< 300` leave at 300; spawn `< 600` leave at 600; spawn
-`≥ 600` stay phalanx forever (home refill). No global raid mode — later
-even bots are unaffected.
+`≥ 600` are **economy** (all indices, no home phalanx refill). No global raid
+mode — later even bots spawned before 600 still refill until their wave leaves.
 
 ---
 
