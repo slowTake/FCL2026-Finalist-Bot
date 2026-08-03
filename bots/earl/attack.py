@@ -19,9 +19,10 @@ Default ACTIVE_RAID_ORDER is "phalanx" (home apron + wing gunners in defence.py)
 
 Core tops ammo to 12 + 2×gunners + 10×sentinels (from local_map) from a
 caller-chosen min_turn (default GUNNER_TURN; phalanx uses turn 10).
-Turret fire: non-belt on the current line first (core → gunner → sentinel →
-builder → harvester); then rotate toward hittable core/combat in vision;
-then belts. Sentinels stay fixed-facing (core → … → harvester, no belts).
+Turret fire: combat on the current line first (core → gunner → sentinel →
+launcher → builder → harvester), then enemy belts on that facing, then rotate
+toward hittable core/combat (incl. launcher), then soft rotate to belts /
+launcher. Sentinels stay fixed-facing (core → … → harvester, no belts).
 """
 
 from __future__ import annotations
@@ -45,6 +46,8 @@ SENTINEL_PLACE_MIN_SQ = 16  # prefer d≈4+
 SENTINEL_PLACE_FALLBACK_MIN_SQ = 9  # allow d≈3 when nothing else fits
 GUNNER_PLACE_MIN = 1
 GUNNER_PLACE_MAX = 3
+# False = place by range (test); True = prefer can_fire_from pads / cover.
+GUNNER_REQUIRE_LOS = False
 AMMO_FLOOR_BONUS = 12
 AMMO_PER_GUNNER = 2
 AMMO_PER_SENTINEL = 10
@@ -74,6 +77,7 @@ _COMBAT_ROTATE_TYPES = (
     EntityType.CORE,
     EntityType.GUNNER,
     EntityType.SENTINEL,
+    EntityType.LAUNCHER,
     EntityType.BUILDER_BOT,
     EntityType.HARVESTER,
 )
@@ -82,14 +86,27 @@ _COMBAT_FIRE_PRIORITY = {
     EntityType.CORE: 1,
     EntityType.GUNNER: 2,
     EntityType.SENTINEL: 3,
-    EntityType.BUILDER_BOT: 4,
-    EntityType.HARVESTER: 5,
+    EntityType.LAUNCHER: 4,
+    EntityType.BUILDER_BOT: 5,
+    EntityType.HARVESTER: 6,
 }
 
-# Post-rotate only — belts must not block rotating off an empty combat line.
+# Post-combat on facing — clear belts before rotating off the line.
 _GUNNER_BELT_FIRE_PRIORITY = {
     EntityType.CONVEYOR: 6,
     EntityType.SPLITTER: 6,
+}
+
+# After combat/core rotate — turn onto belts or a leftover launcher.
+_SOFT_ROTATE_TYPES = (
+    EntityType.LAUNCHER,
+    EntityType.CONVEYOR,
+    EntityType.SPLITTER,
+)
+_GUNNER_SOFT_ROTATE_PRIORITY = {
+    EntityType.LAUNCHER: 4,
+    EntityType.CONVEYOR: 7,
+    EntityType.SPLITTER: 7,
 }
 
 _FACE_DIRS = tuple(d for d in Direction if d != Direction.CENTRE)
@@ -397,7 +414,11 @@ def pick_gunner_site(
     local_map: dict,
     exclude: Position | None = None,
 ) -> Position | None:
-    """Empty tile Chebyshev 1–3 from enemy footprint; must be able to hit core."""
+    """Empty tile Chebyshev 1–3 from enemy footprint.
+
+    When ``GUNNER_REQUIRE_LOS``, only pads that can hit the core. Otherwise any
+    empty in-range pad (aim with ``facing_8way`` at build time if blocked).
+    """
     footprint = _core_footprint(enemy_core)
     fp_keys = {(t.x, t.y) for t in footprint}
     best: Position | None = None
@@ -435,9 +456,14 @@ def pick_gunner_site(
                     continue
                 if ct.get_tile_env(cand) != Environment.EMPTY:
                     continue
+            aim = _aim_core_tile(cand, enemy_core)
+            if _ally_turret_blocks_aim(ct, cand, aim, local_map):
+                continue
             facing = best_gunner_facing(ct, cand, enemy_core)
             if facing is None:
-                continue
+                if GUNNER_REQUIRE_LOS:
+                    continue
+                facing = facing_toward_core(cand, enemy_core)
             diag_pen = 0 if facing in _CARDINALS else 500
             side = siege_cand_side(cand, enemy_core)
             side_pen = (
@@ -479,8 +505,9 @@ def build_gunner(
     """Build a gunner at site. Face core if in range and aiming at core; else aim_target.
 
     When aim_target is None, aim is the enemy core (siege / wing pads).
-    Core-siege pads use can_fire_from-verified facing; harvester / out-of-range
-    aim uses facing_8way so the pad is already on the fire line.
+    Core-siege pads prefer can_fire_from-verified facing; if blocked and
+    ``GUNNER_REQUIRE_LOS`` is off, fall back to facing_8way. Harvester /
+    out-of-range aim always uses facing_8way.
     """
     pos = ct.get_position()
     if abs(pos.x - site.x) + abs(pos.y - site.y) != 1:
@@ -500,9 +527,16 @@ def build_gunner(
     if core_in_range and aim_is_core:
         facing = best_gunner_facing(ct, site, enemy_core)
         if facing is None:
-            return False
+            if GUNNER_REQUIRE_LOS:
+                return False
+            facing = facing_8way(site, target)
+        ray_target = _aim_core_tile(site, enemy_core)
     else:
         facing = facing_8way(site, target)
+        ray_target = target
+
+    if _ally_turret_blocks_aim(ct, site, ray_target):
+        return False
 
     if not ct.can_build_gunner(site, facing):
         return False
@@ -685,9 +719,17 @@ def _try_rotate_toward_core(ct: Controller) -> bool:
 
 
 def _try_rotate_toward_combat(ct: Controller) -> bool:
-    """Rotate onto nearest hittable core/gunner/sentinel/builder/harvester."""
+    """Rotate onto nearest hittable core/gunner/sentinel/launcher/builder/harvester."""
     target = _best_vision_target(
         ct, _COMBAT_FIRE_PRIORITY, _COMBAT_ROTATE_TYPES, must_hit=True
+    )
+    return target is not None and _try_rotate_toward(ct, target)
+
+
+def _try_rotate_toward_soft(ct: Controller) -> bool:
+    """Rotate onto nearest hittable launcher/conveyor/splitter."""
+    target = _best_vision_target(
+        ct, _GUNNER_SOFT_ROTATE_PRIORITY, _SOFT_ROTATE_TYPES, must_hit=True
     )
     return target is not None and _try_rotate_toward(ct, target)
 
@@ -698,17 +740,20 @@ def run_sentinel(ct: Controller) -> None:
 
 
 def run_gunner(ct: Controller) -> None:
-    """Non-belt on current line → rotate to core/combat → belts only."""
-    # 1. Kill whatever we're already pointed at (not belts).
+    """Combat on facing → belts → rotate combat/core → soft rotate belts/launcher."""
+    # 1. Kill combat on this facing (incl. launcher).
     if _try_fire_priority(ct, _COMBAT_FIRE_PRIORITY):
         return
-    # 2. Empty combat line (or only belts): rotate toward a better target.
+    # 2. Clear enemy belts on this facing before abandoning the line.
+    if _try_fire_priority(ct, _GUNNER_BELT_FIRE_PRIORITY):
+        return
+    # 3. Empty line: rotate toward a better target (fires next turn).
     if _try_rotate_toward_combat(ct):
         return
     if _try_rotate_toward_core(ct):
         return
-    # 3. Nothing to rotate to — clear belts on this facing.
-    _try_fire_priority(ct, _GUNNER_BELT_FIRE_PRIORITY)
+    if _try_rotate_toward_soft(ct):
+        return
 
 
 def _gunner_can_hit_tile(
@@ -723,6 +768,61 @@ def _gunner_can_hit_tile(
     for facing in ordered:
         if ct.can_fire_from(site, facing, EntityType.GUNNER, tile):
             return True
+    return False
+
+
+_ALLY_TURRET_TYPES = frozenset({EntityType.GUNNER, EntityType.SENTINEL})
+
+
+def _ally_turret_at(
+    ct: Controller,
+    tile: Position,
+    my_team,
+    local_map: dict | None,
+) -> bool:
+    """True if an ally gunner/sentinel is on tile (vision, else local_map)."""
+    if ct.is_in_vision(tile):
+        bid = ct.get_tile_building_id(tile)
+        if bid is None:
+            return False
+        if ct.get_team(bid) != my_team:
+            return False
+        return ct.get_entity_type(bid) in _ALLY_TURRET_TYPES
+    if local_map is None:
+        return False
+    ent = local_map.get((tile.x, tile.y), {}).get("entity")
+    if not ent:
+        return False
+    return (
+        ent.get("team") == my_team
+        and ent.get("type") in _ALLY_TURRET_TYPES
+    )
+
+
+def _ally_turret_blocks_aim(
+    ct: Controller,
+    site: Position,
+    target: Position,
+    local_map: dict | None = None,
+) -> bool:
+    """True if ally gunner/sentinel is on facing_8way ray before target."""
+    if site.x == target.x and site.y == target.y:
+        return False
+    facing = facing_8way(site, target)
+    my_team = ct.get_team()
+    w, h = ct.get_map_width(), ct.get_map_height()
+    p = site.add(facing)
+    # Chebyshev span covering gunner range (r²≤13 → |dx|,|dy| ≤ 3)
+    for _ in range(8):
+        if not (0 <= p.x < w and 0 <= p.y < h):
+            return False
+        if p.x == target.x and p.y == target.y:
+            return False
+        if max(abs(p.x - site.x), abs(p.y - site.y)) > 4:
+            return False
+        if _ally_turret_at(ct, p, my_team, local_map):
+            return True
+        p = p.add(facing)
     return False
 
 
@@ -765,14 +865,27 @@ def _local_map_ally_gunner_credible(
 def _ally_gunner_covers_harvester(
     ct: Controller, local_map: dict, harvester: Position
 ) -> bool:
-    """True if an ally gunner can already hit the harvester (not merely in range)."""
+    """True if an ally gunner already covers the harvester.
+
+    With ``GUNNER_REQUIRE_LOS``, must be able to hit (`can_fire_from`).
+    Otherwise in-range is enough (avoids stacking pads on belt rings).
+    """
     my_team = ct.get_team()
+
+    def _covers(gpos: Position) -> bool:
+        dist = gpos.distance_squared(harvester)
+        if dist < 1 or dist > GUNNER_RANGE_SQ:
+            return False
+        if not GUNNER_REQUIRE_LOS:
+            return True
+        return _gunner_can_hit_tile(ct, gpos, harvester)
+
     for eid in ct.get_nearby_entities():
         if ct.get_entity_type(eid) != EntityType.GUNNER:
             continue
         if ct.get_team(eid) != my_team:
             continue
-        if _gunner_can_hit_tile(ct, ct.get_position(eid), harvester):
+        if _covers(ct.get_position(eid)):
             return True
     for (x, y), info in local_map.items():
         ent = info.get("entity")
@@ -783,7 +896,7 @@ def _ally_gunner_covers_harvester(
         gpos = Position(x, y)
         if not _local_map_ally_gunner_credible(ct, gpos, my_team):
             continue
-        if _gunner_can_hit_tile(ct, gpos, harvester):
+        if _covers(gpos):
             return True
     return False
 
@@ -798,9 +911,10 @@ def pick_harvester_siege_site(
 ) -> Position | None:
     """Empty tile in gunner range of harvester; prefer closer + index stagger.
 
-    Prefer in-vision pads that can hit (`can_fire_from`) and fog walk targets.
-    If none, fall back to any empty in-range in-vision pad (same as fog) so
-    bots already on-site are not stuck when core/belts block LOS.
+    With ``GUNNER_REQUIRE_LOS``, prefer in-vision pads that can hit
+    (`can_fire_from`) and fog walk targets; else fall back to any empty
+    in-range in-vision pad. With the flag off, pick by range/score only
+    (fog walk targets still allowed).
     """
     best_los: Position | None = None
     best_los_score = float("inf")
@@ -842,6 +956,8 @@ def pick_harvester_siege_site(
                     continue
                 if ct.get_tile_env(cand) != Environment.EMPTY:
                     continue
+            if _ally_turret_blocks_aim(ct, cand, harvester, local_map):
+                continue
             facing = facing_8way(cand, harvester)
             diag_pen = 0 if facing in _CARDINALS else 500
             side = siege_cand_side(cand, harvester)
@@ -852,6 +968,11 @@ def pick_harvester_siege_site(
             )
             # Prefer closer to harvester; builder distance is tiebreak.
             score = side_pen + diag_pen + dist * 100 + pos.distance_squared(cand)
+            if not GUNNER_REQUIRE_LOS:
+                if score < best_fallback_score:
+                    best_fallback_score = score
+                    best_fallback = cand
+                continue
             los_ok = (not in_vis) or _gunner_can_hit_tile(ct, cand, harvester)
             if los_ok and score < best_los_score:
                 best_los_score = score
@@ -872,9 +993,9 @@ def place_gunner_aggressive(
 ) -> Position:
     """Path/place a gunner without softlocking on the pad.
 
-    If standing on ``site``, place on an adjacent empty pad that can hit the
-    aim (harvester via ``_gunner_can_hit_tile``, core via ``best_gunner_facing``).
-    If adjacent to ``site``, build there. Always returns a move/hold target.
+    If standing on ``site``, place on an adjacent empty pad (LOS preference
+    gated by ``GUNNER_REQUIRE_LOS``). If adjacent to ``site``, build there.
+    Always returns a move/hold target.
     """
     pos = ct.get_position()
     if pos.x == site.x and pos.y == site.y:
@@ -931,6 +1052,7 @@ def _try_build_gunner_on_adjacent_pad(
     """From current tile, try build_gunner on an adjacent valid offensive pad."""
     pos = ct.get_position()
     w, h = ct.get_map_width(), ct.get_map_height()
+    footprint = _core_footprint(enemy_core)
     prefer: list[Position] = []
     fallback: list[Position] = []
     for d in (
@@ -952,14 +1074,22 @@ def _try_build_gunner_on_adjacent_pad(
             dist = n.distance_squared(aim_target)
             if dist < 1 or dist > GUNNER_RANGE_SQ:
                 continue
-            if _gunner_can_hit_tile(ct, n, aim_target):
+            if _ally_turret_blocks_aim(ct, n, aim_target):
+                continue
+            if GUNNER_REQUIRE_LOS and _gunner_can_hit_tile(ct, n, aim_target):
                 prefer.append(n)
             else:
                 fallback.append(n)
         else:
-            if best_gunner_facing(ct, n, enemy_core) is None:
+            cheb = _chebyshev_to_footprint(n, footprint)
+            if cheb < GUNNER_PLACE_MIN or cheb > GUNNER_PLACE_MAX:
                 continue
-            prefer.append(n)
+            if _ally_turret_blocks_aim(ct, n, _aim_core_tile(n, enemy_core)):
+                continue
+            if best_gunner_facing(ct, n, enemy_core) is not None:
+                prefer.append(n)
+            elif not GUNNER_REQUIRE_LOS:
+                fallback.append(n)
     for pad in prefer + fallback:
         if build_gunner(ct, pad, enemy_core, aim_target=aim_target):
             return True
