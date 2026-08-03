@@ -54,6 +54,7 @@ from fcode import (
     Controller,
     Direction,
     EntityType,
+    Environment,
     Position,
 )
 from hivemind import CoreState, HiveMind, unpack_cores
@@ -290,7 +291,7 @@ class Player:
                 return False
                 
             b_id = ct.get_tile_building_id(pos)
-            if b_id > 0:
+            if b_id is not None:
                 b_type = ct.get_entity_type(b_id)
                 if b_type not in (EntityType.CONVEYOR, EntityType.SPLITTER):
                     return False
