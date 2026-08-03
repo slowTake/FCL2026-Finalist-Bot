@@ -4,7 +4,7 @@ Late spawns (indices >= DEFENDER_MIN_INDEX) stay near the ally core: hunt
 enemy gunners in vision, heal, fire, then lay a per-side inward apron
 (3-deep belts, no barriers).
 
-Even builders may run PHALANX (see ACTIVE_RAID_ORDER in main): while the
+Even builders may run PHALANX (see ACTIVE_RAID_ORDER in roles.py): while the
 core's sticky threat switch is armed (enemy builder or gunner/sentinel in
 vision), place wing gunners first then hunt enemy gunners/sentinels;
 approach apron only while armed. Soft fill uses depths 1–5; live builder

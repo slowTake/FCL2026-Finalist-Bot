@@ -1,7 +1,7 @@
 """Raider attack role, ammo top-up, and turret fire for earl.
 
 RAIDERS task list (even my_index, enemy core known) — select via
-ACTIVE_RAID_ORDER = "raiders" in main.py (also after phalanx pivots):
+ACTIVE_RAID_ORDER = "raiders" in roles.py (also after phalanx pivots):
   - Top priority: if an uncovered enemy harvester is in vision, place a gunner
     that can hit it via place_gunner_aggressive (on-pad places adjacent;
     cover = can_fire_from, not range).

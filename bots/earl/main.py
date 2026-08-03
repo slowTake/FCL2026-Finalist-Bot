@@ -5,14 +5,15 @@ steal any harvester), then pave a committed conveyor path back to the core.
 Wrong-facing allied belts are destroyed and rebuilt; enemy belts are cleared
 via stand-and-fire.
 
-Builder roles (see role.md): economy, phalanx; optional raiders/harrass via
-ACTIVE_RAID_ORDER. Default **"phalanx"**: even builders → home phalanx once
-the enemy core is known; fire-and-forget even waves leave at 300 / 600 by
-spawn cohort (later evens refill phalanx); odd builders → economy (mine +
-snipe; graduate to harrass on relay+100 or age 200). Overrides: "raiders"
-(belt raid → gunner/sentinel siege in attack.py), "harrass" (harrass.py).
-Economy harvester caps (2 → 3 → 4 → 5 → 6 → unlimited) in logistics.py;
-idle ore recheck every 50 turns.
+Builder roles (see role.md / roles.py): economy, phalanx; optional
+raiders/harrass via ACTIVE_RAID_ORDER in roles.py. Default **"phalanx"**:
+even builders → home phalanx once the enemy core is known; fire-and-forget
+even waves leave at 300 / 600 by spawn cohort (later evens refill phalanx);
+odd builders → economy (mine + snipe; graduate to harrass on relay+100 or
+age 200). Overrides: "raiders" (belt raid → gunner/sentinel siege in
+attack.py), "harrass" (harrass.py). Economy harvester caps
+(2 → 3 → 4 → 5 → 6 → unlimited) in logistics.py; idle ore recheck every
+50 turns.
 
 Store slots:
   0  SLOT_RELAY_COMPLETE  1 once any inbound relay finished
@@ -39,8 +40,6 @@ import random
 
 from attack import (
     GUNNER_TURN,
-    is_raider,
-    run_attack_builder,
     run_gunner,
     run_sentinel,
     top_up_ammo,
@@ -48,11 +47,9 @@ from attack import (
 from defence import (
     PHALANX_GUNNER_TURN,
     clear_phalanx_builder_threat,
-    run_phalanx,
     core_under_turret_threat,
     update_phalanx_builder_threat,
 )
-from harrass import run_harrasser
 from fcode import (
     Controller,
     Direction,
@@ -62,21 +59,14 @@ from fcode import (
 from hivemind import CoreState, HiveMind, unpack_cores
 from logistics import (
     PATH_MAX_ITERS,
-    clear_relay,
     pick_economy_target,
-    run_economy,
 )
 from pathing import astar, manhattan
 from respawn import Respawn, SpawnSchedule
+from roles import home_phalanx_active, run_builder_roles
 
 DIRECTIONS = [d for d in Direction if d != Direction.CENTRE]
 CARDINALS = [Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST]
-
-# "phalanx" = even home defence / odd economy; "raiders" / "harrass" = overrides.
-ACTIVE_RAID_ORDER = "phalanx"
-# Fire-and-forget even waves: spawn cohort leaves at these marks; later evens refill.
-PHALANX_WAVE1_TURN = 300
-PHALANX_WAVE2_TURN = 600
 
 SLOT_PACKED_CORES = 15
 
@@ -104,58 +94,6 @@ SPAWN_SCHEDULE = SpawnSchedule(
     replenish_start_turn=REPLENISH_START_TURN,
     spawn_extra_under_threat=SPAWN_EXTRA_UNDER_THREAT,
 )
-
-def effective_raid_order(
-    round_n: int, my_index: int = 0, spawn_round: int | None = None
-) -> str:
-    """Raid-path order for builders already on the raid task list.
-
-    Under default phalanx: fire-and-forget even waves by spawn cohort —
-    spawn < 300 leave at 300; spawn < 600 leave at 600; spawn >= 600 stay
-    phalanx forever. Overrides return ACTIVE_RAID_ORDER.
-    """
-    if ACTIVE_RAID_ORDER != "phalanx":
-        return ACTIVE_RAID_ORDER
-    spawned = 0 if spawn_round is None else spawn_round
-    if spawned < PHALANX_WAVE1_TURN and round_n >= PHALANX_WAVE1_TURN:
-        return "raiders"
-    if spawned < PHALANX_WAVE2_TURN and round_n >= PHALANX_WAVE2_TURN:
-        return "raiders"
-    return "phalanx"
-
-
-def home_phalanx_active(round_n: int) -> bool:
-    """True while home phalanx role is active (late even spawns refill after waves)."""
-    del round_n
-    return ACTIVE_RAID_ORDER == "phalanx"
-
-
-def on_raid_tasklist(
-    my_index: int,
-    enemy_core: Position | None,
-    round_n: int,
-    spawn_round: int | None = None,
-) -> bool:
-    """Who runs phalanx / harrass / raiders this turn (enemy core must be known)."""
-    del round_n, spawn_round
-    if enemy_core is None or my_index <= 0:
-        return False
-    if ACTIVE_RAID_ORDER != "phalanx":
-        return is_raider(my_index, enemy_core)
-    # Default: every even is on the raid path (phalanx or raiders by cohort).
-    return my_index % 2 == 0
-
-
-def is_economy(
-    my_index: int,
-    enemy_core: Position | None,
-    round_n: int,
-    spawn_round: int | None = None,
-) -> bool:
-    """Odd builders on the mine/relay loop — not on the raid path."""
-    if my_index <= 0:
-        return False
-    return not on_raid_tasklist(my_index, enemy_core, round_n, spawn_round)
 
 
 def nearest_cardinal(d: Direction) -> Direction:
@@ -285,57 +223,7 @@ class Player:
             self.stuck = 0
         self.last_pos = pos
 
-        # Raid path: even fire-and-forget waves at 300/600 by spawn cohort;
-        # later evens refill phalanx. Odds stay economy.
-        # ACTIVE_RAID_ORDER "raiders" / "harrass" overrides via is_raider.
-        round_n = ct.get_current_round()
-        if self.spawn_round is None:
-            self.spawn_round = round_n
-        
-        my_id = ct.get_id()
-        if on_raid_tasklist(
-            self.hivemind.my_index,
-            self.enemy_core_pos,
-            round_n,
-            self.spawn_round,
-        ):
-            enemy = self.enemy_core_pos
-            assert enemy is not None
-            clear_relay(self)
-            self.ore_site = None
-            order = effective_raid_order(
-                round_n, self.hivemind.my_index, self.spawn_round
-            )
-            if order == "phalanx":
-                site = run_phalanx(
-                    ct,
-                    my_index=self.hivemind.my_index,
-                    local_map=self.hivemind.local_map,
-                    enemy_core=enemy,
-                    ally_core=self.core_pos,
-                )
-            elif order == "harrass":
-                site = run_harrasser(
-                    ct,
-                    my_index=self.hivemind.my_index,
-                    local_map=self.hivemind.local_map,
-                    enemy_core=enemy,
-                    ally_core=self.core_pos,
-                )
-            else:
-                site = run_attack_builder(
-                    ct,
-                    my_index=self.hivemind.my_index,
-                    local_map=self.hivemind.local_map,
-                    enemy_core=enemy,
-                    ally_core=self.core_pos,
-                )
-            if site is not None:
-                self.target = site
-            self._move_toward_target(ct, retarget=False)
-            return
-
-        run_economy(self, ct)
+        run_builder_roles(self, ct)
 
     def _read_core_pos(self, ct: Controller) -> None:
         ally, _ = unpack_cores(ct.read_store(SLOT_PACKED_CORES))
