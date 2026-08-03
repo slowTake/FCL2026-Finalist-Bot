@@ -26,9 +26,10 @@ Store slots:
 Ally core from slot 15 via unpack_cores; enemy core from fingerprint /
 KNOWN_MAPS (same-turn cache) or slot 15. Ore from ORE_LOCATIONS / local_map.
 Core rushes 5 builders, then interval-spawns to 7, then grows one every
-50 turns up to 9, then one every 200 turns as a late fallback. From turn
-75, deaths are replaced ASAP only when a builder vanishes from interior
-core vision (walking out of fog does not count). Threat-spawn extras are
+50 turns up to 9, then one every 200 turns as a late fallback. Caps and
+timings live here; spawn/replenish logic is in respawn.py. From turn 75,
+deaths are replaced ASAP only when a builder vanishes from deep-interior
+core vision (cannot leave vision in one step). Threat-spawn extras are
 off (`SPAWN_EXTRA_UNDER_THREAT`).
 """
 
@@ -56,7 +57,6 @@ from fcode import (
     Controller,
     Direction,
     EntityType,
-    GameConstants,
     Position,
 )
 from hivemind import CoreState, HiveMind, unpack_cores
@@ -67,7 +67,7 @@ from logistics import (
     run_economy,
 )
 from pathing import astar, manhattan
-from features import WALL_LOCATIONS
+from respawn import Respawn, SpawnSchedule
 
 DIRECTIONS = [d for d in Direction if d != Direction.CENTRE]
 CARDINALS = [Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST]
@@ -92,10 +92,18 @@ FALLBACK_SPAWN_INTERVAL = 200
 # Death-replace (replace_debt) stays off until this turn so early growth
 # is only rush / interval / late / fallback.
 REPLENISH_START_TURN = 75
-# Core vision radius; builders vanishing on the outer ring are treated as
-# walk-outs, not deaths (avoids replenish spam once raiders leave home).
-CORE_VISION_RADIUS = 6
 
+SPAWN_SCHEDULE = SpawnSchedule(
+    max_builders_early=MAX_BUILDERS_EARLY,
+    max_builders=MAX_BUILDERS,
+    max_builders_threat=MAX_BUILDERS_THREAT,
+    first_interval_spawn=FIRST_INTERVAL_SPAWN,
+    spawn_interval=SPAWN_INTERVAL,
+    late_spawn_interval=LATE_SPAWN_INTERVAL,
+    fallback_spawn_interval=FALLBACK_SPAWN_INTERVAL,
+    replenish_start_turn=REPLENISH_START_TURN,
+    spawn_extra_under_threat=SPAWN_EXTRA_UNDER_THREAT,
+)
 
 def effective_raid_order(
     round_n: int, my_index: int = 0, spawn_round: int | None = None
@@ -168,70 +176,10 @@ def in_bounds(ct: Controller, pos: Position) -> bool:
     return 0 <= pos.x < ct.get_map_width() and 0 <= pos.y < ct.get_map_height()
 
 
-def spawn_sites_toward(
-    ct: Controller, core_pos: Position, goal: Position, map_id: int, is_enemy_core: bool = False
-) -> list[Position]:
-    """Apron tiles around the full 2x2 core, closest to goal first using A*."""
-    footprint = _core_footprint(core_pos)
-    footprint_keys = {(t.x, t.y) for t in footprint}
-    sites: list[Position] = []
-    seen: set[tuple[int, int]] = set()
-    for tile in footprint:
-        for d in DIRECTIONS:
-            cand = tile.add(d)
-            key = (cand.x, cand.y)
-            if key in seen or key in footprint_keys:
-                continue
-            if not in_bounds(ct, cand):
-                continue
-            seen.add(key)
-            sites.append(cand)
-            
-    walls = set(WALL_LOCATIONS.get(map_id, []))
-    def is_passable(p: Position) -> bool:
-        if not in_bounds(ct, p):
-            return False
-        if (p.x, p.y) in walls:
-            return False
-        return True
-        
-    def is_goal_fn(cand: Position) -> bool:
-        return (cand.x, cand.y) in footprint_keys
-
-    # Run ONE A* from goal to our core footprint
-    path = astar(goal, is_passable=is_passable, is_goal=is_goal_fn, max_iters=1000)
-    
-    if path and len(path) >= 2:
-        # path[0] is the goal. path[-1] is the tile inside our core footprint.
-        # path[-2] is the apron tile the path took right before hitting the core.
-        best_apron = path[-2]
-        sites.sort(key=lambda p: (0 if p == best_apron else 1, p.distance_squared(goal)))
-    else:
-        # Fallback if no path is found (e.g. fully blocked)
-        sites.sort(key=lambda p: p.distance_squared(goal))
-        
-    return sites
-
-
-def _core_footprint(core_pos: Position) -> list[Position]:
-    return [
-        core_pos,
-        Position(core_pos.x + 1, core_pos.y),
-        Position(core_pos.x, core_pos.y + 1),
-        Position(core_pos.x + 1, core_pos.y + 1),
-    ]
-
-
 class Player:
     def __init__(self):
         self.hivemind = HiveMind()
-        self.num_spawned = 0
-        # Intentional living target (growth only); replenish does not raise it.
-        self.spawn_target = 0
-        self.last_growth_round = -10**9
-        self.replace_debt = 0
-        # eid -> last Position seen in core vision (death detection).
-        self._prev_vision_builders: dict[int, Position] = {}
+        self.respawn = Respawn()
 
         self.target: Position | None = None
         self.last_pos: Position | None = None
@@ -296,104 +244,20 @@ class Player:
         )
         top_up_ammo(ct, local_map=self.hivemind.local_map, min_turn=ammo_turn)
 
-        living_debt = self._observe_builder_deaths(ct)
-        if round_n >= REPLENISH_START_TURN:
-            self.replace_debt += living_debt
-        else:
-            self.replace_debt = 0
         threat = phalanx_home and core_under_turret_threat(ct)
-        if ct.get_unit_count() >= GameConstants.MAX_TEAM_UNITS:
-            return
-
-        can_rush = self.spawn_target < MAX_BUILDERS_EARLY
-        can_interval = (
-            self.spawn_target >= MAX_BUILDERS_EARLY
-            and self.spawn_target < MAX_BUILDERS
-            and round_n >= FIRST_INTERVAL_SPAWN
-            and (round_n - FIRST_INTERVAL_SPAWN) % SPAWN_INTERVAL == 0
-        )
-        # After 7: grow one every LATE_SPAWN_INTERVAL turns (up to 9).
-        can_late = (
-            self.spawn_target >= MAX_BUILDERS
-            and self.spawn_target < MAX_BUILDERS_THREAT
-            and round_n - self.last_growth_round >= LATE_SPAWN_INTERVAL
-        )
-        # After 9: slow trickle every FALLBACK_SPAWN_INTERVAL turns.
-        can_fallback = (
-            self.spawn_target >= MAX_BUILDERS_THREAT
-            and round_n - self.last_growth_round >= FALLBACK_SPAWN_INTERVAL
-        )
-        # Replace only vision-confirmed deaths from REPLENISH_START_TURN on.
-        can_replenish = self.replace_debt > 0 and round_n >= REPLENISH_START_TURN
-        can_threat_spawn = (
-            threat
-            and SPAWN_EXTRA_UNDER_THREAT
-            and self.spawn_target < MAX_BUILDERS_THREAT
-        )
-        if (
-            not can_rush
-            and not can_interval
-            and not can_late
-            and not can_fallback
-            and not can_replenish
-            and not can_threat_spawn
-        ):
-            return
-
-        ti = ct.get_global_resources()
-        if ti < ct.get_builder_bot_cost():
-            return
-
-        pos = ct.get_position()
         enemy_pos = self._resolve_enemy_core(ct)
         if enemy_pos is not None:
             goal = enemy_pos
-            is_enemy = True
         else:
             goal = Position(ct.get_map_width() // 2, ct.get_map_height() // 2)
-            is_enemy = False
-
-        # Prefer replacing observed deaths over scheduled growth this turn.
-        is_replenish = can_replenish
-        for spawn_pos in spawn_sites_toward(
-            ct, pos, goal, map_id=self.hivemind.map_id, is_enemy_core=is_enemy
-        ):
-            if self.hivemind.spawn_builder(ct, spawn_pos):
-                self.num_spawned += 1
-                if is_replenish:
-                    self.replace_debt = max(0, self.replace_debt - 1)
-                else:
-                    self.spawn_target += 1
-                    self.last_growth_round = round_n
-                return
-
-    def _observe_builder_deaths(self, ct: Controller) -> int:
-        """Count ally builders that vanished from interior core vision.
-
-        Leaving the fog edge does not count — that was spamming replenish
-        whenever raiders walked out of home vision.
-        """
-        my_team = ct.get_team()
-        core = ct.get_position()
-        current: dict[int, Position] = {}
-        for eid in ct.get_nearby_entities():
-            if ct.get_entity_type(eid) != EntityType.BUILDER_BOT:
-                continue
-            if ct.get_team(eid) != my_team:
-                continue
-            current[eid] = ct.get_position(eid)
-
-        deaths = 0
-        for eid, prev_pos in self._prev_vision_builders.items():
-            if eid in current:
-                continue
-            dx = abs(prev_pos.x - core.x)
-            dy = abs(prev_pos.y - core.y)
-            # Outer ring vanish ≈ walked into fog; interior vanish ≈ died.
-            if max(dx, dy) < CORE_VISION_RADIUS and ct.is_in_vision(prev_pos):
-                deaths += 1
-        self._prev_vision_builders = current
-        return deaths
+        self.respawn.run_core_spawn(
+            ct,
+            schedule=SPAWN_SCHEDULE,
+            threat=threat,
+            map_id=self.hivemind.map_id,
+            goal=goal,
+            hivemind=self.hivemind,
+        )
 
     def _resolve_enemy_core(self, ct: Controller) -> Position | None:
         """Enemy core from slot 15, else same-turn HiveMind fingerprint cache."""
