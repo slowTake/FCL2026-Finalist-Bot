@@ -2,12 +2,12 @@
 
 Starter economy loop + HiveMind (`components/` symlinks) + **inbound steal-relay**
 belts to the **ally** core only. Default **`ACTIVE_RAID_ORDER = "phalanx"`**
-(`main.py`): **even** builders → home phalanx (`defence.py`) once the enemy
-core is known; fire-and-forget even waves leave at **300** / **600** by spawn
-cohort (later even spawns refill phalanx and never raid); **odd** builders →
-economy (`logistics.py`), graduating to harrass on **relay+100** or **age 200**
-(whichever first). Set to **`raiders`** for the offensive belt-raid →
-gunner/sentinel siege loop (`attack.py`); set to **`harrass`** for harvester
+([`roles.py`](roles.py)): **even** builders → home phalanx (`defence.py`) once
+the enemy core is known; fire-and-forget even waves leave at **300** / **600**
+by spawn cohort (later even spawns refill phalanx and never raid); **odd**
+builders → economy (`logistics.py`), graduating to harrass on **relay+100** or
+**age 200** (whichever first). Set to **`raiders`** for the offensive belt-raid
+→ gunner/sentinel siege loop (`attack.py`); set to **`harrass`** for harvester
 siege + seek (`harrass.py`). Economy harvester caps (**2** until 50, **3**
 until 100, **4** until 200, **5** until 250, **6** until 400, then unlimited);
 idle-recheck ore every 50 turns. Full role task lists: [`role.md`](role.md).
@@ -60,13 +60,13 @@ turn **10**; raiders at **30**.
 
 ## Builder task order
 
-Each turn (`_run_builder`), after HiveMind `tick` and stuck tracking. Role
-details and phase lists live in [`role.md`](role.md).
+Each turn (`_run_builder` → `roles.run_builder_roles`), after HiveMind `tick`
+and stuck tracking. Role details and phase lists live in [`role.md`](role.md).
 
-0. **Raid gate** — `on_raid_tasklist` (default: even indices once enemy core
-   known → `phalanx` or fire-and-forget `raiders` by spawn cohort at 300/600;
-   or full `raiders` / `harrass` override); abort relay/ore; move toward site
-   and return.
+0. **Raid gate** — `on_raid_tasklist` in `roles.py` (default: even indices once
+   enemy core known → `phalanx` or fire-and-forget `raiders` by spawn cohort at
+   300/600; or full `raiders` / `harrass` override); abort relay/ore; move
+   toward site and return.
 1. **Economy** (`run_economy` / `ECONOMY` in `logistics.py`) — odd builders:
    1. **If `in_relay`** → finish inbound relay (always, even at harvester cap).
    2. **Harrass graduate** — sticky `run_harrasser` when **either** first

@@ -1,7 +1,7 @@
 """Harrasser raid order for earl.
 
 HARRASS task list — economy graduates via run_economy, or
-ACTIVE_RAID_ORDER = "harrass" in main.py:
+ACTIVE_RAID_ORDER = "harrass" in roles.py:
   - Until HARRASS_START_TURN: run home phalanx duties.
   - Then: siege uncovered enemy harvesters (reuse raider harvester siege).
   - Else: raider core gunner/sentinel siege (no near-core gate).

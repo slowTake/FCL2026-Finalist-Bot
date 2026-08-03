@@ -1,7 +1,8 @@
 # earl builder roles
 
-Who runs what is decided each turn in `_run_builder` (`main.py`), after
-HiveMind `tick` and stuck tracking. Gate order: **raid path** → **economy**.
+Who runs what is decided each turn in `roles.run_builder_roles` (called from
+`_run_builder` in `main.py`), after HiveMind `tick` and stuck tracking. Gate
+order: **raid path** → **economy**.
 
 | Role | Who | Module |
 |------|-----|--------|
@@ -10,7 +11,8 @@ HiveMind `tick` and stuck tracking. Gate order: **raid path** → **economy**.
 | **raiders** | When `ACTIVE_RAID_ORDER = "raiders"` (override) | `attack.py` (`RAIDERS`) |
 | **harrass** | When `ACTIVE_RAID_ORDER = "harrass"` (override) | `harrass.py` (`HARRASS`) |
 
-`main.py` is the role menu: raid path (evens / overrides) → `run_economy` (odds).
+[`roles.py`](roles.py) is the role menu: raid path (evens / overrides including
+harrass) → `run_economy` (odds). Toggle `ACTIVE_RAID_ORDER` there.
 
 Turrets (gunner / sentinel) are not builder roles; they use shared fire helpers
 in `attack.py`.
@@ -92,7 +94,7 @@ Home defence for **even** builders once the enemy core is known
 7. **soft_idle** — linger on threat/approach depth-1 strip (idle until threat).
 
 Fire-and-forget even waves (`PHALANX_WAVE1_TURN` / `PHALANX_WAVE2_TURN` in
-`main.py`): spawn `< 300` leave at 300; spawn `< 600` leave at 600; spawn
+`roles.py`): spawn `< 300` leave at 300; spawn `< 600` leave at 600; spawn
 `≥ 600` stay phalanx forever (home refill). No global raid mode — later
 even bots are unaffected.
 
