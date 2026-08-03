@@ -88,7 +88,8 @@ Home defence for **even** builders once the enemy core is known
    harvester within Chebyshev 20 of the core footprint.
 5. **clear_economy** — enemy harvester in vision → fire/move; else stand-fire
    nearest enemy belt.
-6. **soft_idle** — linger on threat/approach depth-1 strip (idle until threat).
+6. **heal** — adjacent damaged friendlies (if action free), then soft idle.
+7. **soft_idle** — linger on threat/approach depth-1 strip (idle until threat).
 
 Fire-and-forget even waves (`PHALANX_WAVE1_TURN` / `PHALANX_WAVE2_TURN` in
 `main.py`): spawn `< 300` leave at 300; spawn `< 600` leave at 600; spawn
@@ -103,9 +104,10 @@ Offensive siege when `ACTIVE_RAID_ORDER = "raiders"` (or after a phalanx even
 wave). Named phases (`RAIDERS`):
 
 1. **siege_enemy_harvester** — if an enemy harvester is in vision and no ally
-   gunner can already hit it (`can_fire_from`), place a gunner on an empty
-   tile in range that can hit it (prefer closer; index-staggered; nearest
-   uncovered harvester first).
+   gunner can already hit it (`can_fire_from`): fire/destroy if orthogonally
+   adjacent; else place a gunner on an empty in-range pad (prefer LOS-ok;
+   fall back to any empty pad / fog walk target so on-site bots are not stuck
+   behind the core). Index-staggered; nearest uncovered first.
 2. **place_gunners** — first 20 turns of each 40-turn loop (epoch 30, or 300 /
    600 after each even-wave clock): up to 8 siege gunners (near enemy core
    only) at Chebyshev 1–3 with verified core LOS.
@@ -127,10 +129,12 @@ phases (`HARRASS`):
 
 1. **phalanx_home** (`round < 50`) — delegate to `run_phalanx` until
    `HARRASS_START_TURN`.
-2. **siege_enemy_core** — when Chebyshev ≤ **3** of the enemy 2×2 footprint:
-   raider core gunner/sentinel siege (`attack._run_raid_core_siege`).
-3. **siege_enemy_harvester** — same as raiders
-   (`attack._run_siege_enemy_harvester`).
+2. **siege_enemy_harvester** — same as raiders
+   (`attack._run_siege_enemy_harvester`); uncovered enemy harvester in vision
+   first (adjacent melee, then gunner pad with LOS fallback).
+3. **siege_enemy_core** — raider core gunner/sentinel siege
+   (`attack._run_raid_core_siege`); same loop as raiders, no near-core gate
+   (path/place while approaching).
 4. **push_enemy_core** — when siege has no site: path toward the enemy core.
 
 Not assigned by index under default phalanx (odds may sticky-graduate via

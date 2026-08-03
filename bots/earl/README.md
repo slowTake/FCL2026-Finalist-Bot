@@ -122,7 +122,8 @@ While still on phalanx:
    enemy). From turn **10**. Stagger raiders across missing pads.
 5. **Clear economy** — if an enemy harvester is in vision, fire when adjacent
    else move to it; else path onto the nearest enemy belt and stand-fire.
-6. **Soft idle** — linger on threat/approach depth-1 strip.
+6. **Heal** — adjacent damaged friendlies (if action free), then soft idle.
+7. **Soft idle** — linger on threat/approach depth-1 strip.
 
 While an enemy gunner/sentinel is in **core vision**, threat-spawn extras
 are **off** by default (`SPAWN_EXTRA_UNDER_THREAT`); set that flag to raise
@@ -142,9 +143,10 @@ Packaged as the `RAIDERS` task list (`run_raiders_tasklist` /
 `run_attack_builder`). Once the enemy core is known (`my_index` even, > 0):
 
 1. **Siege enemy harvester** (top priority): if an enemy harvester is in vision
-   and no ally gunner can already **hit** it (`can_fire_from`, not mere range),
-   place a gunner on an empty in-range tile that can hit it (index-staggered;
-   nearest uncovered harvester first).
+   and no ally gunner can already **hit** it (`can_fire_from`, not mere range):
+   fire/destroy if orthogonally adjacent; else path/place a gunner on an empty
+   in-range pad (prefer LOS-ok; fall back to any empty pad so bots already
+   behind the core are not stuck while fog approachers can still place).
 2. **Siege loop** (from turn 30, every **40** turns; epochs restart at **300**
    and **600** so each even wave gets a fresh gunner→sentinel window):
    - **Gunners** (first **20** turns of each cycle): place up to **8** siege
@@ -177,10 +179,11 @@ but may sticky-graduate into this order via the relay+100 / age-200 OR gate.
 
 1. **Phalanx home** (`round < 50`) — same duties as phalanx until
    `HARRASS_START_TURN`.
-2. **Siege enemy core** — when Chebyshev ≤ **3** of the enemy footprint:
-   reuse `attack._run_raid_core_siege` (raider gunner/sentinel loop).
-3. **Siege enemy harvester** — reuse `attack._run_siege_enemy_harvester`
-   (cover = can hit via `can_fire_from`; nearest uncovered first).
+2. **Siege enemy harvester** — reuse `attack._run_siege_enemy_harvester`
+   first (adjacent melee; gunner pads prefer LOS then empty fallback;
+   nearest uncovered first).
+3. **Siege enemy core** — reuse `attack._run_raid_core_siege` (raider
+   gunner/sentinel loop; no near-core gate — path/place while approaching).
 4. **Push enemy core** — when no siege site: path toward the enemy core.
 
 ### Ore targeting

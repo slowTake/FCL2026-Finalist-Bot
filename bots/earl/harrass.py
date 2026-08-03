@@ -1,11 +1,10 @@
 """Harrasser raid order for earl.
 
-HARRASS task list — select via index 5 under phalanx order, or
+HARRASS task list — economy graduates via run_economy, or
 ACTIVE_RAID_ORDER = "harrass" in main.py:
   - Until HARRASS_START_TURN: run home phalanx duties.
-  - Then, if next to the enemy core (Chebyshev ≤ gunner place max): raider
-    core gunner/sentinel siege.
-  - Else: siege uncovered enemy harvesters (reuse raider harvester siege).
+  - Then: siege uncovered enemy harvesters (reuse raider harvester siege).
+  - Else: raider core gunner/sentinel siege (no near-core gate).
   - Else push enemy core.
 """
 
@@ -14,9 +13,6 @@ from __future__ import annotations
 from fcode import Controller, Position
 
 from attack import (
-    GUNNER_PLACE_MAX,
-    _chebyshev_to_footprint,
-    _core_footprint,
     _run_raid_core_siege,
     _run_siege_enemy_harvester,
 )
@@ -27,18 +23,10 @@ HARRASS_START_TURN = 50
 # Named phases for the harrass raid order (priority-gated in run_harrasser).
 HARRASS = (
     "phalanx_home",
-    "siege_enemy_core",
     "siege_enemy_harvester",
+    "siege_enemy_core",
     "push_enemy_core",
 )
-
-
-def _near_enemy_core(ct: Controller, enemy_core: Position) -> bool:
-    """True when the builder is in the raider siege-gunner pad ring."""
-    return (
-        _chebyshev_to_footprint(ct.get_position(), _core_footprint(enemy_core))
-        <= GUNNER_PLACE_MAX
-    )
 
 
 def run_harrasser(
@@ -49,7 +37,7 @@ def run_harrasser(
     enemy_core: Position,
     ally_core: Position | None,
 ) -> Position | None:
-    """HARRASS: phalanx home until 50, then core siege → harvester → push core."""
+    """HARRASS: phalanx home until 50, then harvester → core siege → push core."""
     if ct.get_current_round() < HARRASS_START_TURN:
         return run_phalanx(
             ct,
@@ -59,22 +47,21 @@ def run_harrasser(
             ally_core=ally_core,
         )
 
-    if _near_enemy_core(ct, enemy_core):
-        site = _run_raid_core_siege(
-            ct,
-            my_index=my_index,
-            local_map=local_map,
-            enemy_core=enemy_core,
-            ally_core=ally_core,
-        )
-        if site is not None:
-            return site
-
     site = _run_siege_enemy_harvester(
         ct,
         my_index=my_index,
         local_map=local_map,
         enemy_core=enemy_core,
+    )
+    if site is not None:
+        return site
+
+    site = _run_raid_core_siege(
+        ct,
+        my_index=my_index,
+        local_map=local_map,
+        enemy_core=enemy_core,
+        ally_core=ally_core,
     )
     if site is not None:
         return site

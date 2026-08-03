@@ -68,6 +68,7 @@ PHALANX = (
     "assist_apron",
     "guard_harvesters",
     "clear_economy",
+    "heal",
     "soft_idle",
 )
 PHALANX_GUNNER_TURN = 10
@@ -794,7 +795,7 @@ def run_phalanx(
     enemy_core: Position,
     ally_core: Position | None,
 ) -> Position | None:
-    """PHALANX: threat wings → turrets → apron → guards → clear → idle."""
+    """PHALANX: threat wings → turrets → apron → guards → clear → heal → idle."""
     if ally_core is None:
         return None
 
@@ -867,6 +868,9 @@ def run_phalanx(
     clear = _run_phalanx_clear(ct)
     if clear is not None:
         return clear
+
+    # 6. Heal adjacent damaged friendlies (if action free), then soft idle.
+    _try_heal(ct)
 
     return _defence_hold_target(ct, ally_core, hold_side)
 

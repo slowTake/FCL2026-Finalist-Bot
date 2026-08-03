@@ -780,11 +780,14 @@ def pick_harvester_siege_site(
 ) -> Position | None:
     """Empty tile in gunner range of harvester; prefer closer + index stagger.
 
-    In-vision pads must be able to hit the harvester (`can_fire_from`); fogged
-    pads stay walk targets without LOS verification.
+    Prefer in-vision pads that can hit (`can_fire_from`) and fog walk targets.
+    If none, fall back to any empty in-range in-vision pad (same as fog) so
+    bots already on-site are not stuck when core/belts block LOS.
     """
-    best: Position | None = None
-    best_score = float("inf")
+    best_los: Position | None = None
+    best_los_score = float("inf")
+    best_fallback: Position | None = None
+    best_fallback_score = float("inf")
     my_team = ct.get_team()
     prefer = siege_preferred_side(my_index)
     pos = ct.get_position()
@@ -811,12 +814,11 @@ def pick_harvester_siege_site(
                 and ent.get("team") == my_team
             ):
                 continue
-            if ct.is_in_vision(cand):
+            in_vis = ct.is_in_vision(cand)
+            if in_vis:
                 if not ct.is_tile_empty(cand):
                     continue
                 if ct.get_tile_env(cand) != Environment.EMPTY:
-                    continue
-                if not _gunner_can_hit_tile(ct, cand, harvester):
                     continue
             facing = facing_8way(cand, harvester)
             diag_pen = 0 if facing in _CARDINALS else 500
@@ -828,10 +830,30 @@ def pick_harvester_siege_site(
             )
             # Prefer closer to harvester; builder distance is tiebreak.
             score = side_pen + diag_pen + dist * 100 + pos.distance_squared(cand)
-            if score < best_score:
-                best_score = score
-                best = cand
-    return best
+            los_ok = (not in_vis) or _gunner_can_hit_tile(ct, cand, harvester)
+            if los_ok and score < best_los_score:
+                best_los_score = score
+                best_los = cand
+            if in_vis and score < best_fallback_score:
+                best_fallback_score = score
+                best_fallback = cand
+    return best_los if best_los is not None else best_fallback
+
+
+def _try_melee_harvester(ct: Controller, harvester: Position) -> bool:
+    """Fire or destroy an orthogonally adjacent enemy harvester. True if acted."""
+    pos = ct.get_position()
+    if abs(pos.x - harvester.x) + abs(pos.y - harvester.y) != 1:
+        return False
+    if ct.get_action_cooldown() != 0:
+        return False
+    if ct.can_fire(harvester):
+        ct.fire(harvester)
+        return True
+    if ct.can_destroy(harvester):
+        ct.destroy(harvester)
+        return True
+    return False
 
 
 def _run_siege_enemy_harvester(
@@ -841,10 +863,14 @@ def _run_siege_enemy_harvester(
     local_map: dict,
     enemy_core: Position,
 ) -> Position | None:
-    """If an uncovered enemy harvester is in vision, place a gunner aimed at it."""
+    """If an uncovered enemy harvester is in vision, melee or place a gunner on it."""
     for harvester in _enemy_harvesters_nearest_first(ct):
         if _ally_gunner_covers_harvester(ct, local_map, harvester):
             continue
+        pos = ct.get_position()
+        if abs(pos.x - harvester.x) + abs(pos.y - harvester.y) == 1:
+            _try_melee_harvester(ct, harvester)
+            return harvester
         site = pick_harvester_siege_site(
             ct,
             harvester=harvester,
@@ -852,8 +878,8 @@ def _run_siege_enemy_harvester(
             local_map=local_map,
         )
         if site is None:
-            continue
-        pos = ct.get_position()
+            # Still pull toward the harvester so we can melee next turns.
+            return harvester
         if abs(pos.x - site.x) + abs(pos.y - site.y) == 1:
             build_gunner(ct, site, enemy_core, aim_target=harvester)
         return site
