@@ -209,9 +209,13 @@ but may sticky-graduate into this order via the relay+100 / age-200 OR gate.
 
 ### Pathfinding (`pathing.py`)
 
-Builder walks and inbound conveyor routes use **A\*** (cardinal grid). Walks
-treat fog as optimistic passable and fall back to greedy step selection if A\*
-finds no path. Relays search layable/joinable tiles toward the ally core.
+Builder walks and inbound conveyor routes use **A\*** (cardinal grid). Walk
+passability is custom (not raw `is_tile_passable`): belts/splitters are
+walkable; walls and other buildings — including cores — are not. Units only
+block when adjacent (or after path stall). Fog is optimistic for unknown
+tiles; after fingerprint (`map_id != 0`), walls/ores come from known map data
+in HiveMind `local_map`. Falls back to greedy if A\* finds no path. Relays
+search layable/joinable tiles toward the ally core.
 
 ### Inbound relay
 

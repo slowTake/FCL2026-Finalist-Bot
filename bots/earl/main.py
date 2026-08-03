@@ -36,7 +36,15 @@ off (`SPAWN_EXTRA_UNDER_THREAT`).
 
 from __future__ import annotations
 
+import builtins
 import random
+
+DEBUG = True
+_original_print = builtins.print
+def _custom_print(*args, **kwargs):
+    if DEBUG:
+        _original_print(*args, **kwargs)
+builtins.print = _custom_print
 
 from attack import (
     GUNNER_TURN,
@@ -54,6 +62,7 @@ from fcode import (
     Controller,
     Direction,
     EntityType,
+    Environment,
     Position,
 )
 from hivemind import CoreState, HiveMind, unpack_cores
@@ -114,6 +123,47 @@ def in_bounds(ct: Controller, pos: Position) -> bool:
     return 0 <= pos.x < ct.get_map_width() and 0 <= pos.y < ct.get_map_height()
 
 
+class LoggingController:
+    def __init__(self, ct: Controller):
+        self._ct = ct
+        self.action_log = "idle()"
+        
+    def move(self, d: Direction):
+        self.action_log = f"move({d.name})"
+        return self._ct.move(d)
+
+    def build(self, t: EntityType, d: Direction):
+        self.action_log = f"build({t.name}, {d.name})"
+        return self._ct.build(t, d)
+        
+    def fire(self, p: Position):
+        self.action_log = f"fire({p.x}, {p.y})"
+        return self._ct.fire(p)
+        
+    def heal(self, p: Position):
+        self.action_log = f"heal({p.x}, {p.y})"
+        return self._ct.heal(p)
+        
+    def rotate(self, d: Direction):
+        self.action_log = f"rotate({d.name})"
+        return self._ct.rotate(d)
+        
+    def spawn(self, t: EntityType, p: Position):
+        self.action_log = f"spawn({t.name}, {p.x}, {p.y})"
+        return self._ct.spawn(t, p)
+
+    def mine(self, p: Position):
+        self.action_log = f"mine({p.x}, {p.y})"
+        return self._ct.mine(p)
+        
+    def repair(self, p: Position):
+        self.action_log = f"repair({p.x}, {p.y})"
+        return self._ct.repair(p)
+
+    def __getattr__(self, name):
+        return getattr(self._ct, name)
+
+
 class Player:
     def __init__(self):
         self.hivemind = HiveMind()
@@ -141,11 +191,15 @@ class Player:
         self.phalanx_threat_until = -1
         self.phalanx_threat_side = 0
 
+        self.cached_path: list[Position] | None = None
+        self.cached_path_target: Position | None = None
+        self.stuck_on_path = 0
+
     def run(self, ct: Controller) -> None:
         try:
             self.hivemind.tick(ct)
             my_id = ct.get_id()
-            etype = ct.get_entity_type()
+            etype = ct.get_entity_type(my_id)
             if etype == EntityType.CORE:
                 self._run_core(ct)
             elif etype == EntityType.BUILDER_BOT:
@@ -184,7 +238,7 @@ class Player:
 
         threat = phalanx_home and core_under_turret_threat(ct)
         enemy_pos = self._resolve_enemy_core(ct)
-        if enemy_pos is not None:
+        if enemy_pos is not None and self.hivemind.map_id != 0:
             goal = enemy_pos
         else:
             goal = Position(ct.get_map_width() // 2, ct.get_map_height() // 2)
@@ -211,11 +265,12 @@ class Player:
     # ------------------------------------------------------------------
 
     def _run_builder(self, ct: Controller) -> None:
-        pos = ct.get_position()
+        logging_ct = LoggingController(ct)
+        pos = logging_ct.get_position()
         if self.core_pos is None:
-            self._read_core_pos(ct)
+            self._read_core_pos(logging_ct)
         if self.enemy_core_pos is None:
-            self._read_enemy_core(ct)
+            self._read_enemy_core(logging_ct)
 
         if self.last_pos == pos:
             self.stuck += 1
@@ -223,7 +278,8 @@ class Player:
             self.stuck = 0
         self.last_pos = pos
 
-        run_builder_roles(self, ct)
+        run_builder_roles(self, logging_ct)
+        print(f"[{logging_ct.get_current_round()}] Builder {logging_ct.get_id()} at {pos}: {logging_ct.action_log}")
 
     def _read_core_pos(self, ct: Controller) -> None:
         ally, _ = unpack_cores(ct.read_store(SLOT_PACKED_CORES))
@@ -277,17 +333,43 @@ class Player:
             return True
         return False
 
-    def _walk_passable(self, ct: Controller, pos: Position) -> bool:
+    def _walk_passable(self, ct: Controller, pos: Position, current_pos: Position | None = None, treat_builders_as_blockers: bool = False) -> bool:
+        # Stricter than is_tile_passable: cores (incl. allied) blocked; only belts/splitters walkable; units block when adjacent (or treat_builders_as_blockers).
         if not in_bounds(ct, pos):
             return False
+            
         if ct.is_in_vision(pos):
-            return ct.is_tile_passable(pos)
+            if ct.get_tile_env(pos) == Environment.WALL:
+                return False
+                
+            b_id = ct.get_tile_building_id(pos)
+            if b_id is not None:
+                b_type = ct.get_entity_type(b_id)
+                if b_type not in (EntityType.CONVEYOR, EntityType.SPLITTER):
+                    return False
+                    
+            if treat_builders_as_blockers:
+                for eid in ct.get_nearby_entities():
+                    if ct.get_position(eid) == pos:
+                        return False
+            else:
+                if current_pos is not None and manhattan(pos, current_pos) == 1:
+                    for eid in ct.get_nearby_entities():
+                        if ct.get_position(eid) == pos:
+                            return False
+            return True
+            
         entry = self.hivemind.local_map.get((pos.x, pos.y))
         if entry is None:
             return True
-        if "passable" not in entry:
+            
+        if "entity" in entry:
+            etype = entry["entity"]["type"]
+            if etype in (EntityType.CORE, EntityType.HARVESTER, EntityType.GUNNER, EntityType.SENTINEL):
+                return False
             return True
-        return bool(entry["passable"])
+        else:
+            return bool(entry.get("passable", True))
 
     def _direction_candidates(
         self, ct: Controller, pos: Position, target: Position
@@ -306,34 +388,75 @@ class Player:
             if self._try_move(ct, d):
                 return True
         return False
+        
+    def _validate_cached_path(self, ct: Controller, target: Position) -> bool:
+        if not self.cached_path or self.cached_path_target != target:
+            return False
+        pos = ct.get_position()
+        try:
+            idx = self.cached_path.index(pos)
+        except ValueError:
+            return False
+        
+        # Path must have at least a next step
+        if idx + 1 >= len(self.cached_path):
+            return False
+            
+        # Check all steps ahead in vision to ensure they are passable
+        for step in self.cached_path[idx + 1:]:
+            if ct.is_in_vision(step):
+                # Don't treat builders as blockers here unless they are adjacent to our current pos
+                if not self._walk_passable(ct, step, current_pos=pos, treat_builders_as_blockers=False):
+                    return False
+        return True
 
     def _astar_move_toward(self, ct: Controller, target: Position) -> bool:
-        """A* first step toward target; False if no path or move failed."""
+        """A* step toward target with caching and anti-stall fallback."""
         pos = ct.get_position()
         if manhattan(pos, target) < 2:
             return False
 
-        def walk_ok(p: Position) -> bool:
-            if p.x == target.x and p.y == target.y:
-                return True
-            return self._walk_passable(ct, p)
+        if not self._validate_cached_path(ct, target):
+            self.cached_path = None
+            treat_blockers = (self.stuck_on_path >= 2)
+            
+            def walk_ok(p: Position) -> bool:
+                if p.x == target.x and p.y == target.y:
+                    return True
+                return self._walk_passable(ct, p, current_pos=pos, treat_builders_as_blockers=treat_blockers)
 
-        path = astar(
-            pos,
-            target,
-            is_passable=walk_ok,
-            max_iters=PATH_MAX_ITERS,
-        )
-        if path is None or len(path) < 2:
+            path = astar(
+                pos,
+                target,
+                is_passable=walk_ok,
+                max_iters=800,
+            )
+            if path is not None and len(path) >= 2:
+                self.cached_path = path
+                self.cached_path_target = target
+
+        if self.cached_path is None:
             return False
-        step = path[1]
+
+        idx = self.cached_path.index(pos)
+        step = self.cached_path[idx + 1]
+        
         # Don't step onto an impassable goal — stop adjacent via greedy instead
         if step.x == target.x and step.y == target.y and not self._walk_passable(
-            ct, step
+            ct, step, current_pos=pos
         ):
+            self.cached_path = None
             return self._greedy_move_toward(ct, target)
+            
         d = nearest_cardinal(pos.direction_to(step))
-        return self._try_move(ct, d)
+        if self._try_move(ct, d):
+            self.stuck_on_path = 0
+            return True
+        else:
+            self.stuck_on_path += 1
+            if self.stuck_on_path >= 2:
+                self.cached_path = None
+            return False
 
     def _move_toward_pos(self, ct: Controller, target: Position) -> bool:
         """Prefer A* when far; greedy fallback."""
