@@ -5,3 +5,6 @@ __pycache__/
 .fcode/
 local_bots/
 docs/superpowers/
+*.zip
+.cursor/
+.DS_Store
