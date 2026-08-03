@@ -141,6 +141,10 @@ class Player:
         self.phalanx_threat_until = -1
         self.phalanx_threat_side = 0
 
+        self.cached_path: list[Position] | None = None
+        self.cached_path_target: Position | None = None
+        self.stuck_on_path = 0
+
     def run(self, ct: Controller) -> None:
         try:
             self.hivemind.tick(ct)
@@ -184,7 +188,7 @@ class Player:
 
         threat = phalanx_home and core_under_turret_threat(ct)
         enemy_pos = self._resolve_enemy_core(ct)
-        if enemy_pos is not None:
+        if enemy_pos is not None and self.hivemind.map_id != 0:
             goal = enemy_pos
         else:
             goal = Position(ct.get_map_width() // 2, ct.get_map_height() // 2)
@@ -277,17 +281,42 @@ class Player:
             return True
         return False
 
-    def _walk_passable(self, ct: Controller, pos: Position) -> bool:
+    def _walk_passable(self, ct: Controller, pos: Position, current_pos: Position | None = None, treat_builders_as_blockers: bool = False) -> bool:
         if not in_bounds(ct, pos):
             return False
+            
         if ct.is_in_vision(pos):
-            return ct.is_tile_passable(pos)
+            if ct.get_tile_env(pos) == Environment.WALL:
+                return False
+                
+            b_id = ct.get_tile_building_id(pos)
+            if b_id > 0:
+                b_type = ct.get_entity_type(b_id)
+                if b_type not in (EntityType.CONVEYOR, EntityType.SPLITTER):
+                    return False
+                    
+            if treat_builders_as_blockers:
+                for eid in ct.get_nearby_entities():
+                    if ct.get_position(eid) == pos:
+                        return False
+            else:
+                if current_pos is not None and manhattan(pos, current_pos) == 1:
+                    for eid in ct.get_nearby_entities():
+                        if ct.get_position(eid) == pos:
+                            return False
+            return True
+            
         entry = self.hivemind.local_map.get((pos.x, pos.y))
         if entry is None:
             return True
-        if "passable" not in entry:
+            
+        if "entity" in entry:
+            etype = entry["entity"]["type"]
+            if etype in (EntityType.CORE, EntityType.HARVESTER, EntityType.GUNNER, EntityType.SENTINEL):
+                return False
             return True
-        return bool(entry["passable"])
+        else:
+            return bool(entry.get("passable", True))
 
     def _direction_candidates(
         self, ct: Controller, pos: Position, target: Position
@@ -306,34 +335,75 @@ class Player:
             if self._try_move(ct, d):
                 return True
         return False
+        
+    def _validate_cached_path(self, ct: Controller, target: Position) -> bool:
+        if not self.cached_path or self.cached_path_target != target:
+            return False
+        pos = ct.get_position()
+        try:
+            idx = self.cached_path.index(pos)
+        except ValueError:
+            return False
+        
+        # Path must have at least a next step
+        if idx + 1 >= len(self.cached_path):
+            return False
+            
+        # Check all steps ahead in vision to ensure they are passable
+        for step in self.cached_path[idx + 1:]:
+            if ct.is_in_vision(step):
+                # Don't treat builders as blockers here unless they are adjacent to our current pos
+                if not self._walk_passable(ct, step, current_pos=pos, treat_builders_as_blockers=False):
+                    return False
+        return True
 
     def _astar_move_toward(self, ct: Controller, target: Position) -> bool:
-        """A* first step toward target; False if no path or move failed."""
+        """A* step toward target with caching and anti-stall fallback."""
         pos = ct.get_position()
         if manhattan(pos, target) < 2:
             return False
 
-        def walk_ok(p: Position) -> bool:
-            if p.x == target.x and p.y == target.y:
-                return True
-            return self._walk_passable(ct, p)
+        if not self._validate_cached_path(ct, target):
+            self.cached_path = None
+            treat_blockers = (self.stuck_on_path >= 2)
+            
+            def walk_ok(p: Position) -> bool:
+                if p.x == target.x and p.y == target.y:
+                    return True
+                return self._walk_passable(ct, p, current_pos=pos, treat_builders_as_blockers=treat_blockers)
 
-        path = astar(
-            pos,
-            target,
-            is_passable=walk_ok,
-            max_iters=PATH_MAX_ITERS,
-        )
-        if path is None or len(path) < 2:
+            path = astar(
+                pos,
+                target,
+                is_passable=walk_ok,
+                max_iters=800,
+            )
+            if path is not None and len(path) >= 2:
+                self.cached_path = path
+                self.cached_path_target = target
+
+        if self.cached_path is None:
             return False
-        step = path[1]
+
+        idx = self.cached_path.index(pos)
+        step = self.cached_path[idx + 1]
+        
         # Don't step onto an impassable goal — stop adjacent via greedy instead
         if step.x == target.x and step.y == target.y and not self._walk_passable(
-            ct, step
+            ct, step, current_pos=pos
         ):
+            self.cached_path = None
             return self._greedy_move_toward(ct, target)
+            
         d = nearest_cardinal(pos.direction_to(step))
-        return self._try_move(ct, d)
+        if self._try_move(ct, d):
+            self.stuck_on_path = 0
+            return True
+        else:
+            self.stuck_on_path += 1
+            if self.stuck_on_path >= 2:
+                self.cached_path = None
+            return False
 
     def _move_toward_pos(self, ct: Controller, target: Position) -> bool:
         """Prefer A* when far; greedy fallback."""
