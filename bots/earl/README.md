@@ -33,19 +33,23 @@ Never write 7–15 from Player. Ally core is read from slot 15.
 
 ## Core spawn
 
+Caps and timings are knobs in `main.py` (`MAX_BUILDERS_*`, interval turns,
+`REPLENISH_START_TURN`, `SPAWN_EXTRA_UNDER_THREAT`). Turn logic lives in
+`respawn.py`: apron pick, death observe, growth/replenish gates.
+
 Builders spawn on an apron tile around the full **2×2 core footprint**
-(not just neighbors of the NW tile), preferring the tile **closest to the
-enemy core**. Enemy position comes from map fingerprint (`KNOWN_MAPS` in
-`features.py`) on the same turn as detect (HiveMind cache), then slot 15
-ASSUMED/KNOWN. Unknown maps fall back to map center. Tries candidates via
-`hivemind.spawn_builder` / `can_spawn`.
+(not just neighbors of the NW tile). `respawn.py` orders candidates toward
+the **goal** main passes in — enemy core when known (fingerprint /
+`KNOWN_MAPS` / slot 15), else map center — preferring the A* approach apron
+tile, then distance. Tries via `hivemind.spawn_builder` / `can_spawn`.
 
 **Schedule:** rush the first **5** as soon as Ti allows, then spawn **one more
 every 25 turns** starting at turn **10**, up to **7** (`spawn_target`).
 After 7, grow **one every 50 turns** up to **9**. After 9, grow **one
 every 200 turns** as a late fallback (until `MAX_TEAM_UNITS`). From turn
-**75**, **replace ASAP** when a builder vanishes from *interior* core vision
-(leaving the fog edge does not count — that was causing replenish spam).
+**75**, **replace ASAP** when a builder vanishes from *deep-interior* core
+vision (every in-bounds cardinal neighbor still in vision — cannot leave
+vision in one step). Replenish never pushes living above `spawn_target`.
 Before 75, only the scheduled growth gates run. Turret threat does **not**
 raise the early cap (`SPAWN_EXTRA_UNDER_THREAT = False`).
 
