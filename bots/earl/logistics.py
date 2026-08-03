@@ -36,6 +36,8 @@ USE_EARLY_TITANIUM_BUFFER = True
 EARLY_TITANIUM_BUFFER_AMOUNT = 10
 # Round number after which the buffer is ignored
 EARLY_TITANIUM_BUFFER_END_TURN = 50
+# If True, economy bots sticky-graduate to harrass after relay+100 or age 200
+USE_ECONOMY_HARRASS_GRADUATE = False
 # ----------------
 
 # Economy harvester caps by round (None = unlimited). Built count from slot 2.
@@ -193,7 +195,11 @@ def run_economy(bot, ct: Controller) -> None:
         and round_n >= bot.relay_finished_round + ECONOMY_TO_HARRASS_DELAY
     )
     age_ready = round_n >= spawn_round + ECONOMY_MIN_AGE_BEFORE_HARRASS
-    if (relay_ready or age_ready) and bot.enemy_core_pos is not None:
+    if (
+        USE_ECONOMY_HARRASS_GRADUATE
+        and (relay_ready or age_ready)
+        and bot.enemy_core_pos is not None
+    ):
         site = run_harrasser(
             ct,
             my_index=bot.hivemind.my_index,
@@ -228,9 +234,13 @@ def run_economy(bot, ct: Controller) -> None:
         _try_melee_turret(ct, turret)
         return
 
-    if round_n - bot.last_ore_recheck_round >= ORE_RECHECK_INTERVAL:
+    if (
+        bot.last_ore_recheck_round == 0
+        or round_n - bot.last_ore_recheck_round >= ORE_RECHECK_INTERVAL
+    ):
         # At cap, clear skips so ally chain repair can run; still no
-        # empty/steal picks while capped (pick_ore_site).
+        # empty/steal picks while capped (pick_ore_site). First reach
+        # (last==0) arms immediately so fresh spawns can audit chains.
         bot.skipped_ores.clear()
         bot.ore_site = None
         bot.last_ore_recheck_round = round_n
@@ -244,7 +254,8 @@ def run_economy(bot, ct: Controller) -> None:
         return
 
     # At cap only: path toward enemy gunner/sentinel in vision (no wing place).
-    if at_cap:
+    # Do not wipe a sticky ally ore_site from idle recheck / chain repair.
+    if at_cap and bot.ore_site is None:
         turret = _nearest_enemy_turret(ct)
         if turret is not None:
             if _orthogonally_adjacent(ct.get_position(), turret):
@@ -400,9 +411,10 @@ def pick_ore_site(
     """Nearest known ore: prefer empty, then steal; vision before fog.
 
     Sorted by (Chebyshev to ally core, builder distance). In-vision candidates
-    beat fogged map ores. On idle recheck, fall back to ally harvesters so
-    inbound belts can be rebuilt. At harvester cap, only ally (chain repair)
-    candidates.
+    beat fogged map ores. Blocked-no-entity map ores are empty/verify targets
+    when not at cap (expand or steal on sight). On idle recheck, fall back to
+    ally harvesters so inbound belts can be rebuilt. At harvester cap, only
+    ally (chain repair) candidates.
     """
     map_id = bot.hivemind.map_id
     if map_id <= 0:
@@ -434,8 +446,18 @@ def pick_ore_site(
                 bucket = ally_vis if in_vis else ally_fog
                 bucket.append((_ore_sort_key(bot, pos, ore_pos), ore_pos))
             continue
-        # Synced blocked tile with no entity — treat as already claimed
+        # Synced blocked tile with no entity — vision sync often marks ores
+        # passable=False without stamping entity. At cap: ally recheck only.
+        # Under cap: treat as empty/verify so we expand or steal on sight.
         if not ent and tile_info.get("passable") is False:
+            d = _ore_sort_key(bot, pos, ore_pos)
+            if at_cap:
+                if allow_ally:
+                    bucket = ally_vis if in_vis else ally_fog
+                    bucket.append((d, ore_pos))
+            else:
+                bucket = empty_vis if in_vis else empty_fog
+                bucket.append((d, ore_pos))
             continue
 
         d = _ore_sort_key(bot, pos, ore_pos)
@@ -930,11 +952,42 @@ def relay_toward_core(bot, ct: Controller) -> None:
                 bot.relay_built_to = -1
                 bot.relay_merging = False
                 return
-        mark_relay_complete(ct)
-        if bot.relay_finished_round is None:
-            bot.relay_finished_round = ct.get_current_round()
-        clear_relay(bot)
-        return
+            # Spur done — continue join→core; do not mark complete at the join.
+            bot.relay_merging = False
+            bot.relay_origin = join
+            core_path = plan_conveyor_path_to_core(
+                ct,
+                join,
+                bot.core_pos,
+                ore_blocked=ore_blocked,
+                my_index=bot.hivemind.my_index,
+            )
+            if core_path is None:
+                abort_relay(bot)
+                return
+            path = core_path
+            bot.relay_path = path
+            spur_end = None
+            bot.relay_built_to = extend_relay_built_to(
+                ct, path, bot.core_pos, -1, end=None
+            )
+            work_from = bot.relay_built_to + 1
+            idx = first_incomplete_index(
+                ct, path, bot.core_pos, start=work_from, end=None
+            )
+            if idx is None:
+                mark_relay_complete(ct)
+                if bot.relay_finished_round is None:
+                    bot.relay_finished_round = ct.get_current_round()
+                clear_relay(bot)
+                return
+            # else fall through and work the core path this turn
+        else:
+            mark_relay_complete(ct)
+            if bot.relay_finished_round is None:
+                bot.relay_finished_round = ct.get_current_round()
+            clear_relay(bot)
+            return
 
     tile = path[idx]
     travel_dir = path_travel_dir(path, idx, bot.core_pos)
