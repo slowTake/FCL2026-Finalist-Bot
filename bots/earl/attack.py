@@ -39,7 +39,7 @@ PHALANX_WAVE1_TURN = 300
 PHALANX_WAVE2_TURN = 600
 # Back-compat alias for callers / docs that still name the first pivot.
 PHALANX_RAID_PIVOT_TURN = PHALANX_WAVE1_TURN
-MAX_CORE_GUNNERS = 8
+MAX_CORE_GUNNERS = 1000
 MAX_SIEGE_SENTINELS = 5
 SENTINEL_RANGE_SQ = 32
 SENTINEL_PLACE_MIN_SQ = 16  # prefer d≈4+
@@ -418,6 +418,7 @@ def pick_gunner_site(
 
     When ``GUNNER_REQUIRE_LOS``, only pads that can hit the core. Otherwise any
     empty in-range pad (aim with ``facing_8way`` at build time if blocked).
+    Core pads do not reject for ally turrets on the aim ray (harvester pads do).
     """
     footprint = _core_footprint(enemy_core)
     fp_keys = {(t.x, t.y) for t in footprint}
@@ -451,28 +452,39 @@ def pick_gunner_site(
                 and ent.get("team") == my_team
             ):
                 continue
-            if ct.is_in_vision(cand):
+            in_vis = ct.is_in_vision(cand)
+            if in_vis:
                 if not ct.is_tile_empty(cand):
                     continue
                 if ct.get_tile_env(cand) != Environment.EMPTY:
                     continue
-            aim = _aim_core_tile(cand, enemy_core)
-            if _ally_turret_blocks_aim(ct, cand, aim, local_map):
-                continue
             facing = best_gunner_facing(ct, cand, enemy_core)
             if facing is None:
                 if GUNNER_REQUIRE_LOS:
                     continue
                 facing = facing_toward_core(cand, enemy_core)
             diag_pen = 0 if facing in _CARDINALS else 500
-            side = siege_cand_side(cand, enemy_core)
-            side_pen = (
-                0
-                if side == prefer
-                else (1000 + 50 * min((side - prefer) % 8, (prefer - side) % 8))
+            if GUNNER_REQUIRE_LOS:
+                side = siege_cand_side(cand, enemy_core)
+                side_pen = (
+                    0
+                    if side == prefer
+                    else (
+                        1000
+                        + 50 * min((side - prefer) % 8, (prefer - side) % 8)
+                    )
+                )
+            else:
+                side_pen = 0
+            fog_pen = 0 if in_vis else 5000
+            # Prefer closer to the enemy core; builder distance is tiebreak only.
+            score = (
+                side_pen
+                + fog_pen
+                + diag_pen
+                + cheb * 100
+                + pos.distance_squared(cand)
             )
-            # Strongly prefer closer to the enemy core; builder distance is tiebreak only.
-            score = side_pen + diag_pen + cheb * 100 + pos.distance_squared(cand)
             if score < best_score:
                 best_score = score
                 best = cand
@@ -530,12 +542,11 @@ def build_gunner(
             if GUNNER_REQUIRE_LOS:
                 return False
             facing = facing_8way(site, target)
-        ray_target = _aim_core_tile(site, enemy_core)
     else:
         facing = facing_8way(site, target)
-        ray_target = target
 
-    if _ally_turret_blocks_aim(ct, site, ray_target):
+    # Ally-turret ray reject is harvester-only; core pads may stack on a line.
+    if not aim_is_core and _ally_turret_blocks_aim(ct, site, target):
         return False
 
     if not ct.can_build_gunner(site, facing):
@@ -1083,8 +1094,6 @@ def _try_build_gunner_on_adjacent_pad(
         else:
             cheb = _chebyshev_to_footprint(n, footprint)
             if cheb < GUNNER_PLACE_MIN or cheb > GUNNER_PLACE_MAX:
-                continue
-            if _ally_turret_blocks_aim(ct, n, _aim_core_tile(n, enemy_core)):
                 continue
             if best_gunner_facing(ct, n, enemy_core) is not None:
                 prefer.append(n)

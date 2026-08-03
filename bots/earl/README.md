@@ -154,7 +154,7 @@ Packaged as the `RAIDERS` task list (`run_raiders_tasklist` /
    when adjacent). Else path toward the harvester for melee.
 2. **Siege loop** (from turn 30, every **40** turns; epochs restart at **300**
    and **600** so each even wave gets a fresh gunner→sentinel window):
-   - **Gunners** (first **20** turns of each cycle): place up to **8** siege
+   - **Gunners** (first **20** turns of each cycle): place up to **1000** siege
      gunners via `place_gunner_aggressive` (count only pads within Chebyshev **3**
      of the enemy 2×2 — home wings do not fill the cap) on empty tiles at
      distance **1–3**; with `GUNNER_REQUIRE_LOS` only sites that can **hit** the
@@ -179,8 +179,9 @@ sentinels 320–339, …; after 600: gunners 600–619, …
   launcher → builder → harvester) → enemy belts on that facing → rotate to
   core/combat → soft rotate to hittable belts/launcher.
 - **Gunner place:** `GUNNER_REQUIRE_LOS` (in `attack.py`) — prefer-hit vs
-  range-only pads/cover; currently **False** for testing. Always skip pads
-  with an ally gunner/sentinel on the aim ray (belts still allowed).
+  range-only pads/cover; currently **False** for testing. Core pads: any empty
+  Chebyshev **1–3** (no ally-turret ray reject). Harvester pads still skip if an
+  ally gunner/sentinel is on the aim ray (belts still allowed).
 - **Sentinel fire:** core → gunner → sentinel → builder → harvester (fixed facing).
 
 ### Harrass (`harrass.py`)
