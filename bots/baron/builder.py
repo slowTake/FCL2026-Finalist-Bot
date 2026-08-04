@@ -1,11 +1,20 @@
 # Baron builder roles — human task lists (check behavior here first)
 #
+# ## homeGuard — age < BUILDER_HOME_TURNS after birth_round (orchestrator: runHomeGuard)
+#    No harasser / wave until gate expires. nearCoreEconomy filters ore picks (Chebyshev 8).
+# 1. defGun — near core; gunners only
+# 2. defendHome — near core; attack / heal core
+# 3. healAlly — core → gunner/sentinel → harvester
+# 4. buildHarvester — empty ore near core only
+# 5. maintainHarvester — near-core ore / finish in-flight relay
+# 6. recheckOreNodes — near-core empty → ally-blocked → harvester
+#
 # ## default — priority order (orchestrator: runDefault below)
 # 1. buildHarvester — empty ore in vision / HiveMind → build (respect caps);
 #        skip ore if visible enemy gunner is aiming at that tile
 # 2. maintainHarvester
 #    2a. checkOre — harvester → relayToCore; empty → build (same gunner-aim gate);
-#        ally block → destroy (skip gunner/sentinel if enemy turret in vision);
+#        ally block → destroy (skip gunner/sentinel if that ore is threatened);
 #        enemy gunner/sentinel/belt/launcher/barrier → placeGunnerOnOre (stub)
 #    2b. relayToCore — pickRelayPath → neededBeltFacing → beltFacingOk /
 #        clearWrongBelt → placeRelayBelt → watermark
@@ -19,6 +28,7 @@
 # ## harasser (orchestrator: runHarasser below; helpers in offense.py)
 #    my_index > 0 and my_index % 3 == 0 (builders 3,6,9,…)
 #    OR wave attack: WAVE_ATTACK_TURN / WAVE_ATTACK_TI in main.py (>0 = set)
+#    (skipped while homeGuardActive)
 # 1. avoidFire — under enemy gunner LoS → move outside LoS
 # 2. offGun — placeGun/placeSentinel: core → gunner → harvester → launcher
 # 3. seekHarvester — local_map enemy harvesters / scout ore nodes (vision updates map)
@@ -54,6 +64,18 @@ def _resolveCores(bot, ct: Controller) -> None:
         bot.enemyCorePos = bot.hivemind.enemy_core_pos
 
 
+def homeGuardActive(bot, ct: Controller) -> bool:
+    """True while builder age is under BUILDER_HOME_TURNS after birth_round."""
+    from main import BUILDER_HOME_TURNS
+
+    if BUILDER_HOME_TURNS is None or BUILDER_HOME_TURNS <= 0:
+        return False
+    birth = bot.hivemind.birth_round
+    if birth is None:
+        return True  # brand-new / unindexed — stay home
+    return ct.get_current_round() - birth < BUILDER_HOME_TURNS
+
+
 def waveAttackActive(ct: Controller) -> bool:
     """True if a set wave gate (turn or Ti) has been reached."""
     from main import WAVE_ATTACK_TI, WAVE_ATTACK_TURN
@@ -67,9 +89,28 @@ def waveAttackActive(ct: Controller) -> bool:
     return False
 
 
+def runHomeGuard(bot, ct: Controller) -> None:
+    """Early age: defend first, then near-core economy only."""
+    _resolveCores(bot, ct)
+    bot.nearCoreEconomy = True
+
+    if defGun(bot, ct):
+        return
+    if defendHome(bot, ct):
+        return
+    if healAlly(bot, ct):
+        return
+    if buildHarvester(bot, ct):
+        return
+    if maintainHarvester(bot, ct):
+        return
+    recheckOreNodes(bot, ct)
+
+
 def runDefault(bot, ct: Controller) -> None:
     """Default role: build → maintain → defGun → defend → heal → recheck."""
     _resolveCores(bot, ct)
+    bot.nearCoreEconomy = False
 
     if buildHarvester(bot, ct):
         return
@@ -87,6 +128,7 @@ def runDefault(bot, ct: Controller) -> None:
 def runHarasser(bot, ct: Controller) -> None:
     """Harasser: avoidFire → offGun → seekHarvester → seekCore."""
     _resolveCores(bot, ct)
+    bot.nearCoreEconomy = False
     if avoidFire(bot, ct):
         return
     if offGun(bot, ct):
@@ -97,7 +139,10 @@ def runHarasser(bot, ct: Controller) -> None:
 
 
 def runBuilderRoles(bot, ct: Controller) -> None:
-    """Dispatch: every 3rd builder, or all builders once a wave gate fires."""
+    """Dispatch: home-guard age gate, then harasser / default."""
+    if homeGuardActive(bot, ct):
+        runHomeGuard(bot, ct)
+        return
     idx = bot.hivemind.my_index
     if waveAttackActive(ct) or (idx > 0 and idx % 3 == 0):
         runHarasser(bot, ct)

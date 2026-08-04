@@ -274,6 +274,15 @@ def knownOreTiles(bot) -> list[Position]:
     return ores
 
 
+def _allowOreSite(bot, ore: Position) -> bool:
+    """During home-guard, only ore within DEFEND_HOME_CHEBYSHEV of ally core."""
+    if not getattr(bot, "nearCoreEconomy", False):
+        return True
+    if bot.corePos is None:
+        return True
+    return _chebyshevToCore(ore, bot.corePos) <= DEFEND_HOME_CHEBYSHEV
+
+
 def pickEmptyOre(bot, ct: Controller) -> Position | None:
     pos = ct.get_position()
     core = bot.corePos
@@ -300,6 +309,8 @@ def pickEmptyOre(bot, ct: Controller) -> Position | None:
         candidates.append(ore)
 
     for ore in candidates:
+        if not _allowOreSite(bot, ore):
+            continue
         if oreThreatenedByGunner(ct, ore):
             continue
         if core is not None:
@@ -348,22 +359,14 @@ def _allyOreBlock(ct: Controller, tile: Position) -> EntityType | None:
     return etype
 
 
-def _enemyTurretInVision(ct: Controller) -> bool:
-    me = ct.get_team()
-    for eid in ct.get_nearby_entities():
-        if ct.get_team(eid) == me:
-            continue
-        if ct.get_entity_type(eid) in (EntityType.GUNNER, EntityType.SENTINEL):
-            return True
-    return False
-
-
 def _shouldClearAllyOreBlock(ct: Controller, tile: Position) -> bool:
-    """Clear ally ore blockers unless gunner/sentinel and enemy turret in vision."""
+    """Clear ally ore blockers unless gunner/sentinel and that ore is threatened."""
     etype = _allyOreBlock(ct, tile)
     if etype is None:
         return False
-    if etype in (EntityType.GUNNER, EntityType.SENTINEL) and _enemyTurretInVision(ct):
+    if etype in (EntityType.GUNNER, EntityType.SENTINEL) and oreThreatenedByGunner(
+        ct, tile
+    ):
         return False
     return True
 
@@ -396,7 +399,9 @@ def _approachOreBlock(bot, ct: Controller, tile: Position) -> bool:
 def pickMaintainOre(bot, ct: Controller) -> Position | None:
     """Prefer sticky site, else nearest empty / clearable-blocked / harvester ore."""
     if bot.oreSite is not None:
-        return bot.oreSite
+        if _allowOreSite(bot, bot.oreSite):
+            return bot.oreSite
+        bot.oreSite = None
     pos = ct.get_position()
     core = bot.corePos
     best: Position | None = None
@@ -404,6 +409,8 @@ def pickMaintainOre(bot, ct: Controller) -> Position | None:
 
     def consider(ore: Position) -> None:
         nonlocal best, best_key
+        if not _allowOreSite(bot, ore):
+            return
         if core is not None:
             key = (manhattan(ore, core), manhattan(ore, pos))
         else:
@@ -754,6 +761,8 @@ def buildHarvester(bot, ct: Controller) -> bool:
             tile = pos.add(d)
             if not inBounds(ct, tile):
                 continue
+            if not _allowOreSite(bot, tile):
+                continue
             if oreThreatenedByGunner(ct, tile):
                 continue
             if ct.can_build_harvester(tile):
@@ -1015,6 +1024,8 @@ def _pickRecheckOre(bot, ct: Controller) -> Position | None:
 
     def consider(ore: Position, *, kind: str) -> None:
         nonlocal empty_best, empty_key, blocked_best, blocked_key, harv_best, harv_key
+        if not _allowOreSite(bot, ore):
+            return
         key_xy = (ore.x, ore.y)
         if key_xy in skipped:
             return

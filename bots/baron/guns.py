@@ -220,7 +220,8 @@ def _gunnerPadsNearTarget(
                 continue
             if not ct.is_in_vision(site):
                 continue
-            if ct.get_tile_env(site) == Environment.WALL:
+            env = ct.get_tile_env(site)
+            if env == Environment.WALL or env == Environment.ORE_TITANIUM:
                 continue
             if not ct.is_tile_empty(site):
                 continue
@@ -393,7 +394,8 @@ def _sentinelPadsNearTarget(
                 continue
             if not ct.is_in_vision(site):
                 continue
-            if ct.get_tile_env(site) == Environment.WALL:
+            env = ct.get_tile_env(site)
+            if env == Environment.WALL or env == Environment.ORE_TITANIUM:
                 continue
             if not ct.is_tile_empty(site):
                 continue
