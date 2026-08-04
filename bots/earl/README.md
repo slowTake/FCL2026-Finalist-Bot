@@ -4,9 +4,9 @@ Starter economy loop + HiveMind (`components/` symlinks) + **inbound steal-relay
 belts to the **ally** core only. Default **`ACTIVE_RAID_ORDER = "phalanx"`**
 ([`roles.py`](roles.py)): **even** builders → home phalanx (`defence.py`) once
 the enemy core is known; fire-and-forget even waves leave at **300** / **600**
-by spawn cohort (later even spawns refill phalanx and never raid); **odd**
-builders → economy (`logistics.py`), graduating to harrass on **relay+100** or
-**age 200** (whichever first). Set to **`raiders`** for the offensive belt-raid
+by spawn cohort; **spawn ≥ 600** (any index) → economy; **odd** builders
+(spawned earlier) → economy (`logistics.py`); optional harrass graduate via
+`USE_ECONOMY_HARRASS_GRADUATE` (currently **on**). Set to **`raiders`** for the offensive belt-raid
 → gunner/sentinel siege loop (`attack.py`); set to **`harrass`** for harvester
 siege + seek (`harrass.py`). Economy harvester caps (**2** until 50, **3**
 until 100, **4** until 200, **5** until 250, **6** until 400, then unlimited);
@@ -63,25 +63,28 @@ turn **10**; raiders at **30**.
 Each turn (`_run_builder` → `roles.run_builder_roles`), after HiveMind `tick`
 and stuck tracking. Role details and phase lists live in [`role.md`](role.md).
 
-0. **Raid gate** — `on_raid_tasklist` in `roles.py` (default: even indices once
-   enemy core known → `phalanx` or fire-and-forget `raiders` by spawn cohort at
-   300/600; or full `raiders` / `harrass` override); abort relay/ore; move
-   toward site and return.
-1. **Economy** (`run_economy` / `ECONOMY` in `logistics.py`) — odd builders:
+0. **Raid gate** — `on_raid_tasklist` in `roles.py` (default: even indices
+   spawned before **600** once enemy core known → `phalanx` or fire-and-forget
+   `raiders` by spawn cohort at 300/600; spawn ≥ 600 → economy; or full
+   `raiders` / `harrass` override); abort relay/ore; move toward site and return.
+1. **Economy** (`run_economy` / `ECONOMY` in `logistics.py`) — odd builders and
+   any builder spawned at/after **600**:
    1. **If `in_relay`** → finish inbound relay (always, even at harvester cap).
-   2. **Harrass graduate** — sticky `run_harrasser` when **either** first
-      completed relay + **100** turns **or** age ≥ **200** from spawn
-      (whichever first; needs enemy core known).
+   2. **Harrass graduate** — when `USE_ECONOMY_HARRASS_GRADUATE` (currently
+      **on**): sticky `run_harrasser` after first completed relay + **100**
+      turns **or** age ≥ **200** from spawn (whichever first; needs enemy
+      core known).
    3. **Snipe enemy harvester** — uncovered enemy harvester in vision →
       place/path gunner (`attack._run_siege_enemy_harvester`).
-   4. **Idle ore recheck** (every 50 turns): clear skips; allow ally-harvester
-      chain repair. While at cap, do **not** seek new empty/steal sites.
+   4. **Idle ore recheck** (first time this bot reaches it, then every 50
+      turns): clear skips; allow ally-harvester chain repair. While at cap,
+      do **not** seek new empty/steal sites.
    5. **Ore-site task** — build / steal / clear belts (skipped when at cap
       unless site is already a harvester for re-relay).
    6. **Hunt enemy turret** — if orthogonally adjacent to an enemy
-      gunner/sentinel, fire/destroy (even under cap). Else **at cap only**:
-      path toward a turret in vision (far chase does not interrupt under-cap
-      harvester placement).
+      gunner/sentinel, fire/destroy (even under cap). Else **at cap only**
+      when `ore_site` is unset: path toward a turret in vision (does not
+      clear an active ally chain-repair target).
    7. **Heal** → **move** toward site.
 
 ### Harvester caps (economy)
@@ -106,7 +109,7 @@ by `spawn_round` cohort (via `effective_raid_order`):
 |--------|----------|
 | `spawn < 300` | Phalanx until **300**, then sticky raiders |
 | `300 ≤ spawn < 600` | Phalanx until **600**, then sticky raiders |
-| `spawn ≥ 600` | Phalanx forever (home refill after wave 2) |
+| `spawn ≥ 600` | **Economy** (all indices; no phalanx refill) |
 
 While still on phalanx:
 
@@ -188,7 +191,8 @@ sentinels 320–339, …; after 600: gunners 600–619, …
 
 Packaged as the `HARRASS` task list (`run_harrasser`) when
 `ACTIVE_RAID_ORDER = "harrass"`. Under default phalanx, odds stay on economy
-but may sticky-graduate into this order via the relay+100 / age-200 OR gate.
+but may sticky-graduate into this order when `USE_ECONOMY_HARRASS_GRADUATE`
+is on (relay+100 / age-200 OR gate).
 
 1. **Phalanx home** (`round < 50`) — same duties as phalanx until
    `HARRASS_START_TURN`.
@@ -210,8 +214,13 @@ but may sticky-graduate into this order via the relay+100 / age-200 OR gate.
 - **Vision first:** in-vision empty/steal ores beat fogged known map ores.
 - Skip our harvesters and locally finished sites (`skipped_ores`), except on
   idle recheck when ally harvesters are allowed so inbound relays can be fixed.
+- When **not** at cap, known ores that are blocked in `local_map` without an
+  entity tag are treated as empty/verify targets (go look; build if empty,
+  enter relay if a harvester is there). At cap, those ghosts are only
+  revisited on idle ally recheck for chain repair.
 - While at the economy harvester cap, empty/steal picks are disabled; ally
-  recheck for chain repair still runs.
+  recheck for chain repair still runs (first recheck on that bot can arm
+  immediately; far turret hunt does not clear an active `ore_site`).
 - Always take the nearest candidate (no index stagger).
 
 ### Pathfinding (`pathing.py`)
@@ -230,12 +239,16 @@ After building or claiming a harvester, A\* a conveyor path to an **ally**
 core-adjacent tile (`is_core_adjacent` requires our team). Entry prefers the
 **nearest** core face; builder-index side stagger is only a tiebreak when
 lengths match (avoids routing around the core and tearing up inbound belts).
-Falling back to any core-adjacent tile if that face is unreachable. If a path onto a
+Falling back to any core-adjacent tile if that face is unreachable. Relay A\*
+uses HiveMind `local_map` blockers in fog so paths route around known
+gunners/walls (unknown fog stays optimistic). If a path onto a
 **visible allied belt** at least Chebyshev **4** from the core is at least
 **8** tiles shorter than the core path, prefer that merge spur instead (build
-up to the join; do not rebuild the existing network). Near-core / apron belts
+up to the join). After the spur joins, the builder **continues** with a
+join→core path — fixing wrong-facing belts and gaps until the chain reaches
+the core (joining alone does not complete the relay). Near-core / apron belts
 are not merge targets. Belts face toward the next hop / ally core. Wrong-facing
-allied belts on the spur are destroyed and rebuilt; enemy belts are cleared via
+allied belts on the path are destroyed and rebuilt; enemy belts are cleared via
 stand-and-fire, then replaced. Progress uses a contiguous vision watermark
 (`relay_built_to`) so fogged mid-path gaps are not skipped. Completing or
 aborting the path clears relay state; builder then picks a new ore.

@@ -24,17 +24,18 @@ in `attack.py`.
 Mine and inbound-relay (`logistics.py`). Named phases (`ECONOMY`):
 
 1. **finish_relay** — if `in_relay`, only pave the inbound chain to the ally core.
-2. **harrass_after_relay** — sticky `run_harrasser` when **either** the
-   **first** completed inbound relay plus **100** turns
-   (`ECONOMY_TO_HARRASS_DELAY`) **or** age ≥ **200** from spawn
-   (`ECONOMY_MIN_AGE_BEFORE_HARRASS`) — whichever fires first. Requires
-   enemy core known.
+2. **harrass_after_relay** — when `USE_ECONOMY_HARRASS_GRADUATE` (currently
+   **on**): sticky `run_harrasser` after the **first** completed inbound
+   relay plus **100** turns (`ECONOMY_TO_HARRASS_DELAY`) **or** age ≥ **200**
+   from spawn (`ECONOMY_MIN_AGE_BEFORE_HARRASS`) — whichever fires first.
+   Requires enemy core known.
 3. **snipe_enemy_harvester** — if enemy core known and an uncovered enemy
    harvester is in vision, path/place a gunner that can hit it
    (`place_gunner_aggressive` via `_run_siege_enemy_harvester`). Skips mining
    that turn.
-4. **idle_ore_recheck** — every 50 turns: clear `skipped_ores` / `ore_site` and
-   allow ally-harvester candidates so broken inbound belts can be rebuilt.
+4. **idle_ore_recheck** — first time this bot reaches it, then every 50 turns:
+   clear `skipped_ores` / `ore_site` and allow ally-harvester candidates so
+   broken inbound belts can be rebuilt (fresh spawns can audit immediately).
 5. **ore_site** — sticky site via `pick_ore_site` / `try_ore_site_task`
    (vision-first, then nearest by core then builder distance):
    - Empty → step off if on tile; adjacent → build harvester, then enter relay.
@@ -44,8 +45,9 @@ Mine and inbound-relay (`logistics.py`). Named phases (`ECONOMY`):
    - Blocked → skip ore, pick another.
 6. **hunt_enemy_turret** — if orthogonally adjacent to an enemy gunner or
    sentinel, always fire/destroy (even under cap; before ore seek). Else
-   **at harvester cap only**: path toward a turret in vision. Far chase
-   under cap never runs (harvester placement wins).
+   **at harvester cap only** when `ore_site` is unset: path toward a turret
+   in vision (does not wipe an active ally re-relay target). Far chase under
+   cap never interrupts under-cap harvester placement.
 7. **heal** — adjacent damaged friendlies (if action free).
 8. **move** — toward `ore_site` / target (no pave-while-walking).
 ### Harvester caps (built count, store slot 2)
@@ -66,9 +68,9 @@ empty ores or steals; idle recheck may still re-relay **ally** harvesters.
 Constants: `HARVESTER_CAP_1`…`_5` (values 2…6), `HARVESTER_CAP_TO_2_TURN` (50),
 `TO_3` (100), `TO_4` (200), `TO_5` (250), `UNLIMITED` (400) in `logistics.py`.
 
-Under default phalanx order, **odd** builders stay on the economy role menu
-forever (including late spawns); they may graduate to sticky harrass inside
-`run_economy` via the OR gate above.
+Under default phalanx order, **odd** builders and **any** builder with
+`spawn_round ≥ 600` stay on the economy role menu; they may graduate to sticky
+harrass inside `run_economy` via the OR gate above.
 
 ---
 
@@ -95,8 +97,8 @@ Home defence for **even** builders once the enemy core is known
 
 Fire-and-forget even waves (`PHALANX_WAVE1_TURN` / `PHALANX_WAVE2_TURN` in
 `roles.py`): spawn `< 300` leave at 300; spawn `< 600` leave at 600; spawn
-`≥ 600` stay phalanx forever (home refill). No global raid mode — later
-even bots are unaffected.
+`≥ 600` are **economy** (all indices, no home phalanx refill). No global raid
+mode — later even bots spawned before 600 still refill until their wave leaves.
 
 ---
 
@@ -142,4 +144,4 @@ phases (`HARRASS`):
 4. **push_enemy_core** — when siege has no site: path toward the enemy core.
 
 Not assigned by index under default phalanx (odds may sticky-graduate via
-economy's relay+100 / age-200 OR gate inside `run_economy`).
+economy's relay+100 / age-200 OR gate when `USE_ECONOMY_HARRASS_GRADUATE`).

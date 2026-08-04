@@ -14,7 +14,8 @@ from logistics import clear_relay, run_economy
 
 # "phalanx" = even home defence / odd economy; "raiders" / "harrass" = overrides.
 ACTIVE_RAID_ORDER = "phalanx"
-# Fire-and-forget even waves: spawn cohort leaves at these marks; later evens refill.
+# Fire-and-forget even waves: spawn cohort leaves at these marks.
+# Spawn >= WAVE2 are economy (see on_raid_tasklist), not phalanx refill.
 PHALANX_WAVE1_TURN = 300
 PHALANX_WAVE2_TURN = 600
 
@@ -25,8 +26,8 @@ def effective_raid_order(
     """Raid-path order for builders already on the raid task list.
 
     Under default phalanx: fire-and-forget even waves by spawn cohort —
-    spawn < 300 leave at 300; spawn < 600 leave at 600; spawn >= 600 stay
-    phalanx forever. Overrides return ACTIVE_RAID_ORDER.
+    spawn < 300 leave at 300; spawn < 600 leave at 600. Spawn >= 600 are
+    economy (not on the raid list). Overrides return ACTIVE_RAID_ORDER.
     """
     if ACTIVE_RAID_ORDER != "phalanx":
         return ACTIVE_RAID_ORDER
@@ -39,7 +40,7 @@ def effective_raid_order(
 
 
 def home_phalanx_active(round_n: int) -> bool:
-    """True while home phalanx role is active (late even spawns refill after waves)."""
+    """True while home phalanx role is active (ACTIVE_RAID_ORDER == phalanx)."""
     del round_n
     return ACTIVE_RAID_ORDER == "phalanx"
 
@@ -51,12 +52,15 @@ def on_raid_tasklist(
     spawn_round: int | None = None,
 ) -> bool:
     """Who runs phalanx / harrass / raiders this turn (enemy core must be known)."""
-    del round_n, spawn_round
+    del round_n
     if enemy_core is None or my_index <= 0:
         return False
     if ACTIVE_RAID_ORDER != "phalanx":
         return is_raider(my_index, enemy_core)
-    # Default: every even is on the raid path (phalanx or raiders by cohort).
+    spawned = 0 if spawn_round is None else spawn_round
+    # After wave 2, all new builders mine/relay instead of home phalanx refill.
+    if spawned >= PHALANX_WAVE2_TURN:
+        return False
     return my_index % 2 == 0
 
 

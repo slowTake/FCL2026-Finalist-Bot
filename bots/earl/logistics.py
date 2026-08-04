@@ -36,6 +36,8 @@ USE_EARLY_TITANIUM_BUFFER = True
 EARLY_TITANIUM_BUFFER_AMOUNT = 10
 # Round number after which the buffer is ignored
 EARLY_TITANIUM_BUFFER_END_TURN = 50
+# If True, economy bots sticky-graduate to harrass after relay+100 or age 200
+USE_ECONOMY_HARRASS_GRADUATE = True
 # ----------------
 
 # Economy harvester caps by round (None = unlimited). Built count from slot 2.
@@ -193,7 +195,11 @@ def run_economy(bot, ct: Controller) -> None:
         and round_n >= bot.relay_finished_round + ECONOMY_TO_HARRASS_DELAY
     )
     age_ready = round_n >= spawn_round + ECONOMY_MIN_AGE_BEFORE_HARRASS
-    if (relay_ready or age_ready) and bot.enemy_core_pos is not None:
+    if (
+        USE_ECONOMY_HARRASS_GRADUATE
+        and (relay_ready or age_ready)
+        and bot.enemy_core_pos is not None
+    ):
         site = run_harrasser(
             ct,
             my_index=bot.hivemind.my_index,
@@ -228,9 +234,13 @@ def run_economy(bot, ct: Controller) -> None:
         _try_melee_turret(ct, turret)
         return
 
-    if round_n - bot.last_ore_recheck_round >= ORE_RECHECK_INTERVAL:
+    if (
+        bot.last_ore_recheck_round == 0
+        or round_n - bot.last_ore_recheck_round >= ORE_RECHECK_INTERVAL
+    ):
         # At cap, clear skips so ally chain repair can run; still no
-        # empty/steal picks while capped (pick_ore_site).
+        # empty/steal picks while capped (pick_ore_site). First reach
+        # (last==0) arms immediately so fresh spawns can audit chains.
         bot.skipped_ores.clear()
         bot.ore_site = None
         bot.last_ore_recheck_round = round_n
@@ -244,7 +254,8 @@ def run_economy(bot, ct: Controller) -> None:
         return
 
     # At cap only: path toward enemy gunner/sentinel in vision (no wing place).
-    if at_cap:
+    # Do not wipe a sticky ally ore_site from idle recheck / chain repair.
+    if at_cap and bot.ore_site is None:
         turret = _nearest_enemy_turret(ct)
         if turret is not None:
             if _orthogonally_adjacent(ct.get_position(), turret):
@@ -400,9 +411,10 @@ def pick_ore_site(
     """Nearest known ore: prefer empty, then steal; vision before fog.
 
     Sorted by (Chebyshev to ally core, builder distance). In-vision candidates
-    beat fogged map ores. On idle recheck, fall back to ally harvesters so
-    inbound belts can be rebuilt. At harvester cap, only ally (chain repair)
-    candidates.
+    beat fogged map ores. Blocked-no-entity map ores are empty/verify targets
+    when not at cap (expand or steal on sight). On idle recheck, fall back to
+    ally harvesters so inbound belts can be rebuilt. At harvester cap, only
+    ally (chain repair) candidates.
     """
     map_id = bot.hivemind.map_id
     if map_id <= 0:
@@ -434,8 +446,18 @@ def pick_ore_site(
                 bucket = ally_vis if in_vis else ally_fog
                 bucket.append((_ore_sort_key(bot, pos, ore_pos), ore_pos))
             continue
-        # Synced blocked tile with no entity — treat as already claimed
+        # Synced blocked tile with no entity — vision sync often marks ores
+        # passable=False without stamping entity. At cap: ally recheck only.
+        # Under cap: treat as empty/verify so we expand or steal on sight.
         if not ent and tile_info.get("passable") is False:
+            d = _ore_sort_key(bot, pos, ore_pos)
+            if at_cap:
+                if allow_ally:
+                    bucket = ally_vis if in_vis else ally_fog
+                    bucket.append((d, ore_pos))
+            else:
+                bucket = empty_vis if in_vis else empty_fog
+                bucket.append((d, ore_pos))
             continue
 
         d = _ore_sort_key(bot, pos, ore_pos)
@@ -533,23 +555,54 @@ def enemy_belt_id(ct: Controller, pos: Position) -> int | None:
     return bid
 
 
+_FOG_BLOCK_ENTITY_TYPES = (
+    EntityType.CORE,
+    EntityType.HARVESTER,
+    EntityType.GUNNER,
+    EntityType.SENTINEL,
+)
+
+
 def is_layable_or_join(
     ct: Controller,
     pos: Position,
     *,
     ore_blocked: set[tuple[int, int]] | None = None,
+    local_map: dict | None = None,
 ) -> bool:
     if not _in_bounds(ct, pos):
         return False
     if ore_blocked is not None and (pos.x, pos.y) in ore_blocked:
         return False
     if not ct.is_in_vision(pos):
+        # Fog: still respect HiveMind blockers (gunners/walls) so relay A*
+        # does not route through known apron turrets outside vision.
+        if local_map is not None:
+            entry = local_map.get((pos.x, pos.y))
+            if entry is not None:
+                ent = entry.get("entity")
+                if ent and ent.get("type") in _FOG_BLOCK_ENTITY_TYPES:
+                    return False
+                if entry.get("passable") is False:
+                    return False
         return True
     if allied_belt_id(ct, pos) is not None:
         return True
     if enemy_belt_id(ct, pos) is not None:
         return True
     return can_lay_infrastructure(ct, pos)
+
+
+def _allied_non_belt_building(ct: Controller, pos: Position) -> bool:
+    """True if vision shows an allied building that is not a conveyor/splitter."""
+    if not ct.is_in_vision(pos):
+        return False
+    bid = ct.get_tile_building_id(pos)
+    if bid is None:
+        return False
+    if ct.get_team(bid) != ct.get_team():
+        return False
+    return ct.get_entity_type(bid) not in (EntityType.CONVEYOR, EntityType.SPLITTER)
 
 
 def facing_into_core(pos: Position, core_pos: Position) -> Direction:
@@ -574,9 +627,12 @@ def plan_conveyor_path(
     is_goal,
     ore_blocked: set[tuple[int, int]] | None = None,
     heuristic_to: Position | None = None,
+    local_map: dict | None = None,
 ) -> list[Position] | None:
     def ok(p: Position) -> bool:
-        return is_layable_or_join(ct, p, ore_blocked=ore_blocked)
+        return is_layable_or_join(
+            ct, p, ore_blocked=ore_blocked, local_map=local_map
+        )
 
     seeds: list[Position] = []
     if ok(start):
@@ -622,6 +678,7 @@ def plan_conveyor_path_to_core(
     *,
     ore_blocked: set[tuple[int, int]] | None = None,
     my_index: int = 0,
+    local_map: dict | None = None,
 ) -> list[Position] | None:
     """Path to a core-adjacent tile; prefer nearest face, preferred side on ties.
 
@@ -635,6 +692,7 @@ def plan_conveyor_path_to_core(
         is_goal=lambda p: is_core_adjacent(ct, p, core_pos),
         ore_blocked=ore_blocked,
         heuristic_to=core_pos,
+        local_map=local_map,
     )
     preferred = preferred_entry_tiles(ct, core_pos, my_index)
     if not preferred:
@@ -650,6 +708,7 @@ def plan_conveyor_path_to_core(
         is_goal=preferred_goal,
         ore_blocked=ore_blocked,
         heuristic_to=core_pos,
+        local_map=local_map,
     )
     if preferred_path is None:
         return nearest
@@ -689,6 +748,7 @@ def plan_conveyor_path_to_merge(
     *,
     origin: Position,
     ore_blocked: set[tuple[int, int]] | None = None,
+    local_map: dict | None = None,
 ) -> list[Position] | None:
     """Shortest layable path onto a visible allied belt (join target inclusive)."""
     return plan_conveyor_path(
@@ -699,6 +759,7 @@ def plan_conveyor_path_to_merge(
         ),
         ore_blocked=ore_blocked,
         heuristic_to=core_pos,
+        local_map=local_map,
     )
 
 
@@ -710,6 +771,7 @@ def pick_relay_path(
     origin: Position,
     ore_blocked: set[tuple[int, int]] | None = None,
     my_index: int = 0,
+    local_map: dict | None = None,
 ) -> tuple[list[Position] | None, bool]:
     """Prefer a merge spur when it saves at least MERGE_SAVE_MIN tiles vs core."""
     core_path = plan_conveyor_path_to_core(
@@ -718,9 +780,15 @@ def pick_relay_path(
         core_pos,
         ore_blocked=ore_blocked,
         my_index=my_index,
+        local_map=local_map,
     )
     merge_path = plan_conveyor_path_to_merge(
-        ct, start, core_pos, origin=origin, ore_blocked=ore_blocked
+        ct,
+        start,
+        core_pos,
+        origin=origin,
+        ore_blocked=ore_blocked,
+        local_map=local_map,
     )
     if merge_path is not None and core_path is not None:
         if len(merge_path) <= len(core_path) - MERGE_SAVE_MIN:
@@ -841,11 +909,14 @@ def _relay_path_ok(
     ct: Controller,
     path: list[Position],
     ore_blocked: set[tuple[int, int]],
+    local_map: dict | None = None,
 ) -> bool:
     for tile in path:
         if allied_belt_id(ct, tile) is not None:
             continue
-        if not is_layable_or_join(ct, tile, ore_blocked=ore_blocked):
+        if not is_layable_or_join(
+            ct, tile, ore_blocked=ore_blocked, local_map=local_map
+        ):
             return False
     return True
 
@@ -856,6 +927,7 @@ def relay_toward_core(bot, ct: Controller) -> None:
         return
 
     ore_blocked = _ore_blocked_set(bot)
+    local_map = bot.hivemind.local_map
     pos = ct.get_position()
     origin_visible = ct.is_in_vision(bot.relay_origin)
     path = bot.relay_path
@@ -887,7 +959,9 @@ def relay_toward_core(bot, ct: Controller) -> None:
         else:
             bot.relay_origin = pos
     else:
-        if path is not None and not _relay_path_ok(ct, path, ore_blocked):
+        if path is not None and not _relay_path_ok(
+            ct, path, ore_blocked, local_map=local_map
+        ):
             # Reseed mid-route from last known belt before discarding indices.
             if bot.relay_built_to >= 0:
                 bot.relay_origin = path[bot.relay_built_to]
@@ -904,6 +978,7 @@ def relay_toward_core(bot, ct: Controller) -> None:
             origin=bot.relay_origin,
             ore_blocked=ore_blocked,
             my_index=bot.hivemind.my_index,
+            local_map=local_map,
         )
         bot.relay_path = path
         bot.relay_merging = merging
@@ -930,13 +1005,53 @@ def relay_toward_core(bot, ct: Controller) -> None:
                 bot.relay_built_to = -1
                 bot.relay_merging = False
                 return
-        mark_relay_complete(ct)
-        if bot.relay_finished_round is None:
-            bot.relay_finished_round = ct.get_current_round()
-        clear_relay(bot)
-        return
+            # Spur done — continue join→core; do not mark complete at the join.
+            bot.relay_merging = False
+            bot.relay_origin = join
+            core_path = plan_conveyor_path_to_core(
+                ct,
+                join,
+                bot.core_pos,
+                ore_blocked=ore_blocked,
+                my_index=bot.hivemind.my_index,
+                local_map=local_map,
+            )
+            if core_path is None:
+                abort_relay(bot)
+                return
+            path = core_path
+            bot.relay_path = path
+            spur_end = None
+            bot.relay_built_to = extend_relay_built_to(
+                ct, path, bot.core_pos, -1, end=None
+            )
+            work_from = bot.relay_built_to + 1
+            idx = first_incomplete_index(
+                ct, path, bot.core_pos, start=work_from, end=None
+            )
+            if idx is None:
+                mark_relay_complete(ct)
+                if bot.relay_finished_round is None:
+                    bot.relay_finished_round = ct.get_current_round()
+                clear_relay(bot)
+                return
+            # else fall through and work the core path this turn
+        else:
+            mark_relay_complete(ct)
+            if bot.relay_finished_round is None:
+                bot.relay_finished_round = ct.get_current_round()
+            clear_relay(bot)
+            return
 
     tile = path[idx]
+    # Visible allied non-belt (gunner/sentinel/etc.) — cannot lay or join;
+    # clear path so next turn replans with local_map awareness.
+    if _allied_non_belt_building(ct, tile):
+        bot.relay_path = None
+        bot.relay_built_to = -1
+        bot.relay_merging = False
+        return
+
     travel_dir = path_travel_dir(path, idx, bot.core_pos)
 
     # Enemy belts: stand-and-fire, then lay ours next turn
