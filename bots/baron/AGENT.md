@@ -17,7 +17,7 @@ Quick index: where to edit and main entrypoints. Update when adding public funct
 | `hivemind.py` → `hivemind_v2` | Map fingerprint, delta ledger | `HiveMind.tick`, `unpack_cores`, `spawn_builder` |
 | `vision_v2.py` | Ledger pack/unpack (required by v2) | `pack_ledger_slot` |
 
-**Policy knobs** (builders, harvesters, ammo, wave, home-guard, Ti tiers) → top block in `main.py` (`SPAWN_INTERVAL_BY_TI`, `HARVESTER_CAP_BY_TI`, `WAVE_ATTACK_*`, `BUILDER_HOME_TURNS`).
+**Policy knobs** (builders, harvesters, ammo, wave, home-guard, Ti tiers) → top block in `main.py` (`SPAWN_INTERVAL_BY_TI`, `HARVESTER_CAP_BY_TI`, `WAVE_ATTACK_*`, `BUILDER_HOME_TURNS`, `GUN_PLACE_MIN_TI`).
 
 Role **task lists** → top comments in `builder.py`.
 

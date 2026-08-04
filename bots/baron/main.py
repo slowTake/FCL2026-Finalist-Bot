@@ -45,20 +45,23 @@ HARVESTER_CAP_BEFORE_250 = 5000
 HARVESTER_CAP_BEFORE_400 = 6000
 
 # Ti bank → max harvesters. Base when below all tiers; None + empty BY_TI = turn caps only.
-HARVESTER_CAP: int | None = 3
+HARVESTER_CAP: int | None = 5
 HARVESTER_CAP_BY_TI: list[tuple[int, int]] = [
-    (2000, 12),
-    (1000, 8),
-    (500, 5),
+    (2000, 120),
+    (1000, 80),
+    (500, 50),
 ]
+
+# --- Gun placement (≤0 disables) ---
+GUN_PLACE_MIN_TI = 100  # need bank ≥ this to place gunner/sentinel
 
 # --- Ammo policy (guns.top_up_ammo reads these) ---
 AMMO_BASE = 12
-AMMO_PER_GUNNER = 2
+AMMO_PER_GUNNER = 3
 AMMO_PER_SENTINEL = 10
 AMMO_CONVERT_CHUNK = 10
 AMMO_MIN_POOL = 20
-DEFAULT_AMMO_START_TURN = 10
+DEFAULT_AMMO_START_TURN = 1
 RAIDER_AMMO_START_TURN = 30
 MAX_AMMO_POOL: int | None = None
 

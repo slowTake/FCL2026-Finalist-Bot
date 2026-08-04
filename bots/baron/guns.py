@@ -208,6 +208,50 @@ def allyGunCovering(ct: Controller, tile: Position) -> bool:
     return False
 
 
+def _tilesInFront(
+    gpos: Position, facing: Direction, *, max_steps: int = 8
+) -> list[Position]:
+    """Belt-style forward cells along an 8-dir facing ray."""
+    if facing == Direction.CENTRE:
+        return []
+    out: list[Position] = []
+    p = gpos.add(facing)
+    for _ in range(max_steps):
+        out.append(p)
+        p = p.add(facing)
+    return out
+
+
+def _allyGunnerBlockedPads(ct: Controller) -> set[tuple[int, int]]:
+    """Tiles in front of or adjacent to visible ally gunners (no stack/muzzle)."""
+    blocked: set[tuple[int, int]] = set()
+    me = ct.get_team()
+    w, h = ct.get_map_width(), ct.get_map_height()
+    for eid in ct.get_nearby_entities():
+        if ct.get_team(eid) != me:
+            continue
+        if ct.get_entity_type(eid) != EntityType.GUNNER:
+            continue
+        gpos = ct.get_position(eid)
+        try:
+            facing = ct.get_direction(eid)
+        except Exception:
+            facing = Direction.CENTRE
+        for p in _tilesInFront(gpos, facing):
+            if 0 <= p.x < w and 0 <= p.y < h:
+                blocked.add((p.x, p.y))
+        # Cheek-by-jowl: Chebyshev ≤ 1 around the gunner (not the gunner tile itself
+        # — that tile is already non-empty)
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                if dx == 0 and dy == 0:
+                    continue
+                nx, ny = gpos.x + dx, gpos.y + dy
+                if 0 <= nx < w and 0 <= ny < h:
+                    blocked.add((nx, ny))
+    return blocked
+
+
 def _bestGunnerFacing(
     ct: Controller, site: Position, target: Position
 ) -> Direction | None:
@@ -228,6 +272,7 @@ def _gunnerPadsNearTarget(
     """Empty in-range pads with a facing that has LoS to target."""
     pads: list[tuple[Position, Direction]] = []
     w, h = ct.get_map_width(), ct.get_map_height()
+    blocked = _allyGunnerBlockedPads(ct)
     # Chebyshev 4 covers r²<=13
     for dy in range(-4, 5):
         for dx in range(-4, 5):
@@ -244,6 +289,8 @@ def _gunnerPadsNearTarget(
                 continue
             if not ct.is_tile_empty(site):
                 continue
+            if (site.x, site.y) in blocked:
+                continue
             facing = _bestGunnerFacing(ct, site, target)
             if facing is None:
                 continue
@@ -251,8 +298,19 @@ def _gunnerPadsNearTarget(
     return pads
 
 
+def _canAffordGunPlace(ct: Controller) -> bool:
+    """True if Ti bank meets GUN_PLACE_MIN_TI (≤0 disables the gate)."""
+    from main import GUN_PLACE_MIN_TI
+
+    if GUN_PLACE_MIN_TI is None or GUN_PLACE_MIN_TI <= 0:
+        return True
+    return ct.get_global_resources() >= GUN_PLACE_MIN_TI
+
+
 def placeGun(bot, ct: Controller, target: Position) -> bool:
     """Place a gunner that can hit target (destroyable/turret-transparent LoS)."""
+    if not _canAffordGunPlace(ct):
+        return False
     pads = _gunnerPadsNearTarget(ct, target)
     if not pads:
         return False
@@ -427,6 +485,8 @@ def _sentinelPadsNearTarget(
 
 def placeSentinel(bot, ct: Controller, target: Position) -> bool:
     """Range-only sentinel pad toward target (not used by defGun)."""
+    if not _canAffordGunPlace(ct):
+        return False
     pads = _sentinelPadsNearTarget(ct, target)
     if not pads:
         return False

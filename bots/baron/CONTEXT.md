@@ -52,7 +52,7 @@ Ordered phases inside a role; first match wins each turn.
 
 ## Guns layer
 
-`placeGun` / `gunnerLoop` for gunners (destroyable-transparent LoS). `placeSentinel` / `sentinelLoop` used by harasser `offGun` toward enemy core; not by `defGun`. Pads skip ore tiles. `offGun` skips placing another gunner on an enemy harvester already covered by an ally gunner (`allyGunCovering`).
+`placeGun` / `gunnerLoop` for gunners (destroyable-transparent LoS). `placeSentinel` / `sentinelLoop` used by harasser `offGun` toward enemy core; not by `defGun`. Pads skip ore tiles, tiles on an ally gunner’s facing ray (8-dir belt-style), and Chebyshev-1 neighbors of ally gunners. `offGun` skips placing another gunner on an enemy harvester already covered by an ally gunner (`allyGunCovering`).
 
 ## HiveMind v2
 
