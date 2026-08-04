@@ -36,7 +36,7 @@ def _coreFootprint(core_pos: Position) -> list[Position]:
     ]
 
 
-def harvesterCap(round_n: int) -> int | None:
+def harvesterCapTurn(round_n: int) -> int | None:
     from main import (
         HARVESTER_CAP_BEFORE_50,
         HARVESTER_CAP_BEFORE_100,
@@ -58,13 +58,45 @@ def harvesterCap(round_n: int) -> int | None:
     return None
 
 
+def harvesterCapTi(ti: int) -> int | None:
+    """Richer bank → higher harvester ceiling. None if Ti tiers unused."""
+    from main import HARVESTER_CAP, HARVESTER_CAP_BY_TI
+
+    if not HARVESTER_CAP_BY_TI and HARVESTER_CAP is None:
+        return None
+    best = HARVESTER_CAP
+    for min_ti, cap in sorted(HARVESTER_CAP_BY_TI, key=lambda t: t[0], reverse=True):
+        if ti >= min_ti:
+            return cap
+    return best
+
+
+def harvesterCap(ct: Controller) -> int | None:
+    """Effective cap: min of turn and Ti ceilings that are set."""
+    caps: list[int] = []
+    turn_cap = harvesterCapTurn(ct.get_current_round())
+    if turn_cap is not None:
+        caps.append(turn_cap)
+    ti_cap = harvesterCapTi(ct.get_global_resources())
+    if ti_cap is not None:
+        caps.append(ti_cap)
+    if not caps:
+        return None
+    return min(caps)
+
+
 def atHarvesterCap(ct: Controller) -> bool:
     from main import SLOT_HARVESTER_COUNT
 
-    cap = harvesterCap(ct.get_current_round())
+    cap = harvesterCap(ct)
     if cap is None:
         return False
     return ct.read_store(SLOT_HARVESTER_COUNT) >= cap
+
+
+# Back-compat alias for round-only callers
+def harvester_cap(round_n: int) -> int | None:
+    return harvesterCapTurn(round_n)
 
 
 def clearRelay(bot) -> None:
@@ -301,15 +333,77 @@ def oreThreatenedByGunner(ct: Controller, tile: Position) -> bool:
     return False
 
 
+def _allyOreBlock(ct: Controller, tile: Position) -> EntityType | None:
+    """Ally _ORE_BLOCK_CLEAR type on tile, else None."""
+    if not ct.is_in_vision(tile):
+        return None
+    bid = ct.get_tile_building_id(tile)
+    if bid is None:
+        return None
+    if ct.get_team(bid) != ct.get_team():
+        return None
+    etype = ct.get_entity_type(bid)
+    if etype not in _ORE_BLOCK_CLEAR:
+        return None
+    return etype
+
+
+def _enemyTurretInVision(ct: Controller) -> bool:
+    me = ct.get_team()
+    for eid in ct.get_nearby_entities():
+        if ct.get_team(eid) == me:
+            continue
+        if ct.get_entity_type(eid) in (EntityType.GUNNER, EntityType.SENTINEL):
+            return True
+    return False
+
+
+def _shouldClearAllyOreBlock(ct: Controller, tile: Position) -> bool:
+    """Clear ally ore blockers unless gunner/sentinel and enemy turret in vision."""
+    etype = _allyOreBlock(ct, tile)
+    if etype is None:
+        return False
+    if etype in (EntityType.GUNNER, EntityType.SENTINEL) and _enemyTurretInVision(ct):
+        return False
+    return True
+
+
+def _approachOreBlock(bot, ct: Controller, tile: Position) -> bool:
+    """Move to a walkable cardinal neighbor of blocked ore (not onto the blocker)."""
+    pos = ct.get_position()
+    if abs(pos.x - tile.x) + abs(pos.y - tile.y) == 1:
+        return False
+    local_map = bot.hivemind.local_map
+    best: Position | None = None
+    best_d = 10**9
+    for d in CARDINALS:
+        cand = tile.add(d)
+        if not inBounds(ct, cand):
+            continue
+        if not walkPassable(ct, cand, local_map=local_map):
+            continue
+        if ct.is_in_vision(cand) and ct.get_tile_builder_bot_id(cand) is not None:
+            continue
+        dist = manhattan(pos, cand)
+        if dist < best_d:
+            best_d = dist
+            best = cand
+    if best is None:
+        return moveToward(bot, ct, tile)
+    return moveToward(bot, ct, best)
+
+
 def pickMaintainOre(bot, ct: Controller) -> Position | None:
-    """Prefer sticky site, else nearest known ore with harvester or empty."""
+    """Prefer sticky site, else nearest empty / clearable-blocked / harvester ore."""
     if bot.oreSite is not None:
         return bot.oreSite
     pos = ct.get_position()
     core = bot.corePos
     best: Position | None = None
     best_key = None
-    for ore in knownOreTiles(bot):
+
+    def consider(ore: Position) -> None:
+        nonlocal best, best_key
         if core is not None:
             key = (manhattan(ore, core), manhattan(ore, pos))
         else:
@@ -317,21 +411,30 @@ def pickMaintainOre(bot, ct: Controller) -> Position | None:
         if best_key is None or key < best_key:
             best_key = key
             best = ore
-    # Vision harvesters
+
+    for ore in knownOreTiles(bot):
+        if ct.is_in_vision(ore):
+            bid = ct.get_tile_building_id(ore)
+            if bid is None:
+                consider(ore)
+            elif ct.get_entity_type(bid) == EntityType.HARVESTER:
+                consider(ore)
+            elif _shouldClearAllyOreBlock(ct, ore):
+                consider(ore)
+        else:
+            # Fog: keep considering known ores (may be empty/harvester/block)
+            consider(ore)
+
     for tile in ct.get_nearby_tiles():
         if ct.get_tile_env(tile) != Environment.ORE_TITANIUM:
             continue
         bid = ct.get_tile_building_id(tile)
         if bid is None:
-            continue
-        if ct.get_entity_type(bid) == EntityType.HARVESTER:
-            if core is not None:
-                key = (manhattan(tile, core), manhattan(tile, pos))
-            else:
-                key = (manhattan(tile, pos),)
-            if best_key is None or key < best_key:
-                best_key = key
-                best = tile
+            consider(tile)
+        elif ct.get_entity_type(bid) == EntityType.HARVESTER:
+            consider(tile)
+        elif _shouldClearAllyOreBlock(ct, tile):
+            consider(tile)
     return best
 
 
@@ -725,12 +828,15 @@ def checkOre(bot, ct: Controller, tile: Position) -> bool:
 
     if etype in _ORE_BLOCK_CLEAR:
         if team == mine:
+            if not _shouldClearAllyOreBlock(ct, tile):
+                return False
             pos = ct.get_position()
             if abs(pos.x - tile.x) + abs(pos.y - tile.y) == 1:
-                if ct.can_destroy(tile):
+                if ct.get_action_cooldown() == 0 and ct.can_destroy(tile):
                     ct.destroy(tile)
                     return True
-            return moveToward(bot, ct, tile)
+                return False
+            return _approachOreBlock(bot, ct, tile)
         # Enemy occupancy — gun placement deferred
         return placeGunnerOnOre(bot, ct, tile)
 
@@ -891,28 +997,36 @@ def healAlly(bot, ct: Controller) -> bool:
 
 
 def _pickRecheckOre(bot, ct: Controller) -> Position | None:
-    """Prefer empty ores, then any harvester; honor skippedOres."""
+    """Prefer empty, then clearable ally-blocked, then harvester; honor skippedOres."""
     skipped = getattr(bot, "skippedOres", set())
     pos = ct.get_position()
     core = bot.corePos
     empty_best: Position | None = None
     empty_key = None
+    blocked_best: Position | None = None
+    blocked_key = None
     harv_best: Position | None = None
     harv_key = None
 
-    def consider(ore: Position, *, empty: bool) -> None:
-        nonlocal empty_best, empty_key, harv_best, harv_key
+    def score(ore: Position):
+        if core is not None:
+            return (manhattan(ore, core), manhattan(ore, pos))
+        return (manhattan(ore, pos),)
+
+    def consider(ore: Position, *, kind: str) -> None:
+        nonlocal empty_best, empty_key, blocked_best, blocked_key, harv_best, harv_key
         key_xy = (ore.x, ore.y)
         if key_xy in skipped:
             return
-        if core is not None:
-            key = (manhattan(ore, core), manhattan(ore, pos))
-        else:
-            key = (manhattan(ore, pos),)
-        if empty:
+        key = score(ore)
+        if kind == "empty":
             if empty_key is None or key < empty_key:
                 empty_key = key
                 empty_best = ore
+        elif kind == "blocked":
+            if blocked_key is None or key < blocked_key:
+                blocked_key = key
+                blocked_best = ore
         else:
             if harv_key is None or key < harv_key:
                 harv_key = key
@@ -923,9 +1037,11 @@ def _pickRecheckOre(bot, ct: Controller) -> Position | None:
             continue
         bid = ct.get_tile_building_id(tile)
         if bid is None:
-            consider(tile, empty=True)
+            consider(tile, kind="empty")
         elif ct.get_entity_type(bid) == EntityType.HARVESTER:
-            consider(tile, empty=False)
+            consider(tile, kind="harvester")
+        elif _shouldClearAllyOreBlock(ct, tile):
+            consider(tile, kind="blocked")
 
     for ore in knownOreTiles(bot):
         key_xy = (ore.x, ore.y)
@@ -934,18 +1050,24 @@ def _pickRecheckOre(bot, ct: Controller) -> Position | None:
         if ct.is_in_vision(ore):
             bid = ct.get_tile_building_id(ore)
             if bid is None:
-                consider(ore, empty=True)
+                consider(ore, kind="empty")
             elif ct.get_entity_type(bid) == EntityType.HARVESTER:
-                consider(ore, empty=False)
+                consider(ore, kind="harvester")
+            elif _shouldClearAllyOreBlock(ct, ore):
+                consider(ore, kind="blocked")
             continue
         entry = bot.hivemind.local_map.get(key_xy, {})
         ent = entry.get("entity")
         if ent and ent.get("type") == EntityType.HARVESTER:
-            consider(ore, empty=False)
+            consider(ore, kind="harvester")
         elif not ent:
-            consider(ore, empty=True)
+            consider(ore, kind="empty")
 
-    return empty_best if empty_best is not None else harv_best
+    if empty_best is not None:
+        return empty_best
+    if blocked_best is not None:
+        return blocked_best
+    return harv_best
 
 
 def recheckOreNodes(bot, ct: Controller) -> bool:

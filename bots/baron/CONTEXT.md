@@ -20,7 +20,7 @@ Tunable in `main.py`. Positive turn → all harass from that round; positive Ti 
 
 ## BuildHarvester
 
-Places on empty ore (caps + not in relay). Skips a node if a **visible enemy gunner** is currently aiming at that tile (`oreThreatenedByGunner`).
+Places on empty ore (caps + not in relay). Skips a node if a **visible enemy gunner** is currently aiming at that tile (`oreThreatenedByGunner`). Cap = min(turn ceilings, Ti tiers in `HARVESTER_CAP` / `HARVESTER_CAP_BY_TI`).
 
 ## Spawn
 
@@ -40,7 +40,7 @@ Near-core only (Chebyshev 8 of footprint). Skipped while `inRelay` or `recheckin
 
 ## MaintainHarvester / checkOre
 
-Sticky ore site inspection: empty → build; harvester → `relayToCore`; ally infra on ore → destroy; enemy infra → gun stub.
+Sticky ore site inspection: empty → build; harvester → `relayToCore`; ally infra on ore → destroy (gunner/sentinel skipped if enemy turret in vision); enemy infra → gun stub. Recheck prefers empty → clearable ally-blocked → harvester.
 
 ## RelayToCore
 

@@ -17,7 +17,7 @@ from fcode import Controller, EntityType, Position
 # --- Builder spawn policy ---
 # Rush MAX_BUILDERS_EARLY ASAP, then +1 every effective interval turns (cap MAX_BUILDERS).
 MAX_BUILDERS_EARLY = 5
-MAX_BUILDERS = 15
+MAX_BUILDERS = 15000
 SPAWN_INTERVAL = 50  # base when below all Ti tiers
 
 # Richer bank → shorter interval. Empty list = time-only (base interval).
@@ -32,11 +32,20 @@ WAVE_ATTACK_TURN: int | None = -1  # e.g. 300 → all builders harass from that 
 WAVE_ATTACK_TI: int | None = 500  # e.g. 2000 → all harass once bank ≥ this
 
 # --- Harvester caps (built count, store slot 2) ---
+# Turn-based ceilings (very high = effectively open). Effective cap = min(turn, ti).
 HARVESTER_CAP_BEFORE_50 = 1000
 HARVESTER_CAP_BEFORE_100 = 3000
 HARVESTER_CAP_BEFORE_200 = 4000
 HARVESTER_CAP_BEFORE_250 = 5000
 HARVESTER_CAP_BEFORE_400 = 6000
+
+# Ti bank → max harvesters. Base when below all tiers; None + empty BY_TI = turn caps only.
+HARVESTER_CAP: int | None = 3
+HARVESTER_CAP_BY_TI: list[tuple[int, int]] = [
+    (2000, 12),
+    (1000, 8),
+    (500, 5),
+]
 
 # --- Ammo policy (guns.top_up_ammo reads these) ---
 AMMO_BASE = 12

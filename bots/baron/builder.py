@@ -5,14 +5,15 @@
 #        skip ore if visible enemy gunner is aiming at that tile
 # 2. maintainHarvester
 #    2a. checkOre — harvester → relayToCore; empty → build (same gunner-aim gate);
-#        ally block → destroy; enemy gunner/sentinel/belt/launcher/barrier → placeGunnerOnOre
+#        ally block → destroy (skip gunner/sentinel if enemy turret in vision);
+#        enemy gunner/sentinel/belt/launcher/barrier → placeGunnerOnOre (stub)
 #    2b. relayToCore — pickRelayPath → neededBeltFacing → beltFacingOk /
 #        clearWrongBelt → placeRelayBelt → watermark
 # 3. defGun — near core only; enemy builder/gunner/sentinel in vision → placeGun
 #        (gunners only — never sentinels)
 # 4. defendHome — near core only; attack enemy in vision, else heal core if HP < 500
 # 5. healAlly — core → gunner/sentinel → harvester
-# 6. recheckOreNodes — clear sticky oreSite; prefer empty then any harvester
+# 6. recheckOreNodes — clear sticky oreSite; prefer empty → ally-blocked → harvester
 # # idleHome — commented out (soft-idle trap)
 #
 # ## harasser (orchestrator: runHarasser below; helpers in offense.py)
