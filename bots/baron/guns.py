@@ -1,23 +1,92 @@
-"""Turret placement (valid pads, fallbacks) and gunner/sentinel operation."""
+"""Turret placement and operation for baron (gunners + sentinels)."""
 
 from __future__ import annotations
 
 from typing import Any
 
-from fcode import Controller
+from fcode import (
+    Controller,
+    Direction,
+    EntityType,
+    Environment,
+    GameConstants,
+    Position,
+)
+
+from pathing import CARDINALS, inBounds, manhattan
+
+# Gunner attack r²=13; sentinel r²=32 (GameConstants).
+GUNNER_RANGE_SQ = getattr(GameConstants, "GUNNER_ATTACK_RADIUS_SQUARED", 13)
+SENTINEL_RANGE_SQ = getattr(GameConstants, "SENTINEL_ATTACK_RADIUS_SQUARED", 32)
+
+_TRANSPARENT_LOS = frozenset(
+    {
+        EntityType.CONVEYOR,
+        EntityType.SPLITTER,
+        EntityType.BARRIER,
+        EntityType.HARVESTER,
+        EntityType.BUILDER_BOT,
+        EntityType.LAUNCHER,
+    }
+)
+_OPAQUE_LOS = frozenset(
+    {
+        EntityType.CORE,
+        EntityType.GUNNER,
+        EntityType.SENTINEL,
+    }
+)
+
+# Gunner fire/rotate priority (lower = better). Belts last.
+_GUNNER_PRIORITY = {
+    EntityType.CORE: 1,
+    EntityType.BUILDER_BOT: 2,
+    EntityType.GUNNER: 3,
+    EntityType.SENTINEL: 4,
+    EntityType.LAUNCHER: 5,
+    EntityType.HARVESTER: 6,
+    EntityType.CONVEYOR: 8,
+    EntityType.SPLITTER: 8,
+    EntityType.BARRIER: 7,
+}
+
+# Sentinel fire priority: core first, then harvester > gunner > sentinel > builder
+_SENTINEL_PRIORITY = {
+    EntityType.CORE: 1,
+    EntityType.HARVESTER: 2,
+    EntityType.GUNNER: 3,
+    EntityType.SENTINEL: 4,
+    EntityType.BUILDER_BOT: 5,
+    EntityType.LAUNCHER: 6,
+    EntityType.BARRIER: 7,
+    EntityType.CONVEYOR: 8,
+    EntityType.SPLITTER: 8,
+}
+
+_FACE_DIRS = (
+    Direction.NORTH,
+    Direction.NORTHEAST,
+    Direction.EAST,
+    Direction.SOUTHEAST,
+    Direction.SOUTH,
+    Direction.SOUTHWEST,
+    Direction.WEST,
+    Direction.NORTHWEST,
+)
 
 
-def top_up_ammo(
+def facing8way(tile: Position, target: Position) -> Direction:
+    return tile.direction_to(target)
+
+
+def topUpAmmo(
     ct: Controller,
     *,
     local_map: dict[Any, Any] | None = None,
     min_turn: int = 0,
 ) -> None:
-    """Ammo targets and convert amounts come from main policy constants."""
-    del local_map
     if ct.get_current_round() < min_turn:
         return
-    # Lazy import — main imports guns at load time.
     from main import (
         AMMO_BASE,
         AMMO_CONVERT_CHUNK,
@@ -27,29 +96,354 @@ def top_up_ammo(
         MAX_AMMO_POOL,
     )
 
-    del (
-        AMMO_BASE,
-        AMMO_PER_GUNNER,
-        AMMO_PER_SENTINEL,
-        AMMO_CONVERT_CHUNK,
-        AMMO_MIN_POOL,
-        MAX_AMMO_POOL,
-    )
+    gunners = 0
+    sentinels = 0
+    my_team = ct.get_team()
+    if local_map:
+        for cell in local_map.values():
+            ent = cell.get("entity")
+            if not ent or ent.get("team") != my_team:
+                continue
+            if ent.get("type") == EntityType.GUNNER:
+                gunners += 1
+            elif ent.get("type") == EntityType.SENTINEL:
+                sentinels += 1
+
+    target = AMMO_BASE + AMMO_PER_GUNNER * gunners + AMMO_PER_SENTINEL * sentinels
+    if MAX_AMMO_POOL is not None:
+        target = min(target, MAX_AMMO_POOL)
+    target = max(target, AMMO_MIN_POOL)
+
+    ammo = ct.get_global_ammo()
+    if ammo >= target:
+        return
+    need = min(AMMO_CONVERT_CHUNK, target - ammo)
+    if need <= 0:
+        return
+    if ct.can_convert_ammo(need):
+        ct.convert_ammo(need)
 
 
-def run_gunner(ct: Controller) -> None:
-    del ct
+def top_up_ammo(
+    ct: Controller,
+    *,
+    local_map: dict[Any, Any] | None = None,
+    min_turn: int = 0,
+) -> None:
+    topUpAmmo(ct, local_map=local_map, min_turn=min_turn)
 
 
-def run_sentinel(ct: Controller) -> None:
-    del ct
+def _entityOnTile(
+    ct: Controller, pos: Position
+) -> tuple[EntityType | None, bool]:
+    """Return (etype, is_enemy) for building or builder on tile."""
+    if not ct.is_in_vision(pos):
+        return None, False
+    me = ct.get_team()
+    bid = ct.get_tile_building_id(pos)
+    if bid is not None:
+        return ct.get_entity_type(bid), ct.get_team(bid) != me
+    bot_id = ct.get_tile_builder_bot_id(pos)
+    if bot_id is not None:
+        return EntityType.BUILDER_BOT, ct.get_team(bot_id) != me
+    return None, False
+
+
+def gunnerHasLos(
+    ct: Controller,
+    site: Position,
+    facing: Direction,
+    target: Position,
+) -> bool:
+    """True if gunner at site facing can reach target, treating destroyables as clear."""
+    if site.distance_squared(target) < 1:
+        return False
+    if site.distance_squared(target) > GUNNER_RANGE_SQ:
+        return False
+    # Engine agrees → done
+    if ct.can_fire_from(site, facing, EntityType.GUNNER, target):
+        return True
+    # Custom ray: walk facing steps until target or opaque block
+    w, h = ct.get_map_width(), ct.get_map_height()
+    p = site.add(facing)
+    for _ in range(8):
+        if not (0 <= p.x < w and 0 <= p.y < h):
+            return False
+        if p == target:
+            return True
+        if ct.is_in_vision(p):
+            if ct.get_tile_env(p) == Environment.WALL:
+                return False
+            etype, _ = _entityOnTile(ct, p)
+            if etype is not None and etype not in _TRANSPARENT_LOS:
+                if etype in (EntityType.CORE, EntityType.GUNNER, EntityType.SENTINEL):
+                    return False
+                if etype not in _TRANSPARENT_LOS:
+                    return False
+        if p.distance_squared(site) > GUNNER_RANGE_SQ:
+            return False
+        p = p.add(facing)
+    return False
+
+
+def _bestGunnerFacing(
+    ct: Controller, site: Position, target: Position
+) -> Direction | None:
+    preferred = facing8way(site, target)
+    if preferred == Direction.CENTRE:
+        preferred = Direction.NORTH
+    ordered = (preferred,) + tuple(d for d in _FACE_DIRS if d != preferred)
+    for facing in ordered:
+        if gunnerHasLos(ct, site, facing, target):
+            return facing
+    # Fallback: aim anyway if in range
+    if 1 <= site.distance_squared(target) <= GUNNER_RANGE_SQ:
+        return preferred
+    return None
+
+
+def _gunnerPadsNearTarget(
+    ct: Controller, target: Position
+) -> list[tuple[Position, Direction]]:
+    """Empty in-range pads with a facing that has LoS to target."""
+    pads: list[tuple[Position, Direction]] = []
+    w, h = ct.get_map_width(), ct.get_map_height()
+    # Chebyshev 4 covers r²<=13
+    for dy in range(-4, 5):
+        for dx in range(-4, 5):
+            site = Position(target.x + dx, target.y + dy)
+            if not (0 <= site.x < w and 0 <= site.y < h):
+                continue
+            dist = site.distance_squared(target)
+            if dist < 1 or dist > GUNNER_RANGE_SQ:
+                continue
+            if not ct.is_in_vision(site):
+                continue
+            if ct.get_tile_env(site) == Environment.WALL:
+                continue
+            if not ct.is_tile_empty(site):
+                continue
+            facing = _bestGunnerFacing(ct, site, target)
+            if facing is None:
+                continue
+            pads.append((site, facing))
+    return pads
+
+
+def placeGun(bot, ct: Controller, target: Position) -> bool:
+    """Place a gunner that can hit target (destroyable-transparent LoS)."""
+    pads = _gunnerPadsNearTarget(ct, target)
+    if not pads:
+        return False
+
+    pos = ct.get_position()
+    pads.sort(key=lambda sf: manhattan(pos, sf[0]))
+
+    # Adjacent build first
+    if ct.get_action_cooldown() == 0:
+        for site, facing in pads:
+            if abs(pos.x - site.x) + abs(pos.y - site.y) != 1:
+                continue
+            if ct.can_build_gunner(site, facing):
+                ct.build_gunner(site, facing)
+                return True
+
+    # Move toward nearest viable pad
+    best_site = pads[0][0]
+    if abs(pos.x - best_site.x) + abs(pos.y - best_site.y) <= 1:
+        return False
+    from logistics import moveToward
+
+    return moveToward(bot, ct, best_site)
 
 
 def place_gunner_aggressive(bot, ct: Controller, **kwargs: Any) -> bool:
-    del bot, ct, kwargs
-    return False
+    target = kwargs.get("target")
+    if target is None:
+        return False
+    return placeGun(bot, ct, target)
+
+
+def _hostileOnFacing(
+    ct: Controller, priority: dict
+) -> Position | None:
+    """Best hostile tile on current gunner facing line."""
+    me = ct.get_team()
+    best: Position | None = None
+    best_p = 10**9
+    # Use attackable tiles / entities in vision along facing
+    for eid in ct.get_nearby_entities():
+        if ct.get_team(eid) == me:
+            continue
+        etype = ct.get_entity_type(eid)
+        if etype not in priority:
+            continue
+        epos = ct.get_position(eid)
+        if not ct.can_fire(epos):
+            continue
+        p = priority[etype]
+        if p < best_p:
+            best_p = p
+            best = epos
+    # Also check get_gunner_target if available
+    try:
+        gt = ct.get_gunner_target()
+        if gt is not None and ct.can_fire(gt):
+            bid = ct.get_tile_building_id(gt)
+            bot_id = ct.get_tile_builder_bot_id(gt)
+            eid = bid if bid is not None else bot_id
+            if eid is not None and ct.get_team(eid) != me:
+                etype = ct.get_entity_type(eid)
+                p = priority.get(etype, 9)
+                if best is None or p <= best_p:
+                    return gt
+    except Exception:
+        pass
+    return best
+
+
+def _bestRotateTarget(ct: Controller, priority: dict) -> Position | None:
+    me = ct.get_team()
+    pos = ct.get_position()
+    best: Position | None = None
+    best_key = None
+    for eid in ct.get_nearby_entities():
+        if ct.get_team(eid) == me:
+            continue
+        etype = ct.get_entity_type(eid)
+        if etype not in priority:
+            continue
+        epos = ct.get_position(eid)
+        if pos.distance_squared(epos) > GUNNER_RANGE_SQ:
+            continue
+        facing = facing8way(pos, epos)
+        if facing == Direction.CENTRE:
+            continue
+        # Prefer can_fire_from or custom LoS
+        if not (
+            ct.can_fire_from(pos, facing, EntityType.GUNNER, epos)
+            or gunnerHasLos(ct, pos, facing, epos)
+        ):
+            continue
+        key = (priority[etype], manhattan(pos, epos))
+        if best_key is None or key < best_key:
+            best_key = key
+            best = epos
+    return best
+
+
+def gunnerLoop(ct: Controller) -> None:
+    """Fire hostiles on facing; else rotate toward high-value target."""
+    if ct.get_action_cooldown() != 0:
+        return
+    hit = _hostileOnFacing(ct, _GUNNER_PRIORITY)
+    if hit is not None and ct.can_fire(hit):
+        ct.fire(hit)
+        return
+
+    target = _bestRotateTarget(ct, _GUNNER_PRIORITY)
+    if target is None:
+        return
+    facing = facing8way(ct.get_position(), target)
+    if facing == Direction.CENTRE:
+        return
+    try:
+        current = ct.get_direction()
+    except Exception:
+        current = None
+    if current == facing:
+        return
+    if ct.get_global_resources() < 10:
+        return
+    if ct.can_rotate(facing):
+        ct.rotate(facing)
+
+
+def run_gunner(ct: Controller) -> None:
+    gunnerLoop(ct)
+
+
+def _sentinelPadsNearTarget(
+    ct: Controller, target: Position
+) -> list[tuple[Position, Direction]]:
+    pads: list[tuple[Position, Direction]] = []
+    w, h = ct.get_map_width(), ct.get_map_height()
+    for dy in range(-6, 7):
+        for dx in range(-6, 7):
+            site = Position(target.x + dx, target.y + dy)
+            if not (0 <= site.x < w and 0 <= site.y < h):
+                continue
+            dist = site.distance_squared(target)
+            if dist < 1 or dist > SENTINEL_RANGE_SQ:
+                continue
+            if not ct.is_in_vision(site):
+                continue
+            if ct.get_tile_env(site) == Environment.WALL:
+                continue
+            if not ct.is_tile_empty(site):
+                continue
+            facing = facing8way(site, target)
+            if facing == Direction.CENTRE:
+                facing = Direction.NORTH
+            pads.append((site, facing))
+    return pads
+
+
+def placeSentinel(bot, ct: Controller, target: Position) -> bool:
+    """Range-only sentinel pad toward target (not used by defGun)."""
+    pads = _sentinelPadsNearTarget(ct, target)
+    if not pads:
+        return False
+    pos = ct.get_position()
+    pads.sort(key=lambda sf: manhattan(pos, sf[0]))
+    if ct.get_action_cooldown() == 0:
+        for site, facing in pads:
+            if abs(pos.x - site.x) + abs(pos.y - site.y) != 1:
+                continue
+            if ct.can_build_sentinel(site, facing):
+                ct.build_sentinel(site, facing)
+                return True
+    best_site = pads[0][0]
+    if abs(pos.x - best_site.x) + abs(pos.y - best_site.y) <= 1:
+        return False
+    from logistics import moveToward
+
+    return moveToward(bot, ct, best_site)
 
 
 def place_sentinel_aggressive(bot, ct: Controller, **kwargs: Any) -> bool:
-    del bot, ct, kwargs
-    return False
+    target = kwargs.get("target")
+    if target is None:
+        return False
+    return placeSentinel(bot, ct, target)
+
+
+def sentinelLoop(ct: Controller) -> None:
+    """Fire best in-range hostile (no LoS); priority core > harvester > …"""
+    if ct.get_action_cooldown() != 0:
+        return
+    me = ct.get_team()
+    pos = ct.get_position()
+    best: Position | None = None
+    best_key = None
+    for eid in ct.get_nearby_entities():
+        if ct.get_team(eid) == me:
+            continue
+        etype = ct.get_entity_type(eid)
+        if etype not in _SENTINEL_PRIORITY:
+            continue
+        epos = ct.get_position(eid)
+        if pos.distance_squared(epos) > SENTINEL_RANGE_SQ:
+            continue
+        if not ct.can_fire(epos):
+            continue
+        key = (_SENTINEL_PRIORITY[etype], manhattan(pos, epos))
+        if best_key is None or key < best_key:
+            best_key = key
+            best = epos
+    if best is not None and ct.can_fire(best):
+        ct.fire(best)
+
+
+def run_sentinel(ct: Controller) -> None:
+    sentinelLoop(ct)

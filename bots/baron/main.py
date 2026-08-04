@@ -15,15 +15,10 @@ from __future__ import annotations
 from fcode import Controller, EntityType, Position
 
 # --- Builder spawn policy ---
+# Rush MAX_BUILDERS_EARLY ASAP, then +1 every SPAWN_INTERVAL turns (cap MAX_BUILDERS).
 MAX_BUILDERS_EARLY = 5
-MAX_BUILDERS = 7
-MAX_BUILDERS_THREAT = 9
-FIRST_INTERVAL_SPAWN = 10
-SPAWN_INTERVAL = 25
-LATE_SPAWN_INTERVAL = 50
-FALLBACK_SPAWN_INTERVAL = 200
-REPLENISH_START_TURN = 75
-SPAWN_EXTRA_UNDER_THREAT = False
+MAX_BUILDERS = 15
+SPAWN_INTERVAL = 100
 
 # --- Harvester caps (built count, store slot 2) ---
 HARVESTER_CAP_BEFORE_50 = 1000
@@ -51,7 +46,7 @@ SLOT_PACKED_CORES = 15
 
 DEBUG = False
 
-from guns import run_gunner, run_sentinel, top_up_ammo
+from guns import gunnerLoop, sentinelLoop, top_up_ammo
 from hivemind import CoreState, HiveMind, unpack_cores
 from respawn import Respawn, SpawnSchedule
 from builder import runBuilderRoles
@@ -59,13 +54,7 @@ from builder import runBuilderRoles
 SPAWN_SCHEDULE = SpawnSchedule(
     max_builders_early=MAX_BUILDERS_EARLY,
     max_builders=MAX_BUILDERS,
-    max_builders_threat=MAX_BUILDERS_THREAT,
-    first_interval_spawn=FIRST_INTERVAL_SPAWN,
     spawn_interval=SPAWN_INTERVAL,
-    late_spawn_interval=LATE_SPAWN_INTERVAL,
-    fallback_spawn_interval=FALLBACK_SPAWN_INTERVAL,
-    replenish_start_turn=REPLENISH_START_TURN,
-    spawn_extra_under_threat=SPAWN_EXTRA_UNDER_THREAT,
 )
 
 
@@ -99,9 +88,9 @@ class Player:
             elif etype == EntityType.BUILDER_BOT:
                 self._run_builder(ct)
             elif etype == EntityType.GUNNER:
-                run_gunner(ct)
+                gunnerLoop(ct)
             elif etype == EntityType.SENTINEL:
-                run_sentinel(ct)
+                sentinelLoop(ct)
         except Exception:
             return
 
@@ -122,8 +111,6 @@ class Player:
         self.respawn.run_core_spawn(
             ct,
             schedule=SPAWN_SCHEDULE,
-            threat=False,
-            map_id=self.hivemind.map_id,
             goal=goal,
             hivemind=self.hivemind,
         )

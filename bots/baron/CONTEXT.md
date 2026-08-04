@@ -8,7 +8,15 @@ For **where code lives**, see `AGENT.md` Key. For **behavior phases**, see task 
 
 ## Default
 
-Economy and home duties orchestrated by `builder.runDefault`, helpers in `logistics.py`: `buildHarvester` → `maintainHarvester` → `defendHome` → `healAlly` → `recheckOreNodes`.
+Economy and home duties orchestrated by `builder.runDefault`: `buildHarvester` → `maintainHarvester` → `defGun` → `defendHome` → `healAlly` → `recheckOreNodes`.
+
+## Spawn
+
+Core rushes `MAX_BUILDERS_EARLY`, then produces **+1 builder every `SPAWN_INTERVAL` (100) turns**, capped at `MAX_BUILDERS`. Registry is HiveMind slot 4.
+
+## DefGun
+
+Near-core defensive **gunner** placement only (`defence.defGun` → `guns.placeGun`). Never places sentinels. Skipped while relaying or rechecking ore.
 
 ## RecheckOreNodes
 
@@ -32,7 +40,7 @@ Ordered phases inside a role; first match wins each turn.
 
 ## Guns layer
 
-Deferred for placement. Living turret stubs only in `guns.py`.
+`placeGun` / `gunnerLoop` for gunners (destroyable-transparent LoS). `placeSentinel` / `sentinelLoop` exist for later offense — not used by `defGun`.
 
 ## HiveMind v2
 

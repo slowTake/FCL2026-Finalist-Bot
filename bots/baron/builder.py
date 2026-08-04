@@ -7,10 +7,11 @@
 #        enemy gunner/sentinel/belt/launcher/barrier → placeGunnerOnOre (stub)
 #    2b. relayToCore — pickRelayPath → neededBeltFacing → beltFacingOk /
 #        clearWrongBelt → placeRelayBelt → watermark
-# 3. defendHome — near core only (Chebyshev 8); not while relaying/rechecking;
-#        attack enemy gunner/sentinel/builder in vision, else heal core if HP < 500
-# 4. healAlly — core → gunner/sentinel → harvester
-# 5. recheckOreNodes — clear sticky oreSite; prefer empty then any harvester
+# 3. defGun — near core only; enemy builder/gunner/sentinel in vision → placeGun
+#        (gunners only — never sentinels)
+# 4. defendHome — near core only; attack enemy in vision, else heal core if HP < 500
+# 5. healAlly — core → gunner/sentinel → harvester
+# 6. recheckOreNodes — clear sticky oreSite; prefer empty then any harvester
 # # idleHome — commented out (soft-idle trap)
 #
 # ## raider (offense.py) — assignment TBD
@@ -32,10 +33,11 @@ from logistics import (
     maintainHarvester,
     recheckOreNodes,
 )
+from defence import defGun
 
 
 def runDefault(bot, ct: Controller) -> None:
-    """Default role orchestrator: build → maintain → defend → heal → recheck."""
+    """Default role: build → maintain → defGun → defend → heal → recheck."""
     if bot.corePos is None:
         from main import SLOT_PACKED_CORES
 
@@ -47,6 +49,8 @@ def runDefault(bot, ct: Controller) -> None:
         elif bot.hivemind.enemy_core_pos is not None:
             bot.enemyCorePos = bot.hivemind.enemy_core_pos
 
+    if defGun(bot, ct):
+        return
     if buildHarvester(bot, ct):
         return
     if maintainHarvester(bot, ct):

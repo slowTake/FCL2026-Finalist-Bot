@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from fcode import Controller, Direction, Position
+from fcode import Controller, Direction, GameConstants, Position
 
 from pathing import CARDINALS, inBounds
 
@@ -13,13 +13,7 @@ from pathing import CARDINALS, inBounds
 class SpawnSchedule:
     max_builders_early: int
     max_builders: int
-    max_builders_threat: int
-    first_interval_spawn: int
     spawn_interval: int
-    late_spawn_interval: int
-    fallback_spawn_interval: int
-    replenish_start_turn: int
-    spawn_extra_under_threat: bool
 
 
 def _coreFootprint(core_pos: Position) -> list[Position]:
@@ -60,66 +54,34 @@ class Respawn:
         ct: Controller,
         *,
         schedule: SpawnSchedule,
-        threat: bool,
-        map_id: int,
         goal: Position,
         hivemind,
     ) -> None:
-        del map_id
+        """Rush early builders, then +1 builder every spawn_interval turns."""
         if ct.get_action_cooldown() != 0:
+            return
+        if ct.get_unit_count() >= GameConstants.MAX_TEAM_UNITS:
             return
         if ct.get_global_resources() < ct.get_builder_bot_cost():
             return
 
         round_n = ct.get_current_round()
-        living = ct.read_store(4)
-        # Slot 4 is HiveMind builder registry (spawn increments).
-        target = schedule.max_builders_early
-        if round_n >= schedule.first_interval_spawn:
-            grown = 1 + max(
-                0,
-                (round_n - schedule.first_interval_spawn)
-                // schedule.spawn_interval,
-            )
-            target = min(
-                schedule.max_builders,
-                schedule.max_builders_early - 1 + grown,
-            )
-        if living >= schedule.max_builders:
-            if round_n >= schedule.first_interval_spawn + (
-                schedule.max_builders - schedule.max_builders_early
-            ) * schedule.spawn_interval:
-                late = (
-                    round_n
-                    - (
-                        schedule.first_interval_spawn
-                        + (schedule.max_builders - schedule.max_builders_early)
-                        * schedule.spawn_interval
-                    )
-                ) // schedule.late_spawn_interval
-                target = min(
-                    schedule.max_builders_threat,
-                    schedule.max_builders + max(0, late),
-                )
-
-        if threat and schedule.spawn_extra_under_threat:
-            target = max(target, schedule.max_builders_threat)
-
-        if living >= target and self.num_spawned >= target:
-            return
-        if living >= target:
+        spawned = ct.read_store(4)  # HiveMind builder registry (lifetime spawned)
+        target = min(
+            schedule.max_builders,
+            schedule.max_builders_early
+            + round_n // schedule.spawn_interval,
+        )
+        if spawned >= target:
             return
 
         core_pos = ct.get_position()
         sites = _apronSites(ct, core_pos)
-        sites.sort(
-            key=lambda p: abs(p.x - goal.x) + abs(p.y - goal.y)
-        )
+        sites.sort(key=lambda p: abs(p.x - goal.x) + abs(p.y - goal.y))
         for site in sites:
             if hivemind.spawn_builder(ct, site):
                 self.num_spawned += 1
                 return
-        # Fallback: any cardinal from NW tile
         for d in CARDINALS:
             site = core_pos.add(d)
             if hivemind.spawn_builder(ct, site):
