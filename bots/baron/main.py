@@ -18,7 +18,7 @@ from fcode import Controller, EntityType, Position
 # Rush MAX_BUILDERS_EARLY ASAP, then +1 every SPAWN_INTERVAL turns (cap MAX_BUILDERS).
 MAX_BUILDERS_EARLY = 5
 MAX_BUILDERS = 15
-SPAWN_INTERVAL = 100
+SPAWN_INTERVAL = 50
 
 # --- Harvester caps (built count, store slot 2) ---
 HARVESTER_CAP_BEFORE_50 = 1000

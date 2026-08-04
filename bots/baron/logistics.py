@@ -88,6 +88,7 @@ def markRelayComplete(ct: Controller) -> None:
 def isCoreAdjacent(
     ct: Controller, pos: Position, core_pos: Position | None
 ) -> bool:
+    """True if pos is adjacent to an *ally* core (vision check or ally core_pos)."""
     for d in CARDINALS:
         neighbor = pos.add(d)
         if not inBounds(ct, neighbor):
@@ -104,6 +105,44 @@ def isCoreAdjacent(
         return False
     for tile in _coreFootprint(core_pos):
         if abs(pos.x - tile.x) + abs(pos.y - tile.y) == 1:
+            return True
+    return False
+
+
+def _allyCorePos(bot, ct: Controller) -> Position | None:
+    """Refresh ally core from packed store; never use enemy core."""
+    from hivemind import CoreState, unpack_cores
+    from main import SLOT_PACKED_CORES
+
+    ally, _enemy = unpack_cores(ct.read_store(SLOT_PACKED_CORES))
+    if ally[0] != CoreState.UNKNOWN:
+        bot.corePos = Position(ally[1], ally[2])
+        return bot.corePos
+    return bot.corePos
+
+
+def _isEnemyCoreAdjacent(
+    ct: Controller, tile: Position, enemy_core: Position | None
+) -> bool:
+    """True if tile is adjacent to a known/visible enemy core footprint."""
+    me = ct.get_team()
+    for d in CARDINALS:
+        neighbor = tile.add(d)
+        if not inBounds(ct, neighbor):
+            continue
+        if not ct.is_in_vision(neighbor):
+            continue
+        bid = ct.get_tile_building_id(neighbor)
+        if (
+            bid is not None
+            and ct.get_entity_type(bid) == EntityType.CORE
+            and ct.get_team(bid) != me
+        ):
+            return True
+    if enemy_core is None:
+        return False
+    for ctile in _coreFootprint(enemy_core):
+        if abs(tile.x - ctile.x) + abs(tile.y - ctile.y) == 1:
             return True
     return False
 
@@ -434,18 +473,23 @@ def pickRelayPath(
 
 
 def relayToCore(bot, ct: Controller) -> None:
-    """Orchestrator: path → facing check → clear/place → move."""
-    if bot.corePos is None:
+    """Orchestrator: path → facing check → clear/place → move (ally core only)."""
+    core_pos = _allyCorePos(bot, ct)
+    if core_pos is None:
         abortRelay(bot)
         return
 
-    core_pos = bot.corePos
+    enemy_core = getattr(bot, "enemyCorePos", None)
     if bot.relayOrigin is None:
         bot.relayOrigin = bot.oreSite or ct.get_position()
     bot.inRelay = True
 
     path = bot.relayPath
     if path is not None:
+        if _isEnemyCoreAdjacent(ct, path[-1], enemy_core):
+            bot.relayPath = None
+            abortRelay(bot)
+            return
         bot.relayBuiltTo = extendRelayWatermark(
             ct, path, core_pos, bot.relayBuiltTo
         )
@@ -454,7 +498,8 @@ def relayToCore(bot, ct: Controller) -> None:
         path = pickRelayPath(bot, ct, bot.relayOrigin, core_pos)
         bot.relayPath = path
         bot.relayBuiltTo = -1
-        if path is None:
+        if path is None or _isEnemyCoreAdjacent(ct, path[-1], enemy_core):
+            bot.relayPath = None
             abortRelay(bot)
             return
         bot.relayBuiltTo = extendRelayWatermark(ct, path, core_pos, -1)

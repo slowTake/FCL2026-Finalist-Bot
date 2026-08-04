@@ -18,6 +18,16 @@ from pathing import CARDINALS, inBounds, manhattan
 # Gunner attack r²=13; sentinel r²=32 (GameConstants).
 GUNNER_RANGE_SQ = getattr(GameConstants, "GUNNER_ATTACK_RADIUS_SQUARED", 13)
 SENTINEL_RANGE_SQ = getattr(GameConstants, "SENTINEL_ATTACK_RADIUS_SQUARED", 32)
+GUNNER_ROTATE_MIN_TI = 50
+
+
+def _coreFootprint(core_pos: Position) -> list[Position]:
+    return [
+        core_pos,
+        Position(core_pos.x + 1, core_pos.y),
+        Position(core_pos.x, core_pos.y + 1),
+        Position(core_pos.x + 1, core_pos.y + 1),
+    ]
 
 _TRANSPARENT_LOS = frozenset(
     {
@@ -264,6 +274,16 @@ def place_gunner_aggressive(bot, ct: Controller, **kwargs: Any) -> bool:
     return placeGun(bot, ct, target)
 
 
+def _hostileTiles(
+    ct: Controller, eid: int, etype: EntityType
+) -> list[Position]:
+    """Aim tiles for an entity — full 2x2 for cores."""
+    epos = ct.get_position(eid)
+    if etype != EntityType.CORE:
+        return [epos]
+    return _coreFootprint(epos)
+
+
 def _hostileOnFacing(
     ct: Controller, priority: dict
 ) -> Position | None:
@@ -271,21 +291,19 @@ def _hostileOnFacing(
     me = ct.get_team()
     best: Position | None = None
     best_p = 10**9
-    # Use attackable tiles / entities in vision along facing
     for eid in ct.get_nearby_entities():
         if ct.get_team(eid) == me:
             continue
         etype = ct.get_entity_type(eid)
         if etype not in priority:
             continue
-        epos = ct.get_position(eid)
-        if not ct.can_fire(epos):
-            continue
-        p = priority[etype]
-        if p < best_p:
-            best_p = p
-            best = epos
-    # Also check get_gunner_target if available
+        prio = priority[etype]
+        for epos in _hostileTiles(ct, eid, etype):
+            if not ct.can_fire(epos):
+                continue
+            if prio < best_p:
+                best_p = prio
+                best = epos
     try:
         gt = ct.get_gunner_target()
         if gt is not None and ct.can_fire(gt):
@@ -313,22 +331,23 @@ def _bestRotateTarget(ct: Controller, priority: dict) -> Position | None:
         etype = ct.get_entity_type(eid)
         if etype not in priority:
             continue
-        epos = ct.get_position(eid)
-        if pos.distance_squared(epos) > GUNNER_RANGE_SQ:
-            continue
-        facing = facing8way(pos, epos)
-        if facing == Direction.CENTRE:
-            continue
-        # Prefer can_fire_from or custom LoS
-        if not (
-            ct.can_fire_from(pos, facing, EntityType.GUNNER, epos)
-            or gunnerHasLos(ct, pos, facing, epos)
-        ):
-            continue
-        key = (priority[etype], manhattan(pos, epos))
-        if best_key is None or key < best_key:
-            best_key = key
-            best = epos
+        for epos in _hostileTiles(ct, eid, etype):
+            if pos.distance_squared(epos) > GUNNER_RANGE_SQ:
+                continue
+            if not inBounds(ct, epos):
+                continue
+            facing = facing8way(pos, epos)
+            if facing == Direction.CENTRE:
+                continue
+            if not (
+                ct.can_fire_from(pos, facing, EntityType.GUNNER, epos)
+                or gunnerHasLos(ct, pos, facing, epos)
+            ):
+                continue
+            key = (priority[etype], manhattan(pos, epos))
+            if best_key is None or key < best_key:
+                best_key = key
+                best = epos
     return best
 
 
@@ -353,7 +372,7 @@ def gunnerLoop(ct: Controller) -> None:
         current = None
     if current == facing:
         return
-    if ct.get_global_resources() < 10:
+    if ct.get_global_resources() < GUNNER_ROTATE_MIN_TI:
         return
     if ct.can_rotate(facing):
         ct.rotate(facing)
