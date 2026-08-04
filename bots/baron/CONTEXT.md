@@ -4,19 +4,15 @@ For **where code lives**, see `AGENT.md` Key. For **behavior phases**, see task 
 
 ## Builder role
 
-**homeGuard**, **default**, or **harasser**. New builders run `runHomeGuard` for `BUILDER_HOME_TURNS` after `birth_round` (defend + near-core economy; no harasser). After that: `hivemind.my_index > 0 and my_index % 3 == 0` → harasser (builders 3, 6, 9, …); else default.
-
-## HomeGuard
-
-Early-age role (`builder.runHomeGuard`): `defGun` → `defendHome` → `healAlly` → near-core `buildHarvester` → `maintainHarvester` → `recheckOreNodes`. Ore picks filtered to Chebyshev 8 of ally core when `bot.nearCoreEconomy`. Knob: `BUILDER_HOME_TURNS` in `main.py` (`≤0` disables).
+**default** or **harasser**. Assignment: `hivemind.my_index > 0 and my_index % 3 == 0` → harasser (builders 3, 6, 9, …); else default. Wave gates switch all to harasser.
 
 ## Default
 
-Economy and home duties orchestrated by `builder.runDefault`: `buildHarvester` → `maintainHarvester` → `defGun` → `defendHome` → `healAlly` → `recheckOreNodes`.
+Economy and home duties orchestrated by `builder.runDefault`. First: if any enemy gunner/sentinel is in vision, abort relay and contest (`contestTurret` / `defGun` / `defendHome` / `healAlly`) — skip economy that turn. For `BUILDER_HOME_TURNS` after `birth_round` (default path only): defend-first + near-core economy. After that: `buildHarvester` → `maintainHarvester` → `defGun` → `defendHome` → `healAlly` → `recheckOreNodes`. Knob `≤0` disables the early phase. Harassers never run this phase.
 
 ## Harasser
 
-Offense role (`builder.runHarasser`, helpers in `offense.py`): `avoidFire` → `offGun` → `seekHarvester` → `seekCore`. No economy. Assignment: every 3rd builder (`my_index % 3 == 0`), or **all** builders once a wave gate fires (`WAVE_ATTACK_TURN` / `WAVE_ATTACK_TI` in `main.py`; `≤0` or `None` = unset). Skipped while home-guard is active.
+Offense role (`builder.runHarasser`, helpers in `offense.py`): `avoidFire` → `offGun` → `seekHarvester` → `seekCore`. No economy. Assignment: every 3rd builder (`my_index % 3 == 0`), or **all** builders once a wave gate fires (`WAVE_ATTACK_TURN` / `WAVE_ATTACK_TI` in `main.py`; `≤0` or `None` = unset). Unaffected by default’s early defend phase.
 
 ## Wave attack
 
@@ -48,7 +44,7 @@ Sticky ore site inspection: empty → build; harvester → `relayToCore`; ally i
 
 ## RelayToCore
 
-Inbound conveyor chain from ore/harvester to ally-core-adjacent tiles. Orchestrator plus facing/clear/place helpers. Belts face next hop; corners face the new outbound direction. Wrong-facing ally belts destroyed; enemy belts cleared by builder fire.
+Inbound conveyor chain from ore/harvester to ally-core-adjacent tiles. Aborts immediately if an enemy gunner/sentinel is in vision (default also aborts + contests before economy). Orchestrator plus facing/clear/place helpers. Belts face next hop; corners face the new outbound direction. Wrong-facing ally belts destroyed; enemy belts cleared by builder fire.
 
 ## Task list
 
@@ -56,7 +52,7 @@ Ordered phases inside a role; first match wins each turn.
 
 ## Guns layer
 
-`placeGun` / `gunnerLoop` for gunners (destroyable-transparent LoS). `placeSentinel` / `sentinelLoop` used by harasser `offGun` toward enemy core; not by `defGun`. Pads skip ore tiles.
+`placeGun` / `gunnerLoop` for gunners (destroyable-transparent LoS). `placeSentinel` / `sentinelLoop` used by harasser `offGun` toward enemy core; not by `defGun`. Pads skip ore tiles. `offGun` skips placing another gunner on an enemy harvester already covered by an ally gunner (`allyGunCovering`).
 
 ## HiveMind v2
 

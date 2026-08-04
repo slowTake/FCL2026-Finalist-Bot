@@ -31,8 +31,8 @@ SPAWN_INTERVAL_BY_TI: list[tuple[int, int]] = [
 WAVE_ATTACK_TURN: int | None = -1  # e.g. 300 → all builders harass from that turn
 WAVE_ATTACK_TI: int | None = 500  # e.g. 2000 → all harass once bank ≥ this
 
-# --- Home-guard (age after birth_round; ≤0 disables) ---
-# New builders stay near core (defend + near-core economy) before normal roles.
+# --- Default early defend (age after birth_round; ≤0 disables) ---
+# Only applies inside runDefault — harassers never see this.
 BUILDER_HOME_TURNS = 80
 
 

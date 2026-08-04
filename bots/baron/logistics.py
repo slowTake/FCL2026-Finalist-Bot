@@ -111,6 +111,46 @@ def abortRelay(bot) -> None:
     clearRelay(bot)
 
 
+def enemyTurretInVision(ct: Controller) -> bool:
+    """True if any enemy gunner or sentinel is in vision."""
+    me = ct.get_team()
+    for eid in ct.get_nearby_entities():
+        if ct.get_team(eid) == me:
+            continue
+        if ct.get_entity_type(eid) in (EntityType.GUNNER, EntityType.SENTINEL):
+            return True
+    return False
+
+
+def nearestEnemyTurret(ct: Controller) -> Position | None:
+    """Nearest enemy gunner/sentinel position in vision, else None."""
+    me = ct.get_team()
+    pos = ct.get_position()
+    best: Position | None = None
+    best_d = 10**9
+    for eid in ct.get_nearby_entities():
+        if ct.get_team(eid) == me:
+            continue
+        if ct.get_entity_type(eid) not in (EntityType.GUNNER, EntityType.SENTINEL):
+            continue
+        epos = ct.get_position(eid)
+        d = manhattan(pos, epos)
+        if d < best_d:
+            best_d = d
+            best = epos
+    return best
+
+
+def contestTurret(bot, ct: Controller) -> bool:
+    """Place a gunner toward the nearest enemy turret in vision."""
+    target = nearestEnemyTurret(ct)
+    if target is None:
+        return False
+    from guns import placeGun
+
+    return placeGun(bot, ct, target)
+
+
 def markRelayComplete(ct: Controller) -> None:
     from main import SLOT_RELAY_COMPLETE
 
@@ -609,6 +649,10 @@ def relayToCore(bot, ct: Controller) -> None:
     """Orchestrator: path → facing check → clear/place → move (ally core only)."""
     core_pos = _allyCorePos(bot, ct)
     if core_pos is None:
+        abortRelay(bot)
+        return
+
+    if enemyTurretInVision(ct):
         abortRelay(bot)
         return
 

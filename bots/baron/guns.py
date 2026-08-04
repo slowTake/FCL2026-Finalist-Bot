@@ -189,6 +189,25 @@ def gunnerHasLos(
     return False
 
 
+def allyGunCovering(ct: Controller, tile: Position) -> bool:
+    """True if any ally gunner in vision can already hit tile."""
+    me = ct.get_team()
+    for eid in ct.get_nearby_entities():
+        if ct.get_team(eid) != me:
+            continue
+        if ct.get_entity_type(eid) != EntityType.GUNNER:
+            continue
+        gpos = ct.get_position(eid)
+        if tile.distance_squared(gpos) > GUNNER_RANGE_SQ:
+            continue
+        facing = ct.get_direction(eid)
+        if gunnerHasLos(ct, gpos, facing, tile):
+            return True
+        if ct.can_fire_from(gpos, facing, EntityType.GUNNER, tile):
+            return True
+    return False
+
+
 def _bestGunnerFacing(
     ct: Controller, site: Position, target: Position
 ) -> Direction | None:

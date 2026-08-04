@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from fcode import Controller, Direction, EntityType, Position
 
-from guns import GUNNER_RANGE_SQ, gunnerHasLos, placeGun, placeSentinel
+from guns import (
+    GUNNER_RANGE_SQ,
+    allyGunCovering,
+    gunnerHasLos,
+    placeGun,
+    placeSentinel,
+)
 from logistics import moveToward
 from pathing import inBounds, manhattan, walkPassable
 
@@ -107,7 +113,11 @@ def offGun(bot, ct: Controller) -> bool:
         EntityType.LAUNCHER,
     ):
         target = _nearestEnemyOfType(ct, etype)
-        if target is not None and placeGun(bot, ct, target):
+        if target is None:
+            continue
+        if etype == EntityType.HARVESTER and allyGunCovering(ct, target):
+            continue
+        if placeGun(bot, ct, target):
             return True
     return False
 
