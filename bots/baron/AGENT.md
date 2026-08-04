@@ -7,7 +7,7 @@ Quick index: where to edit and main entrypoints. Update when adding public funct
 | Module | Owns | Key entrypoints |
 |--------|------|-----------------|
 | `main.py` | Policy caps, store slots, `Player.run` | `Player.run`, `_run_core`, `_run_builder` |
-| `builder.py` | Role orchestrators + task lists | `runBuilderRoles`, `runDefault`, `runHarasser` |
+| `builder.py` | Role orchestrators + task lists | `runBuilderRoles`, `runThreatHome`, `runDefault`, `runHarasser` |
 | `defence.py` | Defensive orchestrators | `defGun` (gunners only → `placeGun`) |
 | `logistics.py` | Default helpers | `buildHarvester`, `maintainHarvester`, `checkOre`, `relayToCore`, `defendHome`, `healAlly`, `recheckOreNodes` |
 | `pathing.py` | A*, passable, obstruction fallback | `astar`, `astarFromSeeds`, `walkPassable`, `relayPassable`, `findPathAroundObstruction` |
@@ -17,7 +17,7 @@ Quick index: where to edit and main entrypoints. Update when adding public funct
 | `hivemind.py` → `hivemind_v2` | Map fingerprint, delta ledger | `HiveMind.tick`, `unpack_cores`, `spawn_builder` |
 | `vision_v2.py` | Ledger pack/unpack (required by v2) | `pack_ledger_slot` |
 
-**Policy knobs** (builders, ammo, wave, home-guard, Ti tiers) → top block in `main.py` (`SPAWN_INTERVAL_BY_TI`, `WAVE_ATTACK_*`, `BUILDER_HOME_TURNS`, `GUN_PLACE_MIN_TI`).
+**Policy knobs** (builders, ammo, wave, home-guard, threat, Ti tiers) → top block in `main.py` (`SPAWN_INTERVAL_BY_TI`, `WAVE_ATTACK_*`, `BUILDER_HOME_TURNS`, `THREAT_CORE_HP_*`, `GUN_PLACE_MIN_TI`).
 
 Role **task lists** → top comments in `builder.py`.
 
@@ -53,10 +53,11 @@ Example — `runHarasser` → `avoidFire` → `offGun` → `seekHarvester` → `
 ## Workflows
 
 1. **Read first**: repo [`AGENT.md`](../../AGENT.md), this file, `CONTEXT.md`, `builder.py` task lists, `README.md`.
-2. **Default role tasks**: orchestrator `runDefault` in `builder.py`; helpers in `logistics.py` / `defence.py` / `guns.py`. Enemy turret in vision → abort relay + contest before economy. For `BUILDER_HOME_TURNS` after `birth_round`, default uses defend-first + near-core economy (`≤0` disables). Harassers never enter this phase.
-3. **Harasser**: `my_index % 3 == 0` (builders 3,6,9,…) → `builder.runHarasser`; helpers in `offense.py`. Wave: set `WAVE_ATTACK_TURN` / `WAVE_ATTACK_TI` (>0) in `main.py` to switch **all** builders to harasser once the gate hits.
-4. **Relay / pathing**: geometry in `pathing.py`; belt facing and clear/place in `logistics.py` helpers. `relayToCore` aborts on enemy turret only after `SLOT_RELAY_COMPLETE`.
-5. **Caps**: only `main.py` policy block.
-6. **HiveMind v2**: never write store **4–15** from Player (slot 4 = builder registry). Ally/enemy cores via `unpack_cores` on slot 15. Extend shared code in [`components/hivemind_v2.py`](../../components/hivemind_v2.py).
-7. **Guns**: `defGun` places gunners only; harasser `offGun` may place gunners and sentinels (≤1 gunner covering each enemy harvester). Neither places on ore.
-8. **Verification**: `fcode run baron starter` and `fcode run baron starter maps/hive.map26`.
+2. **Threat recall**: core writes `SLOT_THREAT` with HP hysteresis (`THREAT_CORE_HP_ON` / `OFF`). While set, default builders run `runThreatHome` (abort relay → move to core → defend/heal). Harassers skip.
+3. **Default role tasks**: orchestrator `runDefault` in `builder.py`; helpers in `logistics.py` / `defence.py` / `guns.py`. Enemy turret in vision → abort relay + contest before economy. For `BUILDER_HOME_TURNS` after `birth_round`, default uses defend-first + near-core economy (`≤0` disables). Harassers never enter this phase.
+4. **Harasser**: `my_index % 3 == 0` (builders 3,6,9,…) → `builder.runHarasser`; helpers in `offense.py`. Wave: set `WAVE_ATTACK_TURN` / `WAVE_ATTACK_TI` (>0) in `main.py` to switch **all** builders to harasser once the gate hits. Unaffected by `SLOT_THREAT`.
+5. **Relay / pathing**: geometry in `pathing.py`; belt facing and clear/place in `logistics.py` helpers. `relayToCore` aborts on enemy turret only after `SLOT_RELAY_COMPLETE`.
+6. **Caps**: only `main.py` policy block.
+7. **HiveMind v2**: never write store **4–15** from Player (slot 4 = builder registry). Player slot 0 = first relay done; slot 1 = threat latch. Ally/enemy cores via `unpack_cores` on slot 15. Extend shared code in [`components/hivemind_v2.py`](../../components/hivemind_v2.py).
+8. **Guns**: `defGun` places gunners only; harasser `offGun` may place gunners and sentinels (≤1 gunner covering each enemy harvester). Neither places on ore.
+9. **Verification**: `fcode run baron starter` and `fcode run baron starter maps/hive.map26`.

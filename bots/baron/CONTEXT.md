@@ -6,13 +6,17 @@ For **where code lives**, see `AGENT.md` Key. For **behavior phases**, see task 
 
 **default** or **harasser**. Assignment: `hivemind.my_index > 0 and my_index % 3 == 0` → harasser (builders 3, 6, 9, …); else default. Wave gates switch all to harasser.
 
+## Threat recall
+
+Core latches `SLOT_THREAT` with HP hysteresis (`THREAT_CORE_HP_ON` / `OFF` in `main.py`: set when HP &lt; ON, clear when HP ≥ OFF, sticky in between). While set, **default** builders run `runThreatHome`: abort relay (even mid first relay) → move to Chebyshev 8 of core → `_reactEnemyTurret` / `defGun` / `defendHome` / `healAlly`. No economy. Harassers ignore the flag.
+
 ## Default
 
-Economy and home duties orchestrated by `builder.runDefault`. First: if any enemy gunner/sentinel is in vision (and the first relay is already complete, or the builder is not mid-first-relay), abort relay and contest (`contestTurret` / `defGun` / `defendHome` / `healAlly`) — skip economy that turn. For `BUILDER_HOME_TURNS` after `birth_round` (default path only): defend-first + near-core economy. After that: `buildHarvester` → `maintainHarvester` → `defGun` → `defendHome` → `healAlly` → `recheckOreNodes`. Knob `≤0` disables the early phase. Harassers never run this phase.
+Economy and home duties orchestrated by `builder.runDefault` (only when threat is clear). First: if any enemy gunner/sentinel is in vision (and the first relay is already complete, or the builder is not mid-first-relay), abort relay and contest (`contestTurret` / `defGun` / `defendHome` / `healAlly`) — skip economy that turn. For `BUILDER_HOME_TURNS` after `birth_round` (default path only): defend-first + near-core economy. After that: `buildHarvester` → `maintainHarvester` → `defGun` → `defendHome` → `healAlly` → `recheckOreNodes`. Knob `≤0` disables the early phase. Harassers never run this phase.
 
 ## Harasser
 
-Offense role (`builder.runHarasser`, helpers in `offense.py`): `avoidFire` → `offGun` → `seekHarvester` → `seekCore`. No economy. Assignment: every 3rd builder (`my_index % 3 == 0`), or **all** builders once a wave gate fires (`WAVE_ATTACK_TURN` / `WAVE_ATTACK_TI` in `main.py`; `≤0` or `None` = unset). Unaffected by default’s early defend phase.
+Offense role (`builder.runHarasser`, helpers in `offense.py`): `avoidFire` → `offGun` → `seekHarvester` → `seekCore`. No economy. Assignment: every 3rd builder (`my_index % 3 == 0`), or **all** builders once a wave gate fires (`WAVE_ATTACK_TURN` / `WAVE_ATTACK_TI` in `main.py`; `≤0` or `None` = unset). Unaffected by default’s early defend phase and by `SLOT_THREAT` recall.
 
 ## Wave attack
 
@@ -52,8 +56,8 @@ Ordered phases inside a role; first match wins each turn.
 
 ## Guns layer
 
-`placeGun` / `gunnerLoop` for gunners (destroyable-transparent LoS). `placeSentinel` / `sentinelLoop` used by harasser `offGun` toward enemy core; not by `defGun`. Pads skip ore tiles, tiles on an ally gunner’s facing ray (8-dir belt-style), and Chebyshev-1 neighbors of ally gunners. `offGun` skips placing another gunner on an enemy harvester already covered by an ally gunner (`allyGunCovering`).
+`placeGun` / `gunnerLoop` for gunners (destroyable-transparent LoS). `placeSentinel` / `sentinelLoop` used by harasser `offGun` toward enemy core; not by `defGun`. Sentinel pads require a facing that hits the **2x2 core footprint** (nearest footprint tile; no NORTH fallback). Pads skip ore tiles, tiles on an ally gunner’s facing ray (8-dir belt-style), and Chebyshev-1 neighbors of ally gunners. `offGun` skips placing another gunner on an enemy harvester already covered by an ally gunner (`allyGunCovering`).
 
 ## HiveMind v2
 
-Delta ledger + metronome (`components/hivemind_v2.py`). Builder count in slot **4**; deltas 5–12; metronome 13; map id 14; packed cores 15. Player owns slots **0–3** (0 = first relay done; 1 = threat TBD; 2–3 free).
+Delta ledger + metronome (`components/hivemind_v2.py`). Builder count in slot **4**; deltas 5–12; metronome 13; map id 14; packed cores 15. Player owns slots **0–3** (0 = first relay done; 1 = `SLOT_THREAT` core HP latch; 2–3 free).

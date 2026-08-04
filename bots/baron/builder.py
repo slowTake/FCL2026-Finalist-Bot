@@ -1,7 +1,10 @@
 # Baron builder roles — human task lists (check behavior here first)
 #
+# ## threatHome — SLOT_THREAT set (core HP latch); default builders only
+#    Harassers skip. Abort relay → move to core → react/defGun/defend/heal.
+#
 # ## default — priority order (orchestrator: runDefault below)
-#    0. reactEnemyTurret — enemy gunner/sentinel in vision → abortRelay (only
+#    0. reactEnemyTurret — enemy gunner/sentinel/launcher in vision → abortRelay (only
 #        after first completed relay) + placeGun / defGun / defendHome / healAlly;
 #        skip economy this turn. While first relay in progress: ignore (keep belt).
 #    Early phase (age < BUILDER_HOME_TURNS after birth_round): defend-first +
@@ -22,7 +25,7 @@
 #        enemy gunner/sentinel/belt/launcher/barrier → placeGunnerOnOre (stub)
 #    2b. relayToCore — abort on enemy turret only after SLOT_RELAY_COMPLETE;
 #        else path → facing / clearWrongBelt → placeRelayBelt → watermark
-# 3. defGun — near core only; enemy builder/gunner/sentinel in vision → placeGun
+# 3. defGun — near core only; enemy builder/gunner/sentinel/launcher in vision → placeGun
 #        (gunners only — never sentinels)
 # 4. defendHome — near core only; attack enemy in vision, else heal core if HP < 500
 # 5. healAlly — core → gunner/sentinel → harvester
@@ -32,6 +35,7 @@
 # ## harasser (orchestrator: runHarasser below; helpers in offense.py)
 #    my_index > 0 and my_index % 3 == 0 (builders 3,6,9,…)
 #    OR wave attack: WAVE_ATTACK_TURN / WAVE_ATTACK_TI in main.py (>0 = set)
+#    Unaffected by SLOT_THREAT recall.
 # 1. avoidFire — under enemy gunner LoS → move outside LoS
 # 2. offGun — placeGun/placeSentinel: core → gunner → harvester → launcher;
 #        ≤1 ally gunner covering each enemy harvester
@@ -46,6 +50,7 @@ from fcode import Controller, Position
 
 from hivemind import CoreState, unpack_cores
 from logistics import (
+    _nearCore,
     abortRelay,
     buildHarvester,
     contestTurret,
@@ -53,6 +58,7 @@ from logistics import (
     enemyTurretInVision,
     healAlly,
     maintainHarvester,
+    moveToward,
     recheckOreNodes,
     relayEverComplete,
 )
@@ -97,6 +103,13 @@ def waveAttackActive(ct: Controller) -> bool:
     return False
 
 
+def threatActive(ct: Controller) -> bool:
+    """True while core has latched SLOT_THREAT (HP hysteresis)."""
+    from main import SLOT_THREAT
+
+    return ct.read_store(SLOT_THREAT) != 0
+
+
 def _reactEnemyTurret(bot, ct: Controller) -> bool:
     """Abort relay and contest/defend when an enemy turret is in vision."""
     if not enemyTurretInVision(ct):
@@ -116,6 +129,26 @@ def _reactEnemyTurret(bot, ct: Controller) -> bool:
         return True
     # Skip economy so maintain cannot re-enter relay while turret stays visible
     return True
+
+
+def runThreatHome(bot, ct: Controller) -> None:
+    """Default recall: abort work, return to core, defend/heal only."""
+    _resolveCores(bot, ct)
+    bot.nearCoreEconomy = False
+    if bot.inRelay:
+        abortRelay(bot)
+    if bot.corePos is None:
+        return
+    if not _nearCore(bot, ct):
+        moveToward(bot, ct, bot.corePos)
+        return
+    if _reactEnemyTurret(bot, ct):
+        return
+    if defGun(bot, ct):
+        return
+    if defendHome(bot, ct):
+        return
+    healAlly(bot, ct)
 
 
 def _runDefaultHome(bot, ct: Controller) -> None:
@@ -174,12 +207,15 @@ def runHarasser(bot, ct: Controller) -> None:
 
 
 def runBuilderRoles(bot, ct: Controller) -> None:
-    """Dispatch: harasser vs default (home defend is default-only)."""
+    """Dispatch: harasser (no threat recall) → threat home → default."""
     idx = bot.hivemind.my_index
     if waveAttackActive(ct) or (idx > 0 and idx % 3 == 0):
         runHarasser(bot, ct)
-    else:
-        runDefault(bot, ct)
+        return
+    if threatActive(ct):
+        runThreatHome(bot, ct)
+        return
+    runDefault(bot, ct)
 
 
 # Back-compat

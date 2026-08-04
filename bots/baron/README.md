@@ -5,7 +5,7 @@ Multi-module bot on **HiveMind v2**. Default builders: harvesters + inbound rela
 ## Layout
 
 - `main.py` — policy caps and `Player` dispatch
-- `builder.py` — role task lists + orchestrators (`runDefault`, `runBuilderRoles`)
+- `builder.py` — role task lists + orchestrators (`runThreatHome`, `runDefault`, `runBuilderRoles`)
 - `offense.py` — harasser helpers (`avoidFire`, `offGun`, `seekHarvester`, `seekCore`)
 - `logistics.py` — default helpers (`buildHarvester`, `relayToCore`, …)
 - `pathing.py` — A*, `walkPassable`, `relayPassable`, `findPathAroundObstruction`
@@ -19,7 +19,7 @@ Agents: [`AGENT.md`](AGENT.md). Terms: [`CONTEXT.md`](CONTEXT.md).
 | Slot | Owner | Purpose |
 |------|-------|---------|
 | 0 | Player | `SLOT_RELAY_COMPLETE` |
-| 1 | Player | `SLOT_THREAT` — TBD |
+| 1 | Player | `SLOT_THREAT` — core HP hysteresis (on &lt;400, off ≥500) |
 | 2–3 | Player | free |
 | 4 | HiveMind | Builder registry count |
 | 5–12 | HiveMind | Delta ledger |

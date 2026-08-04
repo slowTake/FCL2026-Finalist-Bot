@@ -456,18 +456,74 @@ def run_gunner(ct: Controller) -> None:
     gunnerLoop(ct)
 
 
+def _aimCoreTile(site: Position, core_pos: Position) -> Position:
+    """Nearest 2x2 footprint tile to site."""
+    return min(
+        _coreFootprint(core_pos),
+        key=lambda t: site.distance_squared(t),
+    )
+
+
+def _sentinelHitsTile(
+    ct: Controller, site: Position, facing: Direction, tile: Position
+) -> bool:
+    if site.distance_squared(tile) < 1:
+        return False
+    if site.distance_squared(tile) > SENTINEL_RANGE_SQ:
+        return False
+    try:
+        if ct.can_fire_from(site, facing, EntityType.SENTINEL, tile):
+            return True
+    except Exception:
+        pass
+    # Geometric: walk facing ray until tile or range exhausted
+    w, h = ct.get_map_width(), ct.get_map_height()
+    p = site.add(facing)
+    for _ in range(8):
+        if not (0 <= p.x < w and 0 <= p.y < h):
+            return False
+        if p == tile:
+            return True
+        if p.distance_squared(site) > SENTINEL_RANGE_SQ:
+            return False
+        p = p.add(facing)
+    return False
+
+
+def _bestSentinelFacing(
+    ct: Controller, site: Position, core_pos: Position
+) -> Direction | None:
+    """Facing from site that can hit some core footprint tile. No NORTH fallback."""
+    footprint = _coreFootprint(core_pos)
+    preferred = facing8way(site, _aimCoreTile(site, core_pos))
+    ordered: list[Direction] = []
+    if preferred != Direction.CENTRE:
+        ordered.append(preferred)
+    ordered.extend(d for d in _FACE_DIRS if d != preferred)
+
+    for facing in ordered:
+        for tile in footprint:
+            if _sentinelHitsTile(ct, site, facing, tile):
+                return facing
+    return None
+
+
 def _sentinelPadsNearTarget(
     ct: Controller, target: Position
 ) -> list[tuple[Position, Direction]]:
+    """In-range empty pads with a facing that hits the core footprint (target=origin)."""
     pads: list[tuple[Position, Direction]] = []
     w, h = ct.get_map_width(), ct.get_map_height()
+    footprint = _coreFootprint(target)
+    # Search around footprint (origin-centered box still covers r²<=32)
     for dy in range(-6, 7):
         for dx in range(-6, 7):
             site = Position(target.x + dx, target.y + dy)
             if not (0 <= site.x < w and 0 <= site.y < h):
                 continue
-            dist = site.distance_squared(target)
-            if dist < 1 or dist > SENTINEL_RANGE_SQ:
+            if any(site.x == t.x and site.y == t.y for t in footprint):
+                continue
+            if min(site.distance_squared(t) for t in footprint) > SENTINEL_RANGE_SQ:
                 continue
             if not ct.is_in_vision(site):
                 continue
@@ -476,9 +532,9 @@ def _sentinelPadsNearTarget(
                 continue
             if not ct.is_tile_empty(site):
                 continue
-            facing = facing8way(site, target)
-            if facing == Direction.CENTRE:
-                facing = Direction.NORTH
+            facing = _bestSentinelFacing(ct, site, target)
+            if facing is None:
+                continue
             pads.append((site, facing))
     return pads
 

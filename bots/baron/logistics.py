@@ -56,18 +56,22 @@ def relayEverComplete(ct: Controller) -> bool:
 
 
 def enemyTurretInVision(ct: Controller) -> bool:
-    """True if any enemy gunner or sentinel is in vision."""
+    """True if any enemy gunner, sentinel, or launcher is in vision."""
     me = ct.get_team()
     for eid in ct.get_nearby_entities():
         if ct.get_team(eid) == me:
             continue
-        if ct.get_entity_type(eid) in (EntityType.GUNNER, EntityType.SENTINEL):
+        if ct.get_entity_type(eid) in (
+            EntityType.GUNNER,
+            EntityType.SENTINEL,
+            EntityType.LAUNCHER,
+        ):
             return True
     return False
 
 
 def nearestEnemyTurret(ct: Controller) -> Position | None:
-    """Nearest enemy gunner/sentinel position in vision, else None."""
+    """Nearest enemy gunner/sentinel/launcher position in vision, else None."""
     me = ct.get_team()
     pos = ct.get_position()
     best: Position | None = None
@@ -75,7 +79,11 @@ def nearestEnemyTurret(ct: Controller) -> Position | None:
     for eid in ct.get_nearby_entities():
         if ct.get_team(eid) == me:
             continue
-        if ct.get_entity_type(eid) not in (EntityType.GUNNER, EntityType.SENTINEL):
+        if ct.get_entity_type(eid) not in (
+            EntityType.GUNNER,
+            EntityType.SENTINEL,
+            EntityType.LAUNCHER,
+        ):
             continue
         epos = ct.get_position(eid)
         d = manhattan(pos, epos)
@@ -875,7 +883,7 @@ def _nearCore(bot, ct: Controller) -> bool:
 
 
 def _findDefendTarget(ct: Controller) -> Position | None:
-    """Nearest enemy gunner/sentinel (prefer) or builder in this unit's vision."""
+    """Nearest enemy gunner/sentinel/launcher (prefer) or builder in this unit's vision."""
     me = ct.get_team()
     pos = ct.get_position()
     best_turret: Position | None = None
@@ -888,7 +896,7 @@ def _findDefendTarget(ct: Controller) -> Position | None:
         etype = ct.get_entity_type(eid)
         epos = ct.get_position(eid)
         dist = manhattan(pos, epos)
-        if etype in (EntityType.GUNNER, EntityType.SENTINEL):
+        if etype in (EntityType.GUNNER, EntityType.SENTINEL, EntityType.LAUNCHER):
             if dist < best_turret_d:
                 best_turret_d = dist
                 best_turret = epos

@@ -31,7 +31,7 @@ def _nearCore(bot, ct: Controller) -> bool:
 
 
 def _pickDefGunTarget(ct: Controller) -> Position | None:
-    """Nearest enemy gunner/sentinel (prefer) or builder in vision."""
+    """Nearest enemy gunner/sentinel/launcher (prefer) or builder in vision."""
     me = ct.get_team()
     pos = ct.get_position()
     best_turret: Position | None = None
@@ -44,7 +44,7 @@ def _pickDefGunTarget(ct: Controller) -> Position | None:
         etype = ct.get_entity_type(eid)
         epos = ct.get_position(eid)
         dist = abs(pos.x - epos.x) + abs(pos.y - epos.y)
-        if etype in (EntityType.GUNNER, EntityType.SENTINEL):
+        if etype in (EntityType.GUNNER, EntityType.SENTINEL, EntityType.LAUNCHER):
             if dist < best_turret_d:
                 best_turret_d = dist
                 best_turret = epos
