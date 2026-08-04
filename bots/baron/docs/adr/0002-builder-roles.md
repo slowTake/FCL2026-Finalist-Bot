@@ -1,12 +1,12 @@
-# ADR 0002: Two builder roles (default and raider)
+# ADR 0002: Two builder roles (default and harasser)
 
 ## Status
 
-Accepted (assignment deferred).
+Accepted.
 
 ## Context
 
-Earl-style menus (economy / phalanx / raiders / overrides) are too heavy for baron’s initial design. We also do not want preset even/odd or parity-based role assignment while roles are being reworked.
+Earl-style menus (economy / phalanx / raiders / overrides) are too heavy for baron’s initial design. We need a thin second role for pressure without a full raid menu.
 
 ## Decision
 
@@ -14,12 +14,14 @@ Builder role **names** and task lists (top of `builder.py`):
 
 | Role | Entry | Modules |
 |------|--------|---------|
-| **default** | `logistics.run_default` | Economy, relay, home (`defence` helpers as needed) |
-| **raider** | `offense.run_raider` | Siege, belt raid, push core |
+| **default** | `builder.runDefault` | Economy, relay, home (`defence` / `logistics`) |
+| **harasser** | `offense.runHarasser` | `avoidFire` → `offGun` → `seekHarvester` → `seekCore` |
 
-**Assignment**: not implemented in the template. `run_builder_roles` calls **default** only until a new scheme is designed (store, HiveMind, explicit per-builder state, etc.). No `my_index` parity, no `RAIDER_EVEN_BUILDERS`, no automatic raider when enemy core is known.
+**Assignment**: `hivemind.my_index > 0 and my_index % 3 == 0` (spawned builders **3, 6, 9, …**). Index `0` means unassigned — stay on default until HiveMind sets the registry index.
+
+Enemy harvester / ore scouting uses HiveMind `local_map` (no new store slots).
 
 ## Consequences
 
-- `offense.run_raider` exists as the raider entrypoint but is not dispatched yet.
-- Revisit this ADR when role assignment lands.
+- Every third builder leaves economy for harassment.
+- `run_raider` remains a thin alias to `runHarasser` for back-compat.

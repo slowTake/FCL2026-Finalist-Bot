@@ -138,6 +138,8 @@ def moveToward(bot, ct: Controller, target: Position) -> bool:
     def ok(p: Position) -> bool:
         if p == pos:
             return True
+        if not inBounds(ct, p):
+            return False
         if ct.is_in_vision(p) and ct.get_tile_builder_bot_id(p) is not None:
             return False
         return walkPassable(ct, p, local_map=local_map)

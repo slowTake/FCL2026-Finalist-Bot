@@ -14,10 +14,11 @@
 # 6. recheckOreNodes — clear sticky oreSite; prefer empty then any harvester
 # # idleHome — commented out (soft-idle trap)
 #
-# ## raider (offense.py) — assignment TBD
-# 1. siege — TBD
-# 2. belt_raid — TBD
-# 3. push_core — TBD
+# ## harasser (offense.py) — my_index > 0 and my_index % 3 == 0 (builders 3,6,9,…)
+# 1. avoidFire — under enemy gunner LoS → move outside LoS
+# 2. offGun — placeGun/placeSentinel: core → gunner → harvester → launcher
+# 3. seekHarvester — local_map enemy harvesters / scout ore nodes (vision updates map)
+# 4. seekCore — moveToward enemy core
 
 """Builder role orchestrators — dispatch into logistics / offence helpers."""
 
@@ -34,6 +35,7 @@ from logistics import (
     recheckOreNodes,
 )
 from defence import defGun
+from offense import runHarasser
 
 
 def runDefault(bot, ct: Controller) -> None:
@@ -49,11 +51,11 @@ def runDefault(bot, ct: Controller) -> None:
         elif bot.hivemind.enemy_core_pos is not None:
             bot.enemyCorePos = bot.hivemind.enemy_core_pos
 
-    if defGun(bot, ct):
-        return
     if buildHarvester(bot, ct):
         return
     if maintainHarvester(bot, ct):
+        return
+    if defGun(bot, ct):
         return
     if defendHome(bot, ct):
         return
@@ -63,8 +65,12 @@ def runDefault(bot, ct: Controller) -> None:
 
 
 def runBuilderRoles(bot, ct: Controller) -> None:
-    """Role menu — all builders use default until assignment is wired."""
-    runDefault(bot, ct)
+    """Dispatch: every 3rd spawned builder (3,6,9,…) is a harasser."""
+    idx = bot.hivemind.my_index
+    if idx > 0 and idx % 3 == 0:
+        runHarasser(bot, ct)
+    else:
+        runDefault(bot, ct)
 
 
 # Back-compat

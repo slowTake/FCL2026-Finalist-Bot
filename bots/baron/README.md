@@ -1,11 +1,12 @@
 # baron
 
-Multi-module bot on **HiveMind v2**. Default builders: harvesters + inbound relay.
+Multi-module bot on **HiveMind v2**. Default builders: harvesters + inbound relay. Every 3rd builder (3,6,9,…) is a **harasser**.
 
 ## Layout
 
 - `main.py` — policy caps and `Player` dispatch
 - `builder.py` — role task lists + orchestrators (`runDefault`, `runBuilderRoles`)
+- `offense.py` — harasser helpers (`avoidFire`, `offGun`, `seekHarvester`, `seekCore`)
 - `logistics.py` — default helpers (`buildHarvester`, `relayToCore`, …)
 - `pathing.py` — A*, `walkPassable`, `relayPassable`, `findPathAroundObstruction`
 - `respawn.py` — core spawn (uses HiveMind slot 4 registry)

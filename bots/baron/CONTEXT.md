@@ -4,11 +4,15 @@ For **where code lives**, see `AGENT.md` Key. For **behavior phases**, see task 
 
 ## Builder role
 
-**default** or **raider**. Assignment TBD; all builders run `runDefault` today.
+**default** or **harasser**. Assignment: `hivemind.my_index > 0 and my_index % 3 == 0` → harasser (builders 3, 6, 9, …); else default.
 
 ## Default
 
 Economy and home duties orchestrated by `builder.runDefault`: `buildHarvester` → `maintainHarvester` → `defGun` → `defendHome` → `healAlly` → `recheckOreNodes`.
+
+## Harasser
+
+Offense role (`offense.runHarasser`): `avoidFire` → `offGun` → `seekHarvester` → `seekCore`. No economy. `seekHarvester` reads HiveMind `local_map` for enemy harvesters and ore nodes to scout/clear; visiting tiles refreshes the map via vision.
 
 ## Spawn
 
@@ -40,7 +44,7 @@ Ordered phases inside a role; first match wins each turn.
 
 ## Guns layer
 
-`placeGun` / `gunnerLoop` for gunners (destroyable-transparent LoS). `placeSentinel` / `sentinelLoop` exist for later offense — not used by `defGun`.
+`placeGun` / `gunnerLoop` for gunners (destroyable-transparent LoS). `placeSentinel` / `sentinelLoop` used by harasser `offGun` toward enemy core; not by `defGun`.
 
 ## HiveMind v2
 

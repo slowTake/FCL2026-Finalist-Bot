@@ -78,6 +78,7 @@ class Player:
         self.recheckingOre = False
         self.skippedOres: set[tuple[int, int]] = set()
         self.lastOreRecheckRound = -999
+        self.harassTarget: tuple[int, int] | None = None
 
     def run(self, ct: Controller) -> None:
         try:

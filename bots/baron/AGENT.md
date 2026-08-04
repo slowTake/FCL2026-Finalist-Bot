@@ -11,7 +11,7 @@ Quick index: where to edit and main entrypoints. Update when adding public funct
 | `defence.py` | Defensive orchestrators | `defGun` (gunners only → `placeGun`) |
 | `logistics.py` | Default helpers | `buildHarvester`, `maintainHarvester`, `checkOre`, `relayToCore`, `defendHome`, `healAlly`, `recheckOreNodes` |
 | `pathing.py` | A*, passable, obstruction fallback | `astar`, `astarFromSeeds`, `walkPassable`, `relayPassable`, `findPathAroundObstruction` |
-| `offense.py` | Raider role (TBD) | `run_raider` |
+| `offense.py` | Harasser role | `runHarasser`, `avoidFire`, `offGun`, `seekHarvester`, `seekCore` |
 | `guns.py` | Placement + turret loops | `placeGun`, `gunnerLoop`, `placeSentinel`, `sentinelLoop`, `topUpAmmo` |
 | `respawn.py` | Core spawn schedule | `Respawn.run_core_spawn`, `SpawnSchedule` |
 | `hivemind.py` → `hivemind_v2` | Map fingerprint, delta ledger | `HiveMind.tick`, `unpack_cores`, `spawn_builder` |
@@ -29,7 +29,7 @@ Domain **terms** → `CONTEXT.md`.
 
 ### camelCase
 
-Baron public functions use **camelCase** (`buildHarvester`, `relayToCore`, `runDefault`, `defGun`, `placeGun`). Do not introduce new `snake_case` gameplay entrypoints in baron modules.
+Baron public functions use **camelCase** (`buildHarvester`, `relayToCore`, `runDefault`, `defGun`, `placeGun`, `runHarasser`). Do not introduce new `snake_case` gameplay entrypoints in baron modules.
 
 ### Main → helpers
 
@@ -46,14 +46,17 @@ Example — `relayToCore`:
 
 Example — `defGun` → `placeGun` only (never sentinels).
 
+Example — `runHarasser` → `avoidFire` → `offGun` → `seekHarvester` → `seekCore`.
+
 ---
 
 ## Workflows
 
 1. **Read first**: repo [`AGENT.md`](../../AGENT.md), this file, `CONTEXT.md`, `builder.py` task lists, `README.md`.
 2. **Default role tasks**: orchestrator `runDefault` in `builder.py`; helpers in `logistics.py` / `defence.py` / `guns.py`.
-3. **Relay / pathing**: geometry in `pathing.py`; belt facing and clear/place in `logistics.py` helpers.
-4. **Caps**: only `main.py` policy block.
-5. **HiveMind v2**: never write store **4–15** from Player (slot 4 = builder registry). Ally/enemy cores via `unpack_cores` on slot 15. Extend shared code in [`components/hivemind_v2.py`](../../components/hivemind_v2.py).
-6. **Guns**: `defGun` places gunners only; `placeSentinel` is for later offense.
-7. **Verification**: `fcode run baron starter` and `fcode run baron starter maps/hive.map26`.
+3. **Harasser**: `my_index % 3 == 0` (builders 3,6,9,…) → `offense.runHarasser`; uses `local_map` for enemy harvesters / ore scout.
+4. **Relay / pathing**: geometry in `pathing.py`; belt facing and clear/place in `logistics.py` helpers.
+5. **Caps**: only `main.py` policy block.
+6. **HiveMind v2**: never write store **4–15** from Player (slot 4 = builder registry). Ally/enemy cores via `unpack_cores` on slot 15. Extend shared code in [`components/hivemind_v2.py`](../../components/hivemind_v2.py).
+7. **Guns**: `defGun` places gunners only; harasser `offGun` may place gunners and sentinels.
+8. **Verification**: `fcode run baron starter` and `fcode run baron starter maps/hive.map26`.
