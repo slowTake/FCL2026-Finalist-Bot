@@ -209,6 +209,8 @@ class Player:
                 self._run_gunner(ct)
             elif etype == EntityType.SENTINEL:
                 run_sentinel(ct)
+            elif etype == EntityType.LAUNCHER:
+                run_launcher(ct)
         except Exception:
             return
 
@@ -278,7 +280,7 @@ class Player:
         else:
             self.stuck = 0
         self.last_pos = pos
-
+        
         run_builder_roles(self, logging_ct)
         print(f"[{logging_ct.get_current_round()}] Builder {logging_ct.get_id()} at {pos}: {logging_ct.action_log}")
 
@@ -473,3 +475,27 @@ class Player:
 
     def _run_gunner(self, ct: Controller) -> None:
         run_gunner(ct)
+
+## LAUNCHER: main logic
+def run_launcher(ct: Controller) -> None:
+    if ct.get_action_cooldown() != 0 or ct.get_current_round() > 50: # limiter to stop logic
+        return
+
+    launcher_pos = ct.get_position()
+
+    for d in Direction:
+        if d == Direction.CENTRE:
+            continue
+
+        builder_pos = launcher_pos.add(d)
+        if ct.get_tile_builder_bot_id(builder_pos) is None:
+            continue
+
+        for target in ct.get_nearby_tiles(dist_sq=26): # sqrt26 is the max range
+            if target == builder_pos or target == launcher_pos:
+                continue
+            if not ct.is_tile_passable(target):
+                continue
+            if ct.can_launch(builder_pos, target):
+                ct.launch(builder_pos, target)
+                return

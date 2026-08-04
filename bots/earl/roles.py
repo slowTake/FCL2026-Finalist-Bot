@@ -6,13 +6,16 @@ Toggle ACTIVE_RAID_ORDER here (or keep default phalanx).
 
 from __future__ import annotations
 
+import random ### Add random
+
 from attack import is_raider, run_attack_builder
 from defence import run_phalanx
-from fcode import Controller, Position
+from fcode import Controller, Direction, Position ### Add direction
 from harrass import run_harrasser
 from logistics import clear_relay, run_economy
 
 # "phalanx" = even home defence / odd economy; "raiders" / "harrass" = overrides.
+DIRECTIONS = [d for d in Direction if d != Direction.CENTRE] ### Add this
 ACTIVE_RAID_ORDER = "phalanx"
 # Fire-and-forget even waves: spawn cohort leaves at these marks.
 # Spawn >= WAVE2 are economy (see on_raid_tasklist), not phalanx refill.
@@ -75,6 +78,20 @@ def is_economy(
         return False
     return not on_raid_tasklist(my_index, enemy_core, round_n, spawn_round)
 
+def yeet(ct: Controller) -> None: ## LAUNCHER: builds the thing, basically just copied & pasted from somewhere else
+        ti = ct.get_global_resources()
+        cost = ct.get_launcher_cost()
+        if ti < cost:
+            return
+        
+        dirs = list(DIRECTIONS)
+        pos = ct.get_position()
+        random.shuffle(dirs)
+        for d in dirs:
+            spawn_pos = pos.add(d)
+            if ct.can_build_launcher(spawn_pos):
+                ct.build_launcher(spawn_pos)
+                return
 
 def run_builder_roles(bot, ct: Controller) -> None:
     """Dispatch phalanx / harrass / raiders / economy for one builder turn.
@@ -84,7 +101,8 @@ def run_builder_roles(bot, ct: Controller) -> None:
     round_n = ct.get_current_round()
     if bot.spawn_round is None:
         bot.spawn_round = round_n
-
+    if ct.get_current_round() < 2: ## LAUNCHER: simplest way I could think of to only get 1 launcher without storing variables
+        yeet(ct)
     if on_raid_tasklist(
         bot.hivemind.my_index,
         bot.enemy_core_pos,
