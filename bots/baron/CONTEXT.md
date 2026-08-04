@@ -8,7 +8,7 @@ For **where code lives**, see `AGENT.md` Key. For **behavior phases**, see task 
 
 ## Default
 
-Economy and home duties in `logistics.py`: `buildHarvester` → `maintainHarvester` → `defendHome` → `healAlly` → `recheckOreNodes`.
+Economy and home duties orchestrated by `builder.runDefault`, helpers in `logistics.py`: `buildHarvester` → `maintainHarvester` → `defendHome` → `healAlly` → `recheckOreNodes`.
 
 ## RecheckOreNodes
 

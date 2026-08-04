@@ -5,8 +5,8 @@ Multi-module bot on **HiveMind v2**. Default builders: harvesters + inbound rela
 ## Layout
 
 - `main.py` — policy caps and `Player` dispatch
-- `builder.py` — default / raider task lists + `runBuilderRoles`
-- `logistics.py` — `runDefault`, `buildHarvester`, `maintainHarvester`, `relayToCore`, …
+- `builder.py` — role task lists + orchestrators (`runDefault`, `runBuilderRoles`)
+- `logistics.py` — default helpers (`buildHarvester`, `relayToCore`, …)
 - `pathing.py` — A*, `walkPassable`, `relayPassable`, `findPathAroundObstruction`
 - `respawn.py` — core spawn (uses HiveMind slot 4 registry)
 - `hivemind.py` → `components/hivemind_v2.py` (+ `vision_v2.py` symlink)

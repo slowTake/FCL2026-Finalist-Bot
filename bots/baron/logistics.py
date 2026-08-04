@@ -911,35 +911,14 @@ def recheckOreNodes(bot, ct: Controller) -> bool:
     return acted
 
 
-def runDefault(bot, ct: Controller) -> None:
-    """buildHarvester → maintainHarvester → defendHome → healAlly → recheckOreNodes."""
-    if bot.corePos is None:
-        from hivemind import CoreState, unpack_cores
-        from main import SLOT_PACKED_CORES
-
-        ally, enemy = unpack_cores(ct.read_store(SLOT_PACKED_CORES))
-        if ally[0] != CoreState.UNKNOWN:
-            bot.corePos = Position(ally[1], ally[2])
-        if enemy[0] != CoreState.UNKNOWN:
-            bot.enemyCorePos = Position(enemy[1], enemy[2])
-        elif bot.hivemind.enemy_core_pos is not None:
-            bot.enemyCorePos = bot.hivemind.enemy_core_pos
-
-    if buildHarvester(bot, ct):
-        return
-    if maintainHarvester(bot, ct):
-        return
-    if defendHome(bot, ct):
-        return
-    if healAlly(bot, ct):
-        return
-    recheckOreNodes(bot, ct)
-
-
-# Back-compat aliases used by older stubs
+# Back-compat — orchestrator lives in builder.runDefault
 def run_default(bot, ct: Controller) -> None:
+    from builder import runDefault
+
     runDefault(bot, ct)
 
 
 def run_economy(bot, ct: Controller) -> None:
+    from builder import runDefault
+
     runDefault(bot, ct)

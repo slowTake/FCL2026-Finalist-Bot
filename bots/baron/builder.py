@@ -1,6 +1,6 @@
 # Baron builder roles — human task lists (check behavior here first)
 #
-# ## default (logistics.py) — priority order
+# ## default — priority order (orchestrator: runDefault below)
 # 1. buildHarvester — empty ore in vision / HiveMind → build (respect caps)
 # 2. maintainHarvester
 #    2a. checkOre — harvester → relayToCore; empty → build; ally block → destroy;
@@ -18,17 +18,48 @@
 # 2. belt_raid — TBD
 # 3. push_core — TBD
 
-"""Builder role dispatch — all builders use default until assignment is wired."""
+"""Builder role orchestrators — dispatch into logistics / offence helpers."""
 
 from __future__ import annotations
 
-from fcode import Controller
+from fcode import Controller, Position
 
-from logistics import runDefault
+from hivemind import CoreState, unpack_cores
+from logistics import (
+    buildHarvester,
+    defendHome,
+    healAlly,
+    maintainHarvester,
+    recheckOreNodes,
+)
+
+
+def runDefault(bot, ct: Controller) -> None:
+    """Default role orchestrator: build → maintain → defend → heal → recheck."""
+    if bot.corePos is None:
+        from main import SLOT_PACKED_CORES
+
+        ally, enemy = unpack_cores(ct.read_store(SLOT_PACKED_CORES))
+        if ally[0] != CoreState.UNKNOWN:
+            bot.corePos = Position(ally[1], ally[2])
+        if enemy[0] != CoreState.UNKNOWN:
+            bot.enemyCorePos = Position(enemy[1], enemy[2])
+        elif bot.hivemind.enemy_core_pos is not None:
+            bot.enemyCorePos = bot.hivemind.enemy_core_pos
+
+    if buildHarvester(bot, ct):
+        return
+    if maintainHarvester(bot, ct):
+        return
+    if defendHome(bot, ct):
+        return
+    if healAlly(bot, ct):
+        return
+    recheckOreNodes(bot, ct)
 
 
 def runBuilderRoles(bot, ct: Controller) -> None:
-    """Dispatch one builder turn. Caller handles HiveMind tick and stuck tracking."""
+    """Role menu — all builders use default until assignment is wired."""
     runDefault(bot, ct)
 
 

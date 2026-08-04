@@ -7,8 +7,8 @@ Quick index: where to edit and main entrypoints. Update when adding public funct
 | Module | Owns | Key entrypoints |
 |--------|------|-----------------|
 | `main.py` | Policy caps, store slots, `Player.run` | `Player.run`, `_run_core`, `_run_builder` |
-| `builder.py` | Role dispatch | `runBuilderRoles` |
-| `logistics.py` | Default role + relay | `runDefault`, `buildHarvester`, `maintainHarvester`, `checkOre`, `relayToCore`, `defendHome`, `healAlly`, `recheckOreNodes` |
+| `builder.py` | Role orchestrators + task lists | `runBuilderRoles`, `runDefault` |
+| `logistics.py` | Default helpers (no role orchestrator) | `buildHarvester`, `maintainHarvester`, `checkOre`, `relayToCore`, `defendHome`, `healAlly`, `recheckOreNodes` |
 | `pathing.py` | A*, passable, obstruction fallback | `astar`, `astarFromSeeds`, `walkPassable`, `relayPassable`, `findPathAroundObstruction` |
 | `defence.py` | Home defence helpers (placeholders) | — |
 | `offense.py` | Raider role (TBD) | `run_raider` |
@@ -49,7 +49,7 @@ Example — `relayToCore`:
 ## Workflows
 
 1. **Read first**: repo [`AGENT.md`](../../AGENT.md), this file, `CONTEXT.md`, `builder.py` task lists, `README.md`.
-2. **Default role tasks**: implement under `logistics.py`; keep priority order in `runDefault` and `builder.py` comments.
+2. **Default role tasks**: orchestrator `runDefault` in `builder.py`; helpers in `logistics.py`. Keep priority order in `runDefault` and the top-of-file task list.
 3. **Relay / pathing**: geometry in `pathing.py`; belt facing and clear/place in `logistics.py` helpers.
 4. **Caps**: only `main.py` policy block.
 5. **HiveMind v2**: never write store **4–15** from Player (slot 4 = builder registry). Ally/enemy cores via `unpack_cores` on slot 15. Extend shared code in [`components/hivemind_v2.py`](../../components/hivemind_v2.py).
