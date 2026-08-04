@@ -93,3 +93,40 @@ def unpack_infra(s0: int, s1: int, s2: int, s3: int, s4: int) -> list[tuple[int,
             y = (chunk >> 5) & 31
             deltas.append((x, y, t))
     return deltas
+
+def pack_ledger_slot(target0: tuple[int, int, int, bool] | None, target1: tuple[int, int, int, bool] | None) -> int:
+    """
+    Packs two targets into a single 32-bit slot.
+    Each target: X (5 bits), Y (5 bits), Type (4 bits), IsEnemy (1 bit) = 15 bits.
+    Total used per slot: 30 bits.
+    """
+    def pack_target(t):
+        if not t: return 0
+        x, y, etype, is_enemy = t
+        etype_int = ENTITY_TO_INT.get(etype, 0)
+        # 1 bit for presence (always 1 if target is valid, to differentiate from 0x0)
+        # Wait, if x=0, y=0, etype=0, is_enemy=0, it's 0. We need to distinguish it.
+        # But wait! If etype is 0, it means empty! ENTITY_TO_INT doesn't map to 0!
+        return (x << 10) | (y << 5) | ((etype_int & 0xF) << 1) | (1 if is_enemy else 0)
+        
+    val0 = pack_target(target0)
+    val1 = pack_target(target1)
+    
+    return (val0 << 15) | val1
+
+def unpack_ledger_slot(slot_val: int):
+    """Unpacks a slot back into two target tuples (x, y, type, is_enemy) or None."""
+    def unpack_target(val):
+        if val == 0: return None
+        is_enemy = (val & 1) == 1
+        etype_int = (val >> 1) & 0xF
+        if etype_int == 0: return None # Empty/invalid type
+        y = (val >> 5) & 0x1F
+        x = (val >> 10) & 0x1F
+        etype = INT_TO_ENTITY.get(etype_int)
+        return (x, y, etype, is_enemy)
+        
+    t0 = unpack_target((slot_val >> 15) & 0x7FFF)
+    t1 = unpack_target(slot_val & 0x7FFF)
+    
+    return t0, t1

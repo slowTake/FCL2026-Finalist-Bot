@@ -8,10 +8,11 @@ via stand-and-fire.
 Builder roles (see role.md / roles.py): economy, phalanx; optional
 raiders/harrass via ACTIVE_RAID_ORDER in roles.py. Default **"phalanx"**:
 even builders → home phalanx once the enemy core is known; fire-and-forget
-even waves leave at 300 / 600 by spawn cohort (later evens refill phalanx);
-odd builders → economy (mine + snipe; graduate to harrass on relay+100 or
-age 200). Overrides: "raiders" (belt raid → gunner/sentinel siege in
-attack.py), "harrass" (harrass.py). Economy harvester caps
+even waves leave at 300 / 600 by spawn cohort; spawn ≥ 600 (any index) →
+economy; odd builders → economy (mine + snipe; graduate to harrass on
+relay+100 or age 200 when USE_ECONOMY_HARRASS_GRADUATE). Overrides:
+"raiders" (belt raid → gunner/sentinel siege in attack.py), "harrass"
+(harrass.py). Economy harvester caps
 (2 → 3 → 4 → 5 → 6 → unlimited) in logistics.py; idle ore recheck every
 50 turns.
 
@@ -462,6 +463,8 @@ class Player:
         """Prefer A* when far; greedy fallback."""
         if self._astar_move_toward(ct, target):
             return True
+        if self.cached_path is not None:
+            return False
         return self._greedy_move_toward(ct, target)
 
     # ------------------------------------------------------------------
