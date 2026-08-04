@@ -14,6 +14,7 @@ class SpawnSchedule:
     max_builders_early: int
     max_builders: int
     spawn_interval: int
+    spawn_interval_by_ti: tuple[tuple[int, int], ...] = ()
 
 
 def _coreFootprint(core_pos: Position) -> list[Position]:
@@ -45,6 +46,18 @@ def _apronSites(ct: Controller, core_pos: Position) -> list[Position]:
     return sites
 
 
+def _effectiveSpawnInterval(ct: Controller, schedule: SpawnSchedule) -> int:
+    """Shorter interval when Ti bank is above configured tiers."""
+    ti = ct.get_global_resources()
+    best = schedule.spawn_interval
+    for min_ti, interval in sorted(
+        schedule.spawn_interval_by_ti, key=lambda t: t[0], reverse=True
+    ):
+        if ti >= min_ti:
+            return max(1, interval)
+    return max(1, best)
+
+
 class Respawn:
     def __init__(self) -> None:
         self.num_spawned = 0
@@ -57,7 +70,7 @@ class Respawn:
         goal: Position,
         hivemind,
     ) -> None:
-        """Rush early builders, then +1 builder every spawn_interval turns."""
+        """Rush early builders, then +1 every effective spawn_interval turns."""
         if ct.get_action_cooldown() != 0:
             return
         if ct.get_unit_count() >= GameConstants.MAX_TEAM_UNITS:
@@ -67,10 +80,10 @@ class Respawn:
 
         round_n = ct.get_current_round()
         spawned = ct.read_store(4)  # HiveMind builder registry (lifetime spawned)
+        interval = _effectiveSpawnInterval(ct, schedule)
         target = min(
             schedule.max_builders,
-            schedule.max_builders_early
-            + round_n // schedule.spawn_interval,
+            schedule.max_builders_early + round_n // interval,
         )
         if spawned >= target:
             return

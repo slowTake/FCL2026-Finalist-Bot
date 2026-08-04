@@ -268,6 +268,8 @@ def pickEmptyOre(bot, ct: Controller) -> Position | None:
         candidates.append(ore)
 
     for ore in candidates:
+        if oreThreatenedByGunner(ct, ore):
+            continue
         if core is not None:
             key = (manhattan(ore, core), manhattan(ore, pos))
         else:
@@ -276,6 +278,27 @@ def pickEmptyOre(bot, ct: Controller) -> Position | None:
             best_key = key
             best = ore
     return best
+
+
+def oreThreatenedByGunner(ct: Controller, tile: Position) -> bool:
+    """True if a visible enemy gunner is currently aimed at tile with LoS."""
+    from guns import GUNNER_RANGE_SQ, gunnerHasLos
+
+    me = ct.get_team()
+    for eid in ct.get_nearby_entities():
+        if ct.get_team(eid) == me:
+            continue
+        if ct.get_entity_type(eid) != EntityType.GUNNER:
+            continue
+        gpos = ct.get_position(eid)
+        if tile.distance_squared(gpos) > GUNNER_RANGE_SQ:
+            continue
+        facing = ct.get_direction(eid)
+        if gunnerHasLos(ct, gpos, facing, tile):
+            return True
+        if ct.can_fire_from(gpos, facing, EntityType.GUNNER, tile):
+            return True
+    return False
 
 
 def pickMaintainOre(bot, ct: Controller) -> Position | None:
@@ -628,6 +651,8 @@ def buildHarvester(bot, ct: Controller) -> bool:
             tile = pos.add(d)
             if not inBounds(ct, tile):
                 continue
+            if oreThreatenedByGunner(ct, tile):
+                continue
             if ct.can_build_harvester(tile):
                 ct.build_harvester(tile)
                 count = ct.read_store(SLOT_HARVESTER_COUNT)
@@ -660,8 +685,10 @@ def checkOre(bot, ct: Controller, tile: Position) -> bool:
     bid = ct.get_tile_building_id(tile)
 
     if bid is None:
-        # Empty — build if adjacent / move
+        # Empty — build if adjacent / move (skip if enemy gunner aims here)
         if atHarvesterCap(ct) and not bot.inRelay:
+            return False
+        if oreThreatenedByGunner(ct, tile):
             return False
         from main import SLOT_HARVESTER_COUNT
 

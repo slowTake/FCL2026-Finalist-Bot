@@ -13,7 +13,7 @@ from fcode import (
     Position,
 )
 
-from pathing import CARDINALS, inBounds, manhattan
+from pathing import inBounds, manhattan
 
 # Gunner attack r²=13; sentinel r²=32 (GameConstants).
 GUNNER_RANGE_SQ = getattr(GameConstants, "GUNNER_ATTACK_RADIUS_SQUARED", 13)
@@ -29,6 +29,7 @@ def _coreFootprint(core_pos: Position) -> list[Position]:
         Position(core_pos.x + 1, core_pos.y + 1),
     ]
 
+# Placement LoS: pass through destroyables + turrets; walls/cores mid-ray block.
 _TRANSPARENT_LOS = frozenset(
     {
         EntityType.CONVEYOR,
@@ -37,11 +38,6 @@ _TRANSPARENT_LOS = frozenset(
         EntityType.HARVESTER,
         EntityType.BUILDER_BOT,
         EntityType.LAUNCHER,
-    }
-)
-_OPAQUE_LOS = frozenset(
-    {
-        EntityType.CORE,
         EntityType.GUNNER,
         EntityType.SENTINEL,
     }
@@ -165,7 +161,7 @@ def gunnerHasLos(
     facing: Direction,
     target: Position,
 ) -> bool:
-    """True if gunner at site facing can reach target, treating destroyables as clear."""
+    """True if gunner at site facing can reach target; destroyables/turrets clear."""
     if site.distance_squared(target) < 1:
         return False
     if site.distance_squared(target) > GUNNER_RANGE_SQ:
@@ -186,10 +182,7 @@ def gunnerHasLos(
                 return False
             etype, _ = _entityOnTile(ct, p)
             if etype is not None and etype not in _TRANSPARENT_LOS:
-                if etype in (EntityType.CORE, EntityType.GUNNER, EntityType.SENTINEL):
-                    return False
-                if etype not in _TRANSPARENT_LOS:
-                    return False
+                return False
         if p.distance_squared(site) > GUNNER_RANGE_SQ:
             return False
         p = p.add(facing)
@@ -199,6 +192,7 @@ def gunnerHasLos(
 def _bestGunnerFacing(
     ct: Controller, site: Position, target: Position
 ) -> Direction | None:
+    """Facing that can actually hit target on an 8-dir ray — no in-range fallback."""
     preferred = facing8way(site, target)
     if preferred == Direction.CENTRE:
         preferred = Direction.NORTH
@@ -206,9 +200,6 @@ def _bestGunnerFacing(
     for facing in ordered:
         if gunnerHasLos(ct, site, facing, target):
             return facing
-    # Fallback: aim anyway if in range
-    if 1 <= site.distance_squared(target) <= GUNNER_RANGE_SQ:
-        return preferred
     return None
 
 
@@ -241,13 +232,18 @@ def _gunnerPadsNearTarget(
 
 
 def placeGun(bot, ct: Controller, target: Position) -> bool:
-    """Place a gunner that can hit target (destroyable-transparent LoS)."""
+    """Place a gunner that can hit target (destroyable/turret-transparent LoS)."""
     pads = _gunnerPadsNearTarget(ct, target)
     if not pads:
         return False
 
     pos = ct.get_position()
-    pads.sort(key=lambda sf: manhattan(pos, sf[0]))
+    pads.sort(
+        key=lambda sf: (
+            sf[0].distance_squared(target),
+            manhattan(pos, sf[0]),
+        )
+    )
 
     # Adjacent build first
     if ct.get_action_cooldown() == 0:
@@ -258,7 +254,7 @@ def placeGun(bot, ct: Controller, target: Position) -> bool:
                 ct.build_gunner(site, facing)
                 return True
 
-    # Move toward nearest viable pad
+    # Move toward nearest viable pad (already sorted closer-to-target first)
     best_site = pads[0][0]
     if abs(pos.x - best_site.x) + abs(pos.y - best_site.y) <= 1:
         return False

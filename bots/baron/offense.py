@@ -11,19 +11,6 @@ from pathing import inBounds, manhattan, walkPassable
 _AVOID_RADIUS = 4
 
 
-def _resolveCores(bot, ct: Controller) -> None:
-    from hivemind import CoreState, unpack_cores
-    from main import SLOT_PACKED_CORES
-
-    ally, enemy = unpack_cores(ct.read_store(SLOT_PACKED_CORES))
-    if bot.corePos is None and ally[0] != CoreState.UNKNOWN:
-        bot.corePos = Position(ally[1], ally[2])
-    if enemy[0] != CoreState.UNKNOWN:
-        bot.enemyCorePos = Position(enemy[1], enemy[2])
-    elif bot.enemyCorePos is None and bot.hivemind.enemy_core_pos is not None:
-        bot.enemyCorePos = bot.hivemind.enemy_core_pos
-
-
 def _enemyGunners(ct: Controller) -> list[tuple[Position, Direction]]:
     me = ct.get_team()
     out: list[tuple[Position, Direction]] = []
@@ -202,25 +189,19 @@ def seekCore(bot, ct: Controller) -> bool:
     return moveToward(bot, ct, core)
 
 
-def runHarasser(bot, ct: Controller) -> None:
-    """Harasser: avoidFire → offGun → seekHarvester → seekCore."""
-    _resolveCores(bot, ct)
-    if avoidFire(bot, ct):
-        return
-    if offGun(bot, ct):
-        return
-    if seekHarvester(bot, ct):
-        return
-    seekCore(bot, ct)
-
-
 def run_raider(bot, ct: Controller) -> None:
+    from builder import runHarasser
+
     runHarasser(bot, ct)
 
 
 def run_raiders(bot, ct: Controller) -> None:
+    from builder import runHarasser
+
     runHarasser(bot, ct)
 
 
 def run_attack_builder(bot, ct: Controller) -> None:
+    from builder import runHarasser
+
     runHarasser(bot, ct)

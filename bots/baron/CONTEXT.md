@@ -12,11 +12,19 @@ Economy and home duties orchestrated by `builder.runDefault`: `buildHarvester` �
 
 ## Harasser
 
-Offense role (`offense.runHarasser`): `avoidFire` → `offGun` → `seekHarvester` → `seekCore`. No economy. `seekHarvester` reads HiveMind `local_map` for enemy harvesters and ore nodes to scout/clear; visiting tiles refreshes the map via vision.
+Offense role (`builder.runHarasser`, helpers in `offense.py`): `avoidFire` → `offGun` → `seekHarvester` → `seekCore`. No economy. Assignment: every 3rd builder (`my_index % 3 == 0`), or **all** builders once a wave gate fires (`WAVE_ATTACK_TURN` / `WAVE_ATTACK_TI` in `main.py`; `≤0` or `None` = unset).
+
+## Wave attack
+
+Tunable in `main.py`. Positive turn → all harass from that round; positive Ti → all harass when bank ≥ threshold. Either gate alone is enough.
+
+## BuildHarvester
+
+Places on empty ore (caps + not in relay). Skips a node if a **visible enemy gunner** is currently aiming at that tile (`oreThreatenedByGunner`).
 
 ## Spawn
 
-Core rushes `MAX_BUILDERS_EARLY`, then produces **+1 builder every `SPAWN_INTERVAL` (100) turns**, capped at `MAX_BUILDERS`. Registry is HiveMind slot 4.
+Core rushes `MAX_BUILDERS_EARLY`, then +1 builder on an effective interval: base `SPAWN_INTERVAL`, shortened by `SPAWN_INTERVAL_BY_TI` tiers when the Ti bank is rich (capped at `MAX_BUILDERS`). Registry is HiveMind slot 4.
 
 ## DefGun
 

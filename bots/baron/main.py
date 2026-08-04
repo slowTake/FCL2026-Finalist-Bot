@@ -15,10 +15,21 @@ from __future__ import annotations
 from fcode import Controller, EntityType, Position
 
 # --- Builder spawn policy ---
-# Rush MAX_BUILDERS_EARLY ASAP, then +1 every SPAWN_INTERVAL turns (cap MAX_BUILDERS).
+# Rush MAX_BUILDERS_EARLY ASAP, then +1 every effective interval turns (cap MAX_BUILDERS).
 MAX_BUILDERS_EARLY = 5
 MAX_BUILDERS = 15
-SPAWN_INTERVAL = 50
+SPAWN_INTERVAL = 50  # base when below all Ti tiers
+
+# Richer bank → shorter interval. Empty list = time-only (base interval).
+# (min_ti, interval); highest matching min_ti wins.
+SPAWN_INTERVAL_BY_TI: list[tuple[int, int]] = [
+    (2000, 25),
+    (1000, 35),
+]
+
+# --- Wave attack (≤0 / None = unset; positive = active gate) ---
+WAVE_ATTACK_TURN: int | None = -1  # e.g. 300 → all builders harass from that turn
+WAVE_ATTACK_TI: int | None = 500  # e.g. 2000 → all harass once bank ≥ this
 
 # --- Harvester caps (built count, store slot 2) ---
 HARVESTER_CAP_BEFORE_50 = 1000
@@ -55,6 +66,7 @@ SPAWN_SCHEDULE = SpawnSchedule(
     max_builders_early=MAX_BUILDERS_EARLY,
     max_builders=MAX_BUILDERS,
     spawn_interval=SPAWN_INTERVAL,
+    spawn_interval_by_ti=tuple(SPAWN_INTERVAL_BY_TI),
 )
 
 
