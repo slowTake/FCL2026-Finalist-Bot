@@ -1,29 +1,34 @@
 # baron
 
-Multi-module bot template (successor layout to earl). Shared HiveMind via symlinks to [`components/`](../../components/). **Template stubs** — not a competitive bot yet.
+Multi-module bot on **HiveMind v2**. Default builders: harvesters + inbound relay. Every 3rd builder (3,6,9,…) is a **harasser**.
 
 ## Layout
 
-- `main.py` — policy caps and `Player` dispatch only
-- `builder.py` — **default** and **raider** task lists (top of file) + `run_builder_roles`
-- `logistics.py` — default role; `defence.py` — helpers for default
-- `offense.py` — raider role
-- `guns.py` — turret placement and operation
-- `pathing.py` / `respawn.py` — routing and core spawn
+- `main.py` — policy caps and `Player` dispatch
+- `builder.py` — role task lists + orchestrators (`runDefault`, `runBuilderRoles`)
+- `offense.py` — harasser helpers (`avoidFire`, `offGun`, `seekHarvester`, `seekCore`)
+- `logistics.py` — default helpers (`buildHarvester`, `relayToCore`, …)
+- `pathing.py` — A*, `walkPassable`, `relayPassable`, `findPathAroundObstruction`
+- `respawn.py` — core spawn (uses HiveMind slot 4 registry)
+- `hivemind.py` → `components/hivemind_v2.py` (+ `vision_v2.py` symlink)
 
-Agents: read [`AGENT.md`](AGENT.md). Terms: [`CONTEXT.md`](CONTEXT.md).
+Agents: [`AGENT.md`](AGENT.md). Terms: [`CONTEXT.md`](CONTEXT.md).
 
 ## Store slots
 
 | Slot | Owner | Purpose |
 |------|-------|---------|
-| 0 | Player | `SLOT_RELAY_COMPLETE` — TBD |
-| 1 | Player | `SLOT_PHALANX_THREAT` — TBD |
-| 2 | Player | `SLOT_HARVESTER_COUNT` — harvesters built |
+| 0 | Player | `SLOT_RELAY_COMPLETE` |
+| 1 | Player | `SLOT_THREAT` — TBD |
+| 2 | Player | `SLOT_HARVESTER_COUNT` |
 | 3 | Player | `SLOT_SENTINEL_COUNT` — TBD |
-| 4–6 | — | Free |
-| 7–15 | HiveMind | Never write from Player |
-| 15 | HiveMind | Packed cores (`unpack_cores`) |
+| 4 | HiveMind | Builder registry count |
+| 5–12 | HiveMind | Delta ledger |
+| 13 | HiveMind | Metronome |
+| 14 | HiveMind | Map id |
+| 15 | HiveMind | Packed cores |
+
+Never write 4–15 from Player.
 
 ## Run
 

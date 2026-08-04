@@ -1,1 +1,1 @@
-../../components/hivemind.py
+../../components/hivemind_v2.py
