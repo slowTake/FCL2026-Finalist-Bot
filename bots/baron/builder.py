@@ -1,8 +1,9 @@
 # Baron builder roles — human task lists (check behavior here first)
 #
 # ## default — priority order (orchestrator: runDefault below)
-#    0. reactEnemyTurret — enemy gunner/sentinel in vision → abortRelay +
-#        placeGun / defGun / defendHome / healAlly; skip economy this turn
+#    0. reactEnemyTurret — enemy gunner/sentinel in vision → abortRelay (only
+#        after first completed relay) + placeGun / defGun / defendHome / healAlly;
+#        skip economy this turn. While first relay in progress: ignore (keep belt).
 #    Early phase (age < BUILDER_HOME_TURNS after birth_round): defend-first +
 #    nearCoreEconomy (Chebyshev 8 ore). Harassers never enter this path.
 #    Early (after react):
@@ -13,14 +14,14 @@
 #      5. maintainHarvester — near-core ore / finish in-flight relay
 #      6. recheckOreNodes — near-core empty → ally-blocked → harvester
 #    After age gate (after react):
-# 1. buildHarvester — empty ore in vision / HiveMind → build (respect caps);
+# 1. buildHarvester — empty ore in vision / HiveMind → build;
 #        skip ore if visible enemy gunner is aiming at that tile
 # 2. maintainHarvester
 #    2a. checkOre — harvester → relayToCore; empty → build (same gunner-aim gate);
 #        ally block → destroy (skip gunner/sentinel if that ore is threatened);
 #        enemy gunner/sentinel/belt/launcher/barrier → placeGunnerOnOre (stub)
-#    2b. relayToCore — abort if enemy turret in vision; else path → facing /
-#        clearWrongBelt → placeRelayBelt → watermark
+#    2b. relayToCore — abort on enemy turret only after SLOT_RELAY_COMPLETE;
+#        else path → facing / clearWrongBelt → placeRelayBelt → watermark
 # 3. defGun — near core only; enemy builder/gunner/sentinel in vision → placeGun
 #        (gunners only — never sentinels)
 # 4. defendHome — near core only; attack enemy in vision, else heal core if HP < 500
@@ -53,6 +54,7 @@ from logistics import (
     healAlly,
     maintainHarvester,
     recheckOreNodes,
+    relayEverComplete,
 )
 from defence import defGun
 from offense import avoidFire, offGun, seekCore, seekHarvester
@@ -98,6 +100,9 @@ def waveAttackActive(ct: Controller) -> bool:
 def _reactEnemyTurret(bot, ct: Controller) -> bool:
     """Abort relay and contest/defend when an enemy turret is in vision."""
     if not enemyTurretInVision(ct):
+        return False
+    # Finish the first inbound relay before abandoning belts for combat
+    if bot.inRelay and not relayEverComplete(ct):
         return False
     if bot.inRelay:
         abortRelay(bot)

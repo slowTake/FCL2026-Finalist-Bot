@@ -8,7 +8,7 @@ For **where code lives**, see `AGENT.md` Key. For **behavior phases**, see task 
 
 ## Default
 
-Economy and home duties orchestrated by `builder.runDefault`. First: if any enemy gunner/sentinel is in vision, abort relay and contest (`contestTurret` / `defGun` / `defendHome` / `healAlly`) — skip economy that turn. For `BUILDER_HOME_TURNS` after `birth_round` (default path only): defend-first + near-core economy. After that: `buildHarvester` → `maintainHarvester` → `defGun` → `defendHome` → `healAlly` → `recheckOreNodes`. Knob `≤0` disables the early phase. Harassers never run this phase.
+Economy and home duties orchestrated by `builder.runDefault`. First: if any enemy gunner/sentinel is in vision (and the first relay is already complete, or the builder is not mid-first-relay), abort relay and contest (`contestTurret` / `defGun` / `defendHome` / `healAlly`) — skip economy that turn. For `BUILDER_HOME_TURNS` after `birth_round` (default path only): defend-first + near-core economy. After that: `buildHarvester` → `maintainHarvester` → `defGun` → `defendHome` → `healAlly` → `recheckOreNodes`. Knob `≤0` disables the early phase. Harassers never run this phase.
 
 ## Harasser
 
@@ -20,7 +20,7 @@ Tunable in `main.py`. Positive turn → all harass from that round; positive Ti 
 
 ## BuildHarvester
 
-Places on empty ore (caps + not in relay). Skips a node if a **visible enemy gunner** is currently aiming at that tile (`oreThreatenedByGunner`). Cap = min(turn ceilings, Ti tiers in `HARVESTER_CAP` / `HARVESTER_CAP_BY_TI`).
+Places on empty ore (not in relay). Skips a node if a **visible enemy gunner** is currently aiming at that tile (`oreThreatenedByGunner`). No store-based harvester cap.
 
 ## Spawn
 
@@ -44,7 +44,7 @@ Sticky ore site inspection: empty → build; harvester → `relayToCore`; ally i
 
 ## RelayToCore
 
-Inbound conveyor chain from ore/harvester to ally-core-adjacent tiles. Aborts immediately if an enemy gunner/sentinel is in vision (default also aborts + contests before economy). Orchestrator plus facing/clear/place helpers. Belts face next hop; corners face the new outbound direction. Wrong-facing ally belts destroyed; enemy belts cleared by builder fire.
+Inbound conveyor chain from ore/harvester to ally-core-adjacent tiles. Aborts on enemy gunner/sentinel in vision **only after** the first relay has completed (`SLOT_RELAY_COMPLETE`); until then the first belt is protected. Default also contests turrets before economy once that flag is set. Orchestrator plus facing/clear/place helpers. Belts face next hop; corners face the new outbound direction. Wrong-facing ally belts destroyed; enemy belts cleared by builder fire.
 
 ## Task list
 
@@ -56,4 +56,4 @@ Ordered phases inside a role; first match wins each turn.
 
 ## HiveMind v2
 
-Delta ledger + metronome (`components/hivemind_v2.py`). Builder count in slot **4**; deltas 5–12; metronome 13; map id 14; packed cores 15. Player owns slots **0–3** only.
+Delta ledger + metronome (`components/hivemind_v2.py`). Builder count in slot **4**; deltas 5–12; metronome 13; map id 14; packed cores 15. Player owns slots **0–3** (0 = first relay done; 1 = threat TBD; 2–3 free).

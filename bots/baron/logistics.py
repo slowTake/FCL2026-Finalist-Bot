@@ -36,69 +36,6 @@ def _coreFootprint(core_pos: Position) -> list[Position]:
     ]
 
 
-def harvesterCapTurn(round_n: int) -> int | None:
-    from main import (
-        HARVESTER_CAP_BEFORE_50,
-        HARVESTER_CAP_BEFORE_100,
-        HARVESTER_CAP_BEFORE_200,
-        HARVESTER_CAP_BEFORE_250,
-        HARVESTER_CAP_BEFORE_400,
-    )
-
-    if round_n < 50:
-        return HARVESTER_CAP_BEFORE_50
-    if round_n < 100:
-        return HARVESTER_CAP_BEFORE_100
-    if round_n < 200:
-        return HARVESTER_CAP_BEFORE_200
-    if round_n < 250:
-        return HARVESTER_CAP_BEFORE_250
-    if round_n < 400:
-        return HARVESTER_CAP_BEFORE_400
-    return None
-
-
-def harvesterCapTi(ti: int) -> int | None:
-    """Richer bank → higher harvester ceiling. None if Ti tiers unused."""
-    from main import HARVESTER_CAP, HARVESTER_CAP_BY_TI
-
-    if not HARVESTER_CAP_BY_TI and HARVESTER_CAP is None:
-        return None
-    best = HARVESTER_CAP
-    for min_ti, cap in sorted(HARVESTER_CAP_BY_TI, key=lambda t: t[0], reverse=True):
-        if ti >= min_ti:
-            return cap
-    return best
-
-
-def harvesterCap(ct: Controller) -> int | None:
-    """Effective cap: min of turn and Ti ceilings that are set."""
-    caps: list[int] = []
-    turn_cap = harvesterCapTurn(ct.get_current_round())
-    if turn_cap is not None:
-        caps.append(turn_cap)
-    ti_cap = harvesterCapTi(ct.get_global_resources())
-    if ti_cap is not None:
-        caps.append(ti_cap)
-    if not caps:
-        return None
-    return min(caps)
-
-
-def atHarvesterCap(ct: Controller) -> bool:
-    from main import SLOT_HARVESTER_COUNT
-
-    cap = harvesterCap(ct)
-    if cap is None:
-        return False
-    return ct.read_store(SLOT_HARVESTER_COUNT) >= cap
-
-
-# Back-compat alias for round-only callers
-def harvester_cap(round_n: int) -> int | None:
-    return harvesterCapTurn(round_n)
-
-
 def clearRelay(bot) -> None:
     bot.inRelay = False
     bot.relayOrigin = None
@@ -109,6 +46,13 @@ def clearRelay(bot) -> None:
 
 def abortRelay(bot) -> None:
     clearRelay(bot)
+
+
+def relayEverComplete(ct: Controller) -> bool:
+    """True after the team has finished at least one inbound relay (slot 0)."""
+    from main import SLOT_RELAY_COMPLETE
+
+    return ct.read_store(SLOT_RELAY_COMPLETE) != 0
 
 
 def enemyTurretInVision(ct: Controller) -> bool:
@@ -652,7 +596,7 @@ def relayToCore(bot, ct: Controller) -> None:
         abortRelay(bot)
         return
 
-    if enemyTurretInVision(ct):
+    if enemyTurretInVision(ct) and relayEverComplete(ct):
         abortRelay(bot)
         return
 
@@ -789,12 +733,8 @@ def bid_is_belt(ct: Controller, tile: Position) -> bool:
 
 def buildHarvester(bot, ct: Controller) -> bool:
     """Build on empty ore in vision / known map. Returns True if acted."""
-    if atHarvesterCap(ct):
-        return False
     if bot.inRelay:
         return False
-
-    from main import SLOT_HARVESTER_COUNT
 
     # Adjacent empty ore first
     if ct.get_action_cooldown() == 0:
@@ -811,8 +751,6 @@ def buildHarvester(bot, ct: Controller) -> bool:
                 continue
             if ct.can_build_harvester(tile):
                 ct.build_harvester(tile)
-                count = ct.read_store(SLOT_HARVESTER_COUNT)
-                ct.write_store(SLOT_HARVESTER_COUNT, count + 1)
                 bot.oreSite = tile
                 bot.relayOrigin = tile
                 bot.inRelay = True
@@ -842,18 +780,13 @@ def checkOre(bot, ct: Controller, tile: Position) -> bool:
 
     if bid is None:
         # Empty — build if adjacent / move (skip if enemy gunner aims here)
-        if atHarvesterCap(ct) and not bot.inRelay:
-            return False
         if oreThreatenedByGunner(ct, tile):
             return False
-        from main import SLOT_HARVESTER_COUNT
 
         pos = ct.get_position()
         if abs(pos.x - tile.x) + abs(pos.y - tile.y) == 1:
             if ct.get_action_cooldown() == 0 and ct.can_build_harvester(tile):
                 ct.build_harvester(tile)
-                count = ct.read_store(SLOT_HARVESTER_COUNT)
-                ct.write_store(SLOT_HARVESTER_COUNT, count + 1)
                 bot.relayOrigin = tile
                 bot.inRelay = True
                 bot.relayPath = None

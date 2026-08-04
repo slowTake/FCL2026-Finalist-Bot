@@ -20,8 +20,7 @@ Agents: [`AGENT.md`](AGENT.md). Terms: [`CONTEXT.md`](CONTEXT.md).
 |------|-------|---------|
 | 0 | Player | `SLOT_RELAY_COMPLETE` |
 | 1 | Player | `SLOT_THREAT` — TBD |
-| 2 | Player | `SLOT_HARVESTER_COUNT` |
-| 3 | Player | `SLOT_SENTINEL_COUNT` — TBD |
+| 2–3 | Player | free |
 | 4 | HiveMind | Builder registry count |
 | 5–12 | HiveMind | Delta ledger |
 | 13 | HiveMind | Metronome |

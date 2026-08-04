@@ -17,7 +17,7 @@ Quick index: where to edit and main entrypoints. Update when adding public funct
 | `hivemind.py` → `hivemind_v2` | Map fingerprint, delta ledger | `HiveMind.tick`, `unpack_cores`, `spawn_builder` |
 | `vision_v2.py` | Ledger pack/unpack (required by v2) | `pack_ledger_slot` |
 
-**Policy knobs** (builders, harvesters, ammo, wave, home-guard, Ti tiers) → top block in `main.py` (`SPAWN_INTERVAL_BY_TI`, `HARVESTER_CAP_BY_TI`, `WAVE_ATTACK_*`, `BUILDER_HOME_TURNS`, `GUN_PLACE_MIN_TI`).
+**Policy knobs** (builders, ammo, wave, home-guard, Ti tiers) → top block in `main.py` (`SPAWN_INTERVAL_BY_TI`, `WAVE_ATTACK_*`, `BUILDER_HOME_TURNS`, `GUN_PLACE_MIN_TI`).
 
 Role **task lists** → top comments in `builder.py`.
 
@@ -55,7 +55,7 @@ Example — `runHarasser` → `avoidFire` → `offGun` → `seekHarvester` → `
 1. **Read first**: repo [`AGENT.md`](../../AGENT.md), this file, `CONTEXT.md`, `builder.py` task lists, `README.md`.
 2. **Default role tasks**: orchestrator `runDefault` in `builder.py`; helpers in `logistics.py` / `defence.py` / `guns.py`. Enemy turret in vision → abort relay + contest before economy. For `BUILDER_HOME_TURNS` after `birth_round`, default uses defend-first + near-core economy (`≤0` disables). Harassers never enter this phase.
 3. **Harasser**: `my_index % 3 == 0` (builders 3,6,9,…) → `builder.runHarasser`; helpers in `offense.py`. Wave: set `WAVE_ATTACK_TURN` / `WAVE_ATTACK_TI` (>0) in `main.py` to switch **all** builders to harasser once the gate hits.
-4. **Relay / pathing**: geometry in `pathing.py`; belt facing and clear/place in `logistics.py` helpers. `relayToCore` aborts if enemy turret in vision.
+4. **Relay / pathing**: geometry in `pathing.py`; belt facing and clear/place in `logistics.py` helpers. `relayToCore` aborts on enemy turret only after `SLOT_RELAY_COMPLETE`.
 5. **Caps**: only `main.py` policy block.
 6. **HiveMind v2**: never write store **4–15** from Player (slot 4 = builder registry). Ally/enemy cores via `unpack_cores` on slot 15. Extend shared code in [`components/hivemind_v2.py`](../../components/hivemind_v2.py).
 7. **Guns**: `defGun` places gunners only; harasser `offGun` may place gunners and sentinels (≤1 gunner covering each enemy harvester). Neither places on ore.

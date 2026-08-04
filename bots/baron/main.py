@@ -3,8 +3,7 @@
 Store slots (HiveMind v2):
   0  SLOT_RELAY_COMPLETE   1 after first inbound relay finishes
   1  SLOT_THREAT           TBD
-  2  SLOT_HARVESTER_COUNT  total harvesters built
-  3  SLOT_SENTINEL_COUNT   bookkeeping TBD
+  2–3 Player free
   4–15 HiveMind-owned — never write from Player
        4 builder registry · 5–12 delta ledger · 13 metronome
        14 map id · 15 packed cores
@@ -35,23 +34,6 @@ WAVE_ATTACK_TI: int | None = 500  # e.g. 2000 → all harass once bank ≥ this
 # Only applies inside runDefault — harassers never see this.
 BUILDER_HOME_TURNS = 80
 
-
-# --- Harvester caps (built count, store slot 2) ---
-# Turn-based ceilings (very high = effectively open). Effective cap = min(turn, ti).
-HARVESTER_CAP_BEFORE_50 = 1000
-HARVESTER_CAP_BEFORE_100 = 3000
-HARVESTER_CAP_BEFORE_200 = 4000
-HARVESTER_CAP_BEFORE_250 = 5000
-HARVESTER_CAP_BEFORE_400 = 6000
-
-# Ti bank → max harvesters. Base when below all tiers; None + empty BY_TI = turn caps only.
-HARVESTER_CAP: int | None = 5
-HARVESTER_CAP_BY_TI: list[tuple[int, int]] = [
-    (2000, 120),
-    (1000, 80),
-    (500, 50),
-]
-
 # --- Gun placement (≤0 disables) ---
 GUN_PLACE_MIN_TI = 100  # need bank ≥ this to place gunner/sentinel
 
@@ -65,11 +47,9 @@ DEFAULT_AMMO_START_TURN = 1
 RAIDER_AMMO_START_TURN = 30
 MAX_AMMO_POOL: int | None = None
 
-# --- Store slots (Player 0–3 only) ---
+# --- Store slots (Player 0–3 only; 2–3 free) ---
 SLOT_RELAY_COMPLETE = 0
 SLOT_THREAT = 1
-SLOT_HARVESTER_COUNT = 2
-SLOT_SENTINEL_COUNT = 3
 SLOT_PACKED_CORES = 15
 
 DEBUG = False
