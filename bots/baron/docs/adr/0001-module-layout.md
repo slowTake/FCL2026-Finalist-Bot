@@ -16,8 +16,9 @@ We need a clean multi-file bot with Earl-like capabilities but clearer seams for
 - **`offense.py`**: `run_raider` — calls `guns`.
 - **`guns.py`**: Placement geometry, turret operation, `top_up_ammo` (ammo constants from `main`).
 - **`pathing.py`**, **`respawn.py`**: Shared utilities and core spawn.
-- **HiveMind**: Symlink `hivemind.py`, `features.py`, `vision.py` from `components/`; extend shared components, not bot-local copies.
+- **HiveMind**: Symlink `hivemind.py`, `features.py`, `vision.py` from `components/`; extend shared components, not bot-local copies. **Superseded for baron by ADR 0003** (HiveMind v2 + `vision_v2.py`).
 - **Docs**: `AGENT.md` Key for code navigation; `CONTEXT.md` for domain terms only.
+- **API style**: camelCase public functions; orchestrator → helpers (see `AGENT.md` Conventions / ADR 0003).
 
 ## Consequences
 

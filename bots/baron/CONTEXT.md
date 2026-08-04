@@ -1,39 +1,39 @@
 # Baron domain glossary
 
-Names for concepts in this bot. For **where code lives**, see `AGENT.md` Key. For **behavior phases**, see task lists at the top of `builder.py`.
+For **where code lives**, see `AGENT.md` Key. For **behavior phases**, see task lists at the top of `builder.py`.
 
 ## Builder role
 
-One of two duty loops for `BUILDER_BOT` units: **default** or **raider**. Dispatched from `builder.run_builder_roles`.
+**default** or **raider**. Assignment TBD; all builders run `runDefault` today.
 
 ## Default
 
-Economy, relay, and home duties (`logistics.run_default`; may call `defence.py` helpers). All builders use this path until assignment is implemented.
+Economy and home duties in `logistics.py`: `buildHarvester` → `maintainHarvester` → `defendHome` → `healAlly` → `recheckOreNodes`.
 
-## Raider
+## RecheckOreNodes
 
-Offensive execution (`offense.run_raider`): siege, belt raid, push core. Uses `guns` for placement.
+Last-resort helper: clears sticky `oreSite` / path cache and picks a fresh empty ore or harvester so builders keep maintaining/stealing after relays finish.
+
+## DefendHome
+
+Near-core only (Chebyshev 8 of footprint). Skipped while `inRelay` or `recheckingOre`. Attacks enemy gunner/sentinel/builder in vision; otherwise heals core if HP &lt; 500.
+
+## MaintainHarvester / checkOre
+
+Sticky ore site inspection: empty → build; harvester → `relayToCore`; ally infra on ore → destroy; enemy infra → gun stub.
+
+## RelayToCore
+
+Inbound conveyor chain from ore/harvester to ally-core-adjacent tiles. Orchestrator plus facing/clear/place helpers. Belts face next hop; corners face the new outbound direction. Wrong-facing ally belts destroyed; enemy belts cleared by builder fire.
 
 ## Task list
 
-Ordered phases inside a role; the first matching phase wins each turn.
-
-## Inbound relay
-
-Committed conveyor chain from a harvester tile back to the ally core. Owned by `logistics.py` when implemented.
+Ordered phases inside a role; first match wins each turn.
 
 ## Guns layer
 
-Geometry and mechanics of turrets: valid placements, fallbacks, `place_*`, and operating living turrets (fire/rotate). No raid strategy.
+Deferred for placement. Living turret stubs only in `guns.py`.
 
-## Offense module
+## HiveMind v2
 
-Implementation home for the **raider** role (`offense.py`). Calls `guns` to place or fire.
-
-## Defence module
-
-Home-defence helpers for the **default** role (`defence.py`); not a separate builder role name.
-
-## HiveMind slots 7–15
-
-Team communication owned by HiveMind (`components/hivemind.py`). Player code must not write these slots.
+Delta ledger + metronome (`components/hivemind_v2.py`). Builder count in slot **4**; deltas 5–12; metronome 13; map id 14; packed cores 15. Player owns slots **0–3** only.
