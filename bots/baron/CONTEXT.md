@@ -4,7 +4,7 @@ For **where code lives**, see `AGENT.md` Key. For **behavior phases**, see task 
 
 ## Builder role
 
-**default** or **harasser**. Assignment: `hivemind.my_index > 0 and my_index % 3 == 0` → harasser (builders 3, 6, 9, …); else default. Wave gates switch all to harasser.
+**default** or **harasser**. Assignment: `hivemind.my_index > 0 and my_index % 2 == 0` → harasser (builders 2, 4, 6, …); else default. Wave gates switch all to harasser.
 
 ## Threat recall
 
@@ -16,7 +16,7 @@ Economy and home duties orchestrated by `builder.runDefault` (only when threat i
 
 ## Harasser
 
-Offense role (`builder.runHarasser`, helpers in `offense.py`): `avoidFire` → `offGun` → `seekHarvester` → `seekCore`. No economy. Assignment: every 3rd builder (`my_index % 3 == 0`), or **all** builders once a wave gate fires (`WAVE_ATTACK_TURN` / `WAVE_ATTACK_TI` in `main.py`; `≤0` or `None` = unset). Unaffected by default’s early defend phase and by `SLOT_THREAT` recall.
+Offense role (`builder.runHarasser`, helpers in `offense.py`): `avoidFire` → `offGun` → `seekHarvester` → `seekCore`. No economy. Assignment: every even builder (`my_index % 2 == 0`), or **all** builders once a wave gate fires (`WAVE_ATTACK_TURN` / `WAVE_ATTACK_TI` in `main.py`; `≤0` or `None` = unset). Unaffected by default’s early defend phase and by `SLOT_THREAT` recall.
 
 ## Wave attack
 

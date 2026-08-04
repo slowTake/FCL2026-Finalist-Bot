@@ -33,7 +33,7 @@
 # # idleHome — commented out (soft-idle trap)
 #
 # ## harasser (orchestrator: runHarasser below; helpers in offense.py)
-#    my_index > 0 and my_index % 3 == 0 (builders 3,6,9,…)
+#    my_index > 0 and my_index % 2 == 0 (builders 2,4,6,…)
 #    OR wave attack: WAVE_ATTACK_TURN / WAVE_ATTACK_TI in main.py (>0 = set)
 #    Unaffected by SLOT_THREAT recall.
 # 1. avoidFire — under enemy gunner LoS → move outside LoS
@@ -209,7 +209,7 @@ def runHarasser(bot, ct: Controller) -> None:
 def runBuilderRoles(bot, ct: Controller) -> None:
     """Dispatch: harasser (no threat recall) → threat home → default."""
     idx = bot.hivemind.my_index
-    if waveAttackActive(ct) or (idx > 0 and idx % 3 == 0):
+    if waveAttackActive(ct) or (idx > 0 and idx % 2 == 0):
         runHarasser(bot, ct)
         return
     if threatActive(ct):

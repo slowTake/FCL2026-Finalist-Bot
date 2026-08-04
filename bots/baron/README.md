@@ -1,6 +1,6 @@
 # baron
 
-Multi-module bot on **HiveMind v2**. Default builders: harvesters + inbound relay. Every 3rd builder (3,6,9,…) is a **harasser**.
+Multi-module bot on **HiveMind v2**. Default builders: harvesters + inbound relay. Every even-indexed builder (2,4,6,…) is a **harasser**.
 
 ## Layout
 
