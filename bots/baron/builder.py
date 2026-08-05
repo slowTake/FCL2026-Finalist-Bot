@@ -1,14 +1,25 @@
 # Baron builder roles — human task lists (check behavior here first)
 #
-# ## threatHome — SLOT_THREAT set (core HP latch); default builders only
+# ## threatHome — SLOT_THREAT set (core HP latch); default + guardian
 #    Harassers skip. Abort relay → move to core → react/defGun/defend/heal.
+#
+# ## guardian (orchestrator: runGuardian below; helpers in defence.py)
+#    my_index > 0 and my_index % 4 == 1 (builders 1,5,9,…)
+#    Ignores wave. Shares SLOT_THREAT recall with default.
+# 1. leash — outside Chebyshev 4 of core → moveToward core
+# 2. reactEnemyTurret — contest / defGun / defendHome / healAlly
+# 3. defGun — near core; gunners only
+# 4. defendHome — attack enemy in vision, else heal core if HP < 500
+# 5. healAlly — core → gunner/sentinel → harvester
+# 6. clearBarriers — fire / move to nearest enemy barrier
+# 7. patrolHome — cycle mid-side waypoints around core
 #
 # ## default — priority order (orchestrator: runDefault below)
 #    0. reactEnemyTurret — enemy gunner/sentinel/launcher in vision → abortRelay (only
 #        after first completed relay) + placeGun / defGun / defendHome / healAlly;
 #        skip economy this turn. While first relay in progress: ignore (keep belt).
 #    Early phase (age < BUILDER_HOME_TURNS after birth_round): defend-first +
-#    nearCoreEconomy (Chebyshev 4 ore). Harassers never enter this path.
+#    nearCoreEconomy (Chebyshev 4 ore). Harassers/guardians never enter this path.
 #    Early (after react):
 #      1. defGun — near core; gunners only
 #      2. defendHome — near core; attack / heal core
@@ -35,7 +46,7 @@
 # ## harasser (orchestrator: runHarasser below; helpers in offense.py)
 #    my_index > 0 and my_index % 2 == 0 (builders 2,4,6,…)
 #    OR wave attack: WAVE_ATTACK_TURN / WAVE_ATTACK_TI in main.py (>0 = set)
-#    Unaffected by SLOT_THREAT recall.
+#    Unaffected by SLOT_THREAT recall. Guardians never enter this path.
 # 1. offGun — placeGun/placeSentinel: core → gunner → sentinel → harvester → launcher;
 #        ≤1 ally gunner covering each enemy harvester
 # 2. seekHarvester — local_map enemy harvesters / scout ore nodes (vision updates map)
@@ -61,7 +72,7 @@ from logistics import (
     recheckOreNodes,
     relayEverComplete,
 )
-from defence import defGun
+from defence import clearBarriers, defGun, patrolHome
 from offense import offGun, seekCore, seekHarvester
 
 
@@ -131,7 +142,7 @@ def _reactEnemyTurret(bot, ct: Controller) -> bool:
 
 
 def runThreatHome(bot, ct: Controller) -> None:
-    """Default recall: abort work, return to core, defend/heal only."""
+    """Default/guardian recall: abort work, return to core, defend/heal only."""
     _resolveCores(bot, ct)
     bot.nearCoreEconomy = False
     if bot.inRelay:
@@ -192,6 +203,28 @@ def runDefault(bot, ct: Controller) -> None:
     recheckOreNodes(bot, ct)
 
 
+def runGuardian(bot, ct: Controller) -> None:
+    """Guardian: leash → react → defGun → defendHome → healAlly → clearBarriers → patrol."""
+    _resolveCores(bot, ct)
+    bot.nearCoreEconomy = False
+    if bot.corePos is None:
+        return
+    if not _nearCore(bot, ct):
+        moveToward(bot, ct, bot.corePos)
+        return
+    if _reactEnemyTurret(bot, ct):
+        return
+    if defGun(bot, ct):
+        return
+    if defendHome(bot, ct):
+        return
+    if healAlly(bot, ct):
+        return
+    if clearBarriers(bot, ct):
+        return
+    patrolHome(bot, ct)
+
+
 def runHarasser(bot, ct: Controller) -> None:
     """Harasser: offGun → seekHarvester → seekCore."""
     _resolveCores(bot, ct)
@@ -204,8 +237,14 @@ def runHarasser(bot, ct: Controller) -> None:
 
 
 def runBuilderRoles(bot, ct: Controller) -> None:
-    """Dispatch: harasser (no threat recall) → threat home → default."""
+    """Dispatch: guardian → harasser/wave → threat home → default."""
     idx = bot.hivemind.my_index
+    if idx > 0 and idx % 4 == 1:
+        if threatActive(ct):
+            runThreatHome(bot, ct)
+        else:
+            runGuardian(bot, ct)
+        return
     if waveAttackActive(ct) or (idx > 0 and idx % 2 == 0):
         runHarasser(bot, ct)
         return

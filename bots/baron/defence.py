@@ -1,12 +1,14 @@
-"""Home defence orchestrators — defGun and related gates."""
+"""Home defence orchestrators — defGun, guardian clear/patrol."""
 
 from __future__ import annotations
 
 from fcode import Controller, EntityType, Position
 
 from guns import placeGun
+from pathing import inBounds, walkPassable
 
 DEFEND_HOME_CHEBYSHEV = 4
+_PATROL_OFFSET = 2
 
 
 def _coreFootprint(core_pos: Position) -> list[Position]:
@@ -18,16 +20,19 @@ def _coreFootprint(core_pos: Position) -> list[Position]:
     ]
 
 
-def _nearCore(bot, ct: Controller) -> bool:
-    if bot.corePos is None:
-        return False
-    pos = ct.get_position()
+def _chebyshevToCore(pos: Position, core_pos: Position) -> int:
     best = 10**9
-    for tile in _coreFootprint(bot.corePos):
+    for tile in _coreFootprint(core_pos):
         d = max(abs(pos.x - tile.x), abs(pos.y - tile.y))
         if d < best:
             best = d
-    return best <= DEFEND_HOME_CHEBYSHEV
+    return best
+
+
+def _nearCore(bot, ct: Controller) -> bool:
+    if bot.corePos is None:
+        return False
+    return _chebyshevToCore(ct.get_position(), bot.corePos) <= DEFEND_HOME_CHEBYSHEV
 
 
 def _pickDefGunTarget(ct: Controller) -> Position | None:
@@ -67,6 +72,86 @@ def defGun(bot, ct: Controller) -> bool:
     if target is None:
         return False
     return placeGun(bot, ct, target)
+
+
+def clearBarriers(bot, ct: Controller) -> bool:
+    """Attack nearest enemy barrier in vision (prefer near-core)."""
+    me = ct.get_team()
+    pos = ct.get_position()
+    best: Position | None = None
+    best_key: tuple[int, int] | None = None
+    for eid in ct.get_nearby_entities():
+        if ct.get_team(eid) == me:
+            continue
+        if ct.get_entity_type(eid) != EntityType.BARRIER:
+            continue
+        epos = ct.get_position(eid)
+        near = 0
+        if bot.corePos is not None:
+            near = 0 if _chebyshevToCore(epos, bot.corePos) <= DEFEND_HOME_CHEBYSHEV else 1
+        dist = abs(pos.x - epos.x) + abs(pos.y - epos.y)
+        key = (near, dist)
+        if best_key is None or key < best_key:
+            best_key = key
+            best = epos
+    if best is None:
+        return False
+
+    if abs(pos.x - best.x) + abs(pos.y - best.y) == 1:
+        if ct.get_action_cooldown() == 0 and ct.can_fire(best):
+            ct.fire(best)
+            return True
+        return False
+
+    from logistics import moveToward
+
+    return moveToward(bot, ct, best)
+
+
+def _patrolWaypoints(bot, ct: Controller) -> list[Position]:
+    """Four mid-side tiles around the 2x2 footprint at patrol offset."""
+    core = bot.corePos
+    if core is None:
+        return []
+    o = _PATROL_OFFSET
+    raw = [
+        Position(core.x, core.y - o),  # N
+        Position(core.x + 1 + o, core.y),  # E
+        Position(core.x, core.y + 1 + o),  # S
+        Position(core.x - o, core.y),  # W
+    ]
+    local_map = bot.hivemind.local_map
+    out: list[Position] = []
+    for tile in raw:
+        if not inBounds(ct, tile):
+            continue
+        if not walkPassable(ct, tile, local_map=local_map):
+            continue
+        out.append(tile)
+    return out
+
+
+def patrolHome(bot, ct: Controller) -> bool:
+    """Cycle leash waypoints around ally core for rear vision coverage."""
+    if bot.corePos is None:
+        return False
+    waypoints = _patrolWaypoints(bot, ct)
+    if not waypoints:
+        return False
+
+    idx = getattr(bot, "patrolIdx", 0) % len(waypoints)
+    target = waypoints[idx]
+    pos = ct.get_position()
+    if pos.x == target.x and pos.y == target.y:
+        bot.patrolIdx = (idx + 1) % len(waypoints)
+        target = waypoints[bot.patrolIdx]
+    elif getattr(bot, "stuck", 0) >= 3:
+        bot.patrolIdx = (idx + 1) % len(waypoints)
+        target = waypoints[bot.patrolIdx]
+
+    from logistics import moveToward
+
+    return moveToward(bot, ct, target)
 
 
 def run_phalanx(bot, ct: Controller) -> None:

@@ -92,6 +92,7 @@ class Player:
         self.skippedOres: set[tuple[int, int]] = set()
         self.lastOreRecheckRound = -999
         self.harassTarget: tuple[int, int] | None = None
+        self.patrolIdx = 0
 
     def run(self, ct: Controller) -> None:
         try:
