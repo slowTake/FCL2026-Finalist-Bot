@@ -91,6 +91,7 @@ class Player:
         self.skippedOres: set[tuple[int, int]] = set()
         self.lastOreRecheckRound = -999
         self.harassTarget: tuple[int, int] | None = None
+        self.denyBeltTile: tuple[int, int] | None = None
         self.scoutedOres: set[tuple[int, int]] = set()
         self.patrolIdx = 0
         self.harassOrbitIdx = 0

@@ -88,6 +88,17 @@ an ore tile on a non-facing side. `quarry` is the exception.
 
 ## A builder can only attack the tile it stands on
 
+> **CORRECTED (2026-08-05): this section's headline is wrong for belts.** Adjacent
+> attack on an enemy belt has since been confirmed working in game. Note the two
+> "dead ends" below are both **harvester** tiles, not belts — neither one actually
+> measured an adjacent shot at a conveyor, so the generalisation came from the
+> `can_fire()` docstring rather than from evidence. The repo's own `AGENT.md`
+> states the opposite of that docstring: attack is "2 Ti → 2 dmg to the building on
+> an orthogonally adjacent tile — not diagonal, **not its own tile**". Prefer
+> adjacent: you can barrier the cleared tile without moving. Mounting the belt and
+> firing your own tile also works (see the next section) and remains a safe
+> fallback. `baron/offense.py::_cutAndBarrier` does adjacent-first, mount-on-refusal.
+
 `can_fire()` documents it plainly: "Builder bots may only target their own tile
 and only damage the building on it." The entity table repeats it — a builder
 "can build and heal in action radius, and attack own tile".
@@ -126,6 +137,30 @@ the probe had no economy, so plan for titanium droughts stalling a clear.
 
 Note this does not generalise to other enemy buildings: harvesters, turrets and
 cores are not bot-passable, so a builder can never get on top of them.
+
+## Cutting an enemy belt from an adjacent tile works — and beats mounting it (2026-08-05)
+
+Confirmed in game: a builder **can** attack an enemy belt from an orthogonally
+adjacent tile. It does not have to stand on the belt. Observed directly during play
+rather than by probe, so there is no shot-count measurement here — the damage
+arithmetic from the section above (20 HP conveyor, 2 dmg per 2 Ti attack, ~10 shots)
+is assumed unchanged.
+
+**Adjacent is strictly preferable to mounting.** `build_barrier` cannot target the
+builder's own tile, so a builder that destroys a belt while standing on it must then
+spend a move stepping off before it can wall the tile. Cutting from beside the belt
+leaves it already in position: the barrier goes down the turn after the kill, with no
+move on and no step off.
+
+This corrects "A builder can only attack the tile it stands on" above. That section
+generalised from the `can_fire()` docstring; both dead ends it cited were **harvester**
+tiles, and neither tested an adjacent shot at a conveyor. The repo's `AGENT.md` always
+said the opposite of the docstring — attack is "2 Ti → 2 dmg to the building on an
+orthogonally adjacent tile — not diagonal, not its own tile". **Where the fcode
+docstrings and observed behavior disagree, trust the game.**
+
+Mounting still works and is kept as a fallback in `baron/offense.py::_cutAndBarrier`,
+which tries the adjacent shot first and moves onto the belt only if `can_fire` refuses.
 
 ## A defensive battery on contested ore works, and is usually idle
 

@@ -55,8 +55,12 @@
 # 2. offGun — placeGun/placeSentinel: core → gunner → sentinel → harvester → launcher;
 #        ≤1 ally gunner covering each enemy harvester
 # 3. avoidFire — under enemy gunner LoS → step to safe tile toward goal
-# 4. seekHarvester — local_map enemy harvesters / scout ore nodes (vision updates map)
-# 5. seekCore — moveToward enemy core; if stuck, orbit mid-side / ring waypoints
+# 4. denyBelt — barrier on the empty tile ahead of an enemy belt's facing; while
+#        gun placement is unaffordable, also cut an enemy belt from an adjacent
+#        tile and barrier it in place (sticky via bot.denyBeltTile; falls back to
+#        mounting the belt if an adjacent shot is refused). Skips ore nearer our core.
+# 5. seekHarvester — local_map enemy harvesters / scout ore nodes (vision updates map)
+# 6. seekCore — moveToward enemy core; if stuck, orbit mid-side / ring waypoints
 
 """Builder role orchestrators — dispatch into logistics / offence helpers."""
 
@@ -77,7 +81,14 @@ from logistics import (
     recheckOreNodes,
 )
 from defence import clearBarriers, defGun, patrolHome
-from offense import avoidFire, offGun, seekCore, seekHarvester, snipeHarvester
+from offense import (
+    avoidFire,
+    denyBelt,
+    offGun,
+    seekCore,
+    seekHarvester,
+    snipeHarvester,
+)
 
 
 def _resolveCores(bot, ct: Controller) -> None:
@@ -228,7 +239,7 @@ def runGuardian(bot, ct: Controller) -> None:
 
 
 def runHarasser(bot, ct: Controller) -> None:
-    """Harasser: snipeHarvester → offGun → avoidFire → seekHarvester → seekCore (orbit)."""
+    """Harasser: snipe → offGun → avoidFire → denyBelt → seekHarvester → seekCore."""
     _resolveCores(bot, ct)
     bot.nearCoreEconomy = False
     if snipeHarvester(bot, ct):
@@ -236,6 +247,8 @@ def runHarasser(bot, ct: Controller) -> None:
     if offGun(bot, ct):
         return
     if avoidFire(bot, ct):
+        return
+    if denyBelt(bot, ct):
         return
     if seekHarvester(bot, ct):
         return

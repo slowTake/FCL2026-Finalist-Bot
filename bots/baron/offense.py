@@ -2,24 +2,42 @@
 
 from __future__ import annotations
 
-from fcode import Controller, Direction, EntityType, Position
+from fcode import Controller, Direction, EntityType, Environment, Position
 
 from guns import (
     GUNNER_RANGE_SQ,
+    _canAffordGunPlace,
     allyGunCovering,
     gunnerHasLos,
     placeGun,
     placeSentinel,
 )
 from logistics import moveToward
-from pathing import inBounds, manhattan, walkPassable
+from pathing import CARDINALS, inBounds, manhattan, walkPassable
 
 _AVOID_RADIUS = 4
 _ORBIT_OFFSET = 3
+_BELT_TYPES = frozenset({EntityType.CONVEYOR, EntityType.SPLITTER})
+_FIRE_TI_COST = 2
 
 # Sentinel: caller did not pass a goal — fall back to _avoidGoal(bot).
 # Distinct from an explicit None, which means "no preferred direction".
 _GOAL_DEFAULT = object()
+
+
+def harasserRank(bot) -> int:
+    """Spawn-order rank for Nth-target stagger (unique under wave too)."""
+    idx = bot.hivemind.my_index
+    if idx <= 0:
+        return 0
+    return idx - 1
+
+
+def _nth(items: list, rank: int):
+    """Pick items[rank % len]; None if empty."""
+    if not items:
+        return None
+    return items[rank % len(items)]
 
 
 def _coreFootprint(core_pos: Position) -> list[Position]:
@@ -263,6 +281,190 @@ def offGun(bot, ct: Controller) -> bool:
         if placeGun(bot, ct, target):
             return True
     return False
+
+
+def _enemyBeltAt(ct: Controller, tile: Position) -> bool:
+    bid = ct.get_tile_building_id(tile)
+    if bid is None:
+        return False
+    if ct.get_team(bid) == ct.get_team():
+        return False
+    return ct.get_entity_type(bid) in _BELT_TYPES
+
+
+def _oreCloserToAlly(bot, ct: Controller, pad: Position) -> bool:
+    """True if pad is ore nearer ally core than enemy (don't wall our expansion)."""
+    if ct.get_tile_env(pad) != Environment.ORE_TITANIUM:
+        return False
+    ally = bot.corePos
+    enemy = bot.enemyCorePos
+    if ally is None or enemy is None:
+        return False
+    return manhattan(pad, ally) <= manhattan(pad, enemy)
+
+
+def _forwardBarrierPads(bot, ct: Controller) -> list[Position]:
+    """Empty tiles one step ahead of enemy belt facing."""
+    me = ct.get_team()
+    pads: list[Position] = []
+    seen: set[tuple[int, int]] = set()
+    for eid in ct.get_nearby_entities():
+        if ct.get_team(eid) == me:
+            continue
+        if ct.get_entity_type(eid) not in _BELT_TYPES:
+            continue
+        try:
+            facing = ct.get_direction(eid)
+        except Exception:
+            continue
+        if facing == Direction.CENTRE:
+            continue
+        belt = ct.get_position(eid)
+        pad = belt.add(facing)
+        key = (pad.x, pad.y)
+        if key in seen:
+            continue
+        seen.add(key)
+        if not inBounds(ct, pad):
+            continue
+        if not ct.is_in_vision(pad):
+            continue
+        if ct.get_tile_env(pad) == Environment.WALL:
+            continue
+        if not ct.is_tile_empty(pad):
+            continue
+        if _oreCloserToAlly(bot, ct, pad):
+            continue
+        pads.append(pad)
+    pads.sort(key=lambda p: manhattan(ct.get_position(), p))
+    return pads
+
+
+def _tryForwardBarrier(bot, ct: Controller, *, adjacent_only: bool) -> bool:
+    pads = _forwardBarrierPads(bot, ct)
+    if not pads:
+        return False
+    pos = ct.get_position()
+    if ct.get_action_cooldown() == 0:
+        for pad in pads:
+            if abs(pos.x - pad.x) + abs(pos.y - pad.y) != 1:
+                continue
+            if ct.can_build_barrier(pad):
+                ct.build_barrier(pad)
+                return True
+    if adjacent_only:
+        return False
+    target = _nth(pads, harasserRank(bot))
+    if target is None:
+        return False
+    return moveToward(bot, ct, target)
+
+
+def _enemyBeltsByDist(ct: Controller) -> list[Position]:
+    me = ct.get_team()
+    pos = ct.get_position()
+    belts: list[Position] = []
+    for eid in ct.get_nearby_entities():
+        if ct.get_team(eid) == me:
+            continue
+        if ct.get_entity_type(eid) not in _BELT_TYPES:
+            continue
+        belts.append(ct.get_position(eid))
+    belts.sort(key=lambda p: (manhattan(pos, p), p.x, p.y))
+    return belts
+
+
+def _stepOff(ct: Controller) -> bool:
+    if ct.get_move_cooldown() != 0:
+        return False
+    for d in CARDINALS:
+        if ct.can_move(d):
+            ct.move(d)
+            return True
+    return False
+
+
+def _cutAndBarrier(bot, ct: Controller) -> bool:
+    """Cut an enemy belt from an adjacent tile, then barrier it (guns gated).
+
+    Staying adjacent is the point: the barrier can go down the moment the belt
+    dies, with no move onto the tile and no step off afterwards.
+    """
+    sticky = getattr(bot, "denyBeltTile", None)
+    tile: Position | None = None
+    if sticky is not None:
+        cand = Position(sticky[0], sticky[1])
+        if ct.is_in_vision(cand):
+            if _enemyBeltAt(ct, cand) or ct.is_tile_empty(cand):
+                tile = cand
+            else:
+                bot.denyBeltTile = None
+        else:
+            tile = cand  # keep sticky while fogged / walking in
+    if tile is None:
+        tile = _nth(_enemyBeltsByDist(ct), harasserRank(bot))
+        if tile is None:
+            return False
+        bot.denyBeltTile = (tile.x, tile.y)
+
+    pos = ct.get_position()
+    adjacent = abs(pos.x - tile.x) + abs(pos.y - tile.y) == 1
+
+    # Belt cleared — plant the barrier from where we already stand
+    if ct.is_in_vision(tile) and ct.is_tile_empty(tile):
+        if _oreCloserToAlly(bot, ct, tile):
+            bot.denyBeltTile = None
+            return False
+        if pos == tile:
+            return _stepOff(ct)  # can't build on our own tile
+        if adjacent:
+            if ct.get_action_cooldown() == 0 and ct.can_build_barrier(tile):
+                ct.build_barrier(tile)
+                bot.denyBeltTile = None
+                return True
+            return False
+        return moveToward(bot, ct, tile)
+
+    if not _enemyBeltAt(ct, tile):
+        bot.denyBeltTile = None
+        return False
+
+    if ct.get_global_resources() < _FIRE_TI_COST:
+        return False
+
+    # Preferred: shoot the belt from beside it, so we stay in place to barrier
+    if adjacent:
+        if ct.get_action_cooldown() != 0:
+            return False
+        if ct.can_fire(tile):
+            ct.fire(tile)
+            return True
+        # Engine refused the adjacent shot — fall back to mounting the belt
+        return moveToward(bot, ct, tile)
+
+    # Mounted fallback: a builder may always fire the tile it stands on
+    if pos == tile:
+        if ct.get_action_cooldown() != 0:
+            return False
+        if ct.can_fire(pos):
+            ct.fire(pos)
+            return True
+        return False
+
+    return moveToward(bot, ct, tile)
+
+
+def denyBelt(bot, ct: Controller) -> bool:
+    """Barrier ahead of enemy belt facing; under gun gate also cut-and-barrier."""
+    # Mode A: adjacent build first
+    if _tryForwardBarrier(bot, ct, adjacent_only=True):
+        return True
+    # Mode B: only while gun placement is gated
+    if not _canAffordGunPlace(ct):
+        if _cutAndBarrier(bot, ct):
+            return True
+    # Mode A: walk toward a forward pad
+    return _tryForwardBarrier(bot, ct, adjacent_only=False)
 
 
 def _localEnemyHarvesters(bot, ct: Controller) -> list[Position]:
