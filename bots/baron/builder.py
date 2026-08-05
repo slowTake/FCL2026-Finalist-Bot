@@ -28,8 +28,7 @@
 #      5. maintainHarvester — near-core ore / finish in-flight relay
 #      6. recheckOreNodes — near-core empty → ally-blocked → harvester
 #    After age gate (after react):
-# 1. buildHarvester — empty ore in vision / HiveMind → build (index-staggered
-#        among defaults; skip pad if ally builder already adjacent);
+# 1. buildHarvester — empty ore in vision / HiveMind → build;
 #        skip ore if visible enemy gunner is aiming at that tile
 # 2. maintainHarvester
 #    2a. checkOre — harvester → relayToCore; empty → build (same gunner-aim gate);
@@ -128,7 +127,7 @@ def _reactEnemyTurret(bot, ct: Controller) -> bool:
     # Finish the first inbound relay before abandoning belts for combat
     if bot.inRelay and not relayEverComplete(ct):
         return False
-    if bot.inRelay:
+#    if bot.inRelay:
 #        abortRelay(bot)
     if contestTurret(bot, ct):
         return True
