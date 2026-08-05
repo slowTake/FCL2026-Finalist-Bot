@@ -17,7 +17,8 @@
 #      5. maintainHarvester — near-core ore / finish in-flight relay
 #      6. recheckOreNodes — near-core empty → ally-blocked → harvester
 #    After age gate (after react):
-# 1. buildHarvester — empty ore in vision / HiveMind → build;
+# 1. buildHarvester — empty ore in vision / HiveMind → build (index-staggered
+#        among defaults; skip pad if ally builder already adjacent);
 #        skip ore if visible enemy gunner is aiming at that tile
 # 2. maintainHarvester
 #    2a. checkOre — harvester → relayToCore; empty → build (same gunner-aim gate);
