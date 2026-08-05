@@ -128,7 +128,7 @@ def _reactEnemyTurret(bot, ct: Controller) -> bool:
     if bot.inRelay and not relayEverComplete(ct):
         return False
     if bot.inRelay:
-        abortRelay(bot)
+#        abortRelay(bot)
     if contestTurret(bot, ct):
         return True
     if defGun(bot, ct):

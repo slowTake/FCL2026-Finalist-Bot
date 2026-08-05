@@ -32,7 +32,7 @@ WAVE_ATTACK_TI: int | None = 2000  # e.g. 2000 → all harass once bank ≥ this
 
 # --- Default early defend (age after birth_round; ≤0 disables) ---
 # Only applies inside runDefault — harassers never see this.
-BUILDER_HOME_TURNS = 80
+BUILDER_HOME_TURNS = 30
 
 # --- Core threat recall (default builders; sticky between ON and OFF) ---
 THREAT_CORE_HP_ON = 400  # set SLOT_THREAT when HP < this
