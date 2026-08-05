@@ -8,7 +8,7 @@ Quick index: where to edit and main entrypoints. Update when adding public funct
 |--------|------|-----------------|
 | `main.py` | Policy caps, store slots, `Player.run` | `Player.run`, `_run_core`, `_run_builder` |
 | `builder.py` | Role orchestrators + task lists | `runBuilderRoles`, `isGuardian`, `isHarasser`, `runGuardian`, `runDefault`, `runHarasser` |
-| `defence.py` | Defensive orchestrators | `defGun`, `clearBarriers`, `patrolHome` |
+| `defence.py` | Defensive orchestrators | `defGun`, `refreshSortie`, `interceptTurret`, `clearBarriers`, `patrolHome` |
 | `logistics.py` | Default helpers | `buildHarvester`, `maintainHarvester`, `checkOre`, `relayToCore`, `defendHome`, `healAlly`, `recheckOreNodes` |
 | `pathing.py` | A*, passable, obstruction fallback, encirclement breakout | `astar`, `astarFromSeeds`, `walkPassable`, `relayPassable`, `findPathAroundObstruction`, `breakEncirclement` |
 | `offense.py` | Harasser helpers | `snipeHarvester`, `offGun`, `avoidFire`, `seekHarvester`, `seekCore` |

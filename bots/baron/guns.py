@@ -311,21 +311,56 @@ def _canAffordGunPlace(ct: Controller) -> bool:
     return ct.get_global_resources() >= GUN_PLACE_MIN_TI
 
 
-def placeGun(bot, ct: Controller, target: Position) -> bool:
-    """Place a gunner that can hit target (destroyable/turret-transparent LoS)."""
+def chebyshevToCore(pos: Position, core_pos: Position) -> int:
+    """Chebyshev distance from pos to the nearest core footprint tile."""
+    return min(
+        max(abs(pos.x - t.x), abs(pos.y - t.y)) for t in _coreFootprint(core_pos)
+    )
+
+
+def placeGun(
+    bot,
+    ct: Controller,
+    target: Position,
+    *,
+    anchor_core: Position | None = None,
+    max_cheb: int | None = None,
+) -> bool:
+    """Place a gunner that can hit target (destroyable/turret-transparent LoS).
+
+    `anchor_core` flips pad preference from "as close to the target as possible"
+    to "as close to our own core as possible while still hitting it", and
+    `max_cheb` drops pads further than that from the core footprint. Defensive
+    callers pass both so a guardian answering a turret parked outside its leash
+    plants the gun on the near side and stays as close to home as the shot
+    allows, instead of being dragged onto the target's doorstep.
+    """
     if not _canAffordGunPlace(ct):
         return False
     pads = _gunnerPadsNearTarget(ct, target)
+    if anchor_core is not None and max_cheb is not None:
+        pads = [
+            sf for sf in pads if chebyshevToCore(sf[0], anchor_core) <= max_cheb
+        ]
     if not pads:
         return False
 
     pos = ct.get_position()
-    pads.sort(
-        key=lambda sf: (
-            sf[0].distance_squared(target),
-            manhattan(pos, sf[0]),
+    if anchor_core is not None:
+        pads.sort(
+            key=lambda sf: (
+                chebyshevToCore(sf[0], anchor_core),
+                sf[0].distance_squared(target),
+                manhattan(pos, sf[0]),
+            )
         )
-    )
+    else:
+        pads.sort(
+            key=lambda sf: (
+                sf[0].distance_squared(target),
+                manhattan(pos, sf[0]),
+            )
+        )
 
     # Adjacent build first
     if ct.get_action_cooldown() == 0:
