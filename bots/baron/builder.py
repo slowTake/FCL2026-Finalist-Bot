@@ -13,13 +13,7 @@
 # ## guardian (orchestrator: runGuardian below; helpers in defence.py)
 #    idx % 5 in (1, 0) (builders 1,5,6,10,11,…)
 #    Ignores wave. Home defence is entirely the guardians' job — no core-HP recall.
-# 0. refreshSortie — state only: sticky enemy turret within TURRET_THREAT_CHEBYSHEV
-#        of core (own vision + HiveMind ledger). A live sortie widens the leash
-#        to GUARDIAN_SORTIE_CHEBYSHEV and counts as under attack (no economy).
-# 1. leash — outside Chebyshev 4 of core (or the sortie radius) → moveToward core
-# 1b. interceptTurret — sortie target → counter-gunner on the pad nearest our own
-#        core that still has the shot; no pad in vision yet → close in. Outranks
-#        healing: a sentinel reaches 5.7 and out-trades 4 HP/turn of core heal.
+# 1. leash — outside Chebyshev 4 of core → moveToward core
 # 2. reactEnemyTurret — contest / defGun / defendHome / healAlly (skipEconomy=False:
 #        an unactionable turret must not block patrol — guardians have no economy)
 # 3. defGun — near core; gunners only
@@ -106,13 +100,7 @@ from logistics import (
     moveToward,
     recheckOreNodes,
 )
-from defence import (
-    clearBarriers,
-    defGun,
-    interceptTurret,
-    patrolHome,
-    refreshSortie,
-)
+from defence import clearBarriers, defGun, patrolHome
 from pathing import breakEncirclement
 from offense import (
     avoidFire,
@@ -304,16 +292,6 @@ def _guardianLeashOk(bot, ct: Controller) -> bool:
     return _chebyshevToCore(ct.get_position(), bot.corePos) <= reach
 
 
-def _guardianReachOk(bot, ct: Controller) -> bool:
-    """Leash test. A live sortie replaces it with the sortie radius."""
-    if getattr(bot, "sortieTarget", None) is not None:
-        from main import GUARDIAN_SORTIE_CHEBYSHEV
-
-        reach = GUARDIAN_SORTIE_CHEBYSHEV or DEFEND_HOME_CHEBYSHEV
-        return _chebyshevToCore(ct.get_position(), bot.corePos) <= reach
-    return _guardianLeashOk(bot, ct)
-
-
 def _guardianEconomy(bot, ct: Controller) -> bool:
     """Idle-time economy inside the leash: build harvesters, finish relays."""
     if not guardianEconomyOn():
@@ -333,23 +311,16 @@ def runGuardian(bot, ct: Controller) -> None:
     if bot.corePos is None:
         return
 
-    # State only, before the leash: a live sortie is what widens the leash.
-    sortie = refreshSortie(bot, ct)
-
     # Defence outranks economy: drop the relay claim so the inRelay guards in
     # _reactEnemyTurret / defGun don't lock the guardian out of fighting. Belts
     # already placed stay on the map and the watermark rebuilds on the re-pick.
-    underAttack = _enemyUnitInVision(ct) or sortie is not None
+    underAttack = _enemyUnitInVision(ct)
     if underAttack and (bot.inRelay or bot.oreSite is not None):
         abortRelay(bot)
         bot.oreSite = None
 
-    if not _guardianReachOk(bot, ct):
+    if not _guardianLeashOk(bot, ct):
         moveToward(bot, ct, bot.corePos)
-        return
-    # Ahead of everything: a sentinel out-ranging the leash out-trades any
-    # healing we could do on the core it is shelling.
-    if interceptTurret(bot, ct):
         return
     # skipEconomy=False: a turret we can't act on must not block patrol
     if _reactEnemyTurret(bot, ct, skipEconomy=False):
