@@ -13,16 +13,16 @@
 # ## guardian (orchestrator: runGuardian below; helpers in defence.py)
 #    idx % 5 in (1, 0) (builders 1,5,6,10,11,…)
 #    Ignores wave. Home defence is entirely the guardians' job — no core-HP recall.
-# 0. refreshSortie — state only: sticky enemy turret within TURRET_THREAT_CHEBYSHEV
-#        of core (own vision + HiveMind ledger). A live sortie widens the leash
-#        to GUARDIAN_SORTIE_CHEBYSHEV and counts as under attack (no economy).
-# 1. leash — outside Chebyshev 4 of core (or the sortie radius) → moveToward core
-# 1b. interceptTurret — sortie target → counter-gunner on the pad nearest our own
-#        core that still has the shot; no pad in vision yet → close in. Outranks
-#        healing: a sentinel reaches 5.7 and out-trades 4 HP/turn of core heal.
-# 2. reactEnemyTurret — contest / defGun / defendHome / healAlly (skipEconomy=False:
-#        an unactionable turret must not block patrol — guardians have no economy)
-# 3. defGun — near core; gunners only
+# 1. leash — outside Chebyshev 4 of core → moveToward core
+# 2. reactEnemyTurret — defGun / defendHome / healAlly (skipEconomy=False: an
+#        unactionable turret must not block patrol. homeOnly=True: no action that
+#        needs leaving the leash — contestTurret and unleashed defGun both place
+#        on a pad by the target, which the leash step then undoes — ping-pong)
+# 3. defGun — near core; gunners only; homeOnly → targets inside the leash only
+# 3b. defSentinel — enemy turret within TURRET_THREAT_CHEBYSHEV of core (ledger,
+#        not just own vision) → our own sentinel on a pad inside the leash. Its
+#        5.7 reach covers what a gunner's 3.6 cannot, without leaving home.
+#        Above defendHome: healing loses to a sentinel (18/shot vs 4 HP/turn).
 # 4. defendHome — attack enemy in vision, else heal core if HP < 500
 # 5. healAlly — core → gunner/sentinel → harvester
 # 6. clearBarriers — fire / move to nearest enemy barrier inside the leash only
@@ -106,13 +106,7 @@ from logistics import (
     moveToward,
     recheckOreNodes,
 )
-from defence import (
-    clearBarriers,
-    defGun,
-    interceptTurret,
-    patrolHome,
-    refreshSortie,
-)
+from defence import clearBarriers, defGun, defSentinel, patrolHome
 from pathing import breakEncirclement
 from offense import (
     avoidFire,
@@ -176,7 +170,9 @@ def waveAttackActive(ct: Controller) -> bool:
     return False
 
 
-def _reactEnemyTurret(bot, ct: Controller, *, skipEconomy: bool = True) -> bool:
+def _reactEnemyTurret(
+    bot, ct: Controller, *, skipEconomy: bool = True, homeOnly: bool = False
+) -> bool:
     """Contest/defend when an enemy turret is in vision — never breaks off a relay.
 
     `skipEconomy`: when nothing could be done, still consume the turn so
@@ -184,6 +180,13 @@ def _reactEnemyTurret(bot, ct: Controller, *, skipEconomy: bool = True) -> bool:
     That guard only means anything for default builders. Guardians have no
     economy and pass False, so an unactionable turret leaves them free to fall
     through to `clearBarriers` / `patrolHome` instead of freezing in place.
+
+    `homeOnly`: forbid anything that needs the caller to leave the leash.
+    `contestTurret` places a gunner on a pad near *the target*, which for
+    anything outside the leash is a tile the guardian's leash step marches it
+    back from next turn, and `defGun` picks that target. Guardians pass True and
+    answer turrets through `defGun` (inside the leash) and `defSentinel`
+    (outside) instead; defaults have no leash and are unaffected.
     """
     if not enemyTurretInVision(ct):
         return False
@@ -191,9 +194,9 @@ def _reactEnemyTurret(bot, ct: Controller, *, skipEconomy: bool = True) -> bool:
     # next tile is under a gunner; dodging is handled by _dodgeWhileRelaying.
     if bot.inRelay:
         return False
-    if contestTurret(bot, ct):
+    if not homeOnly and contestTurret(bot, ct):
         return True
-    if defGun(bot, ct):
+    if defGun(bot, ct, homeOnly=homeOnly):
         return True
     if defendHome(bot, ct):
         return True
@@ -304,16 +307,6 @@ def _guardianLeashOk(bot, ct: Controller) -> bool:
     return _chebyshevToCore(ct.get_position(), bot.corePos) <= reach
 
 
-def _guardianReachOk(bot, ct: Controller) -> bool:
-    """Leash test. A live sortie replaces it with the sortie radius."""
-    if getattr(bot, "sortieTarget", None) is not None:
-        from main import GUARDIAN_SORTIE_CHEBYSHEV
-
-        reach = GUARDIAN_SORTIE_CHEBYSHEV or DEFEND_HOME_CHEBYSHEV
-        return _chebyshevToCore(ct.get_position(), bot.corePos) <= reach
-    return _guardianLeashOk(bot, ct)
-
-
 def _guardianEconomy(bot, ct: Controller) -> bool:
     """Idle-time economy inside the leash: build harvesters, finish relays."""
     if not guardianEconomyOn():
@@ -333,28 +326,26 @@ def runGuardian(bot, ct: Controller) -> None:
     if bot.corePos is None:
         return
 
-    # State only, before the leash: a live sortie is what widens the leash.
-    sortie = refreshSortie(bot, ct)
-
     # Defence outranks economy: drop the relay claim so the inRelay guards in
     # _reactEnemyTurret / defGun don't lock the guardian out of fighting. Belts
     # already placed stay on the map and the watermark rebuilds on the re-pick.
-    underAttack = _enemyUnitInVision(ct) or sortie is not None
+    underAttack = _enemyUnitInVision(ct)
     if underAttack and (bot.inRelay or bot.oreSite is not None):
         abortRelay(bot)
         bot.oreSite = None
 
-    if not _guardianReachOk(bot, ct):
+    if not _guardianLeashOk(bot, ct):
         moveToward(bot, ct, bot.corePos)
         return
-    # Ahead of everything: a sentinel out-ranging the leash out-trades any
-    # healing we could do on the core it is shelling.
-    if interceptTurret(bot, ct):
+    # skipEconomy=False: a turret we can't act on must not block patrol.
+    # homeOnly=True: defGun / defSentinel answer turrets without leaving home.
+    if _reactEnemyTurret(bot, ct, skipEconomy=False, homeOnly=True):
         return
-    # skipEconomy=False: a turret we can't act on must not block patrol
-    if _reactEnemyTurret(bot, ct, skipEconomy=False):
+    if defGun(bot, ct, homeOnly=True):
         return
-    if defGun(bot, ct):
+    # Above defendHome: its no-enemy branch heals the core, which loses to a
+    # sentinel parked outside the leash (18 a shot vs 4 HP/turn of healing).
+    if defSentinel(bot, ct):
         return
     if defendHome(bot, ct):
         return

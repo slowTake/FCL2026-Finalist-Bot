@@ -33,16 +33,15 @@ WAVE_ATTACK_TI: int | None = 2000  # e.g. 2000 → all harass once bank ≥ this
 # Only applies inside runDefault — harassers/guardians never see this.
 BUILDER_HOME_TURNS = 0
 
-# --- Guardian turret sortie (≤0 disables) ---
-# An enemy sentinel reaches sqrt(32) ≈ 5.7 tiles, so it can shell the core from
-# outside the Chebyshev-4 leash and never be answered. Guardians break the leash
-# out to GUARDIAN_SORTIE_CHEBYSHEV to plant a counter-gunner on any enemy turret
-# within TURRET_THREAT_CHEBYSHEV of the core footprint. TURRET_MEMORY_TURNS is
-# how stale a HiveMind sighting may be and still be worth a sortie (builder
-# vision is only sqrt(20) ≈ 4.5 — the core usually spots these first).
-TURRET_THREAT_CHEBYSHEV = 6
-GUARDIAN_SORTIE_CHEBYSHEV = 8
-TURRET_MEMORY_TURNS = 20
+# --- Defensive sentinel (False disables) ---
+# An enemy sentinel reaches sqrt(32) ≈ 5.7 and shells the core from outside the
+# Chebyshev-4 leash, where a gunner (reach sqrt(13) ≈ 3.6) cannot answer it
+# without leaving home. Our own sentinel has the same 5.7, so a pad *inside* the
+# leash covers the gap — the guardian never breaks the leash. Detection reads the
+# HiveMind ledger, not just own vision (builder vision is only sqrt(20) ≈ 4.5).
+DEF_SENTINEL = True
+TURRET_THREAT_CHEBYSHEV = 6  # enemy turret this close to core counts as a threat
+TURRET_MEMORY_TURNS = 20  # how stale a ledger sighting may be and still count
 
 # --- Guardian idle economy (False disables) ---
 # While no enemy unit is in vision, guardians build harvesters on ore inside the
@@ -126,7 +125,6 @@ class Player:
         self.scoutedOres: set[tuple[int, int]] = set()
         self.patrolIdx = 0
         self.harassOrbitIdx = 0
-        self.sortieTarget: Position | None = None
 
     def run(self, ct: Controller) -> None:
         try:

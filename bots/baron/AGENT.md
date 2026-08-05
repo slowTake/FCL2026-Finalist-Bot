@@ -8,11 +8,11 @@ Quick index: where to edit and main entrypoints. Update when adding public funct
 |--------|------|-----------------|
 | `main.py` | Policy caps, store slots, `Player.run` | `Player.run`, `_run_core`, `_run_builder` |
 | `builder.py` | Role orchestrators + task lists | `runBuilderRoles`, `isGuardian`, `isHarasser`, `runGuardian`, `runDefault`, `runHarasser` |
-| `defence.py` | Defensive orchestrators | `defGun`, `refreshSortie`, `interceptTurret`, `clearBarriers`, `patrolHome` |
+| `defence.py` | Defensive orchestrators | `defGun`, `defSentinel`, `threateningTurret`, `clearBarriers`, `patrolHome` |
 | `logistics.py` | Default helpers | `buildHarvester`, `maintainHarvester`, `checkOre`, `relayToCore`, `defendHome`, `healAlly`, `recheckOreNodes` |
 | `pathing.py` | A*, passable, obstruction fallback, encirclement breakout | `astar`, `astarFromSeeds`, `walkPassable`, `relayPassable`, `findPathAroundObstruction`, `breakEncirclement` |
 | `offense.py` | Harasser helpers | `snipeHarvester`, `offGun`, `avoidFire`, `seekHarvester`, `seekCore` |
-| `guns.py` | Placement + turret loops | `placeGun`, `allyGunCovering`, `gunnerLoop`, `placeSentinel`, `sentinelLoop`, `topUpAmmo` |
+| `guns.py` | Placement + turret loops | `placeGun`, `placeDefSentinel`, `allyGunCovering`, `allySentinelCovering`, `gunnerLoop`, `placeSentinel`, `sentinelLoop`, `topUpAmmo` |
 | `respawn.py` | Core spawn schedule | `Respawn.run_core_spawn`, `SpawnSchedule` |
 | `hivemind.py` → `hivemind_v2` | Map fingerprint, delta ledger | `HiveMind.tick`, `unpack_cores`, `spawn_builder` |
 | `vision_v2.py` | Ledger pack/unpack (required by v2) | `pack_ledger_slot` |
@@ -44,9 +44,9 @@ Example — `relayToCore`:
 5. `placeRelayBelt`
 6. `extendRelayWatermark`
 
-Example — `defGun` → `placeGun` only (never sentinels).
+Example — `defGun` → `placeGun` only (never sentinels); out-of-leash turrets → `defSentinel` → `placeDefSentinel`.
 
-Example — `runGuardian` → leash → `_reactEnemyTurret` → `defGun` → `defendHome` → `healAlly` → `clearBarriers` → `patrolHome`.
+Example — `runGuardian` → leash → `_reactEnemyTurret` → `defGun` → `defSentinel` → `defendHome` → `healAlly` → `clearBarriers` → economy → `patrolHome`.
 
 Example — `runHarasser` → `snipeHarvester` → `offGun` → `avoidFire` → `seekHarvester` → `seekCore`.
 
@@ -61,5 +61,5 @@ Example — `runHarasser` → `snipeHarvester` → `offGun` → `avoidFire` → 
 5. **Relay / pathing**: geometry in `pathing.py`; belt facing and clear/place in `logistics.py` helpers. `relayToCore` aborts only when the next belt tile is under a visible gunner (`oreThreatenedByGunner`) — never merely because a turret is in vision.
 6. **Caps**: only `main.py` policy block.
 7. **HiveMind v2**: never write store **4–15** from Player (slot 4 = builder registry). Player slot 0 = first relay done; slots 1–3 free. Ally/enemy cores via `unpack_cores` on slot 15. Extend shared code in [`components/hivemind_v2.py`](../../components/hivemind_v2.py).
-8. **Guns**: `defGun` places gunners only; harasser `offGun` may place gunners and sentinels (≤1 gunner covering each enemy harvester; sentinel pads prefer nearer-to-core). Neither places on ore.
+8. **Guns**: `defGun` places gunners only, at targets inside the leash; `defSentinel` answers turrets outside it with our own sentinel from a pad inside it (`DEF_SENTINEL`, `TURRET_THREAT_CHEBYSHEV`, `TURRET_MEMORY_TURNS`); harasser `offGun` may place gunners and sentinels (≤1 gunner covering each enemy harvester; sentinel pads prefer nearer-to-core). Neither places on ore.
 9. **Verification**: `fcode run baron starter` and `fcode run baron starter maps/hive.map26`.

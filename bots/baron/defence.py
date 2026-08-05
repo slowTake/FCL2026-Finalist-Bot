@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from fcode import Controller, EntityType, Position
 
-from guns import _canAffordGunPlace, allyGunCovering, placeGun
+from guns import (
+    allyGunCovering,
+    allySentinelCovering,
+    placeDefSentinel,
+    placeGun,
+)
 from pathing import inBounds, walkPassable
 
 DEFEND_HOME_CHEBYSHEV = 4
@@ -35,8 +40,15 @@ def _nearCore(bot, ct: Controller) -> bool:
     return _chebyshevToCore(ct.get_position(), bot.corePos) <= DEFEND_HOME_CHEBYSHEV
 
 
-def _pickDefGunTarget(ct: Controller) -> Position | None:
-    """Nearest enemy gunner/sentinel/launcher (prefer) or builder in vision."""
+def _pickDefGunTarget(ct: Controller, core_pos: Position | None) -> Position | None:
+    """Nearest enemy gunner/sentinel/launcher (prefer) or builder in vision.
+
+    `core_pos` set (guardians, via `homeOnly`) restricts targets to the leash: a
+    gunner pad must sit within sqrt(13) ≈ 3.6 of its target, so aiming further
+    out sends the guardian to a pad the leash step then marches it back from —
+    it ping-pongs and never places. Out-of-leash turrets are `defSentinel`'s
+    job. Defaults pass None: they have no leash and can go finish the job.
+    """
     me = ct.get_team()
     pos = ct.get_position()
     best_turret: Position | None = None
@@ -48,6 +60,11 @@ def _pickDefGunTarget(ct: Controller) -> Position | None:
             continue
         etype = ct.get_entity_type(eid)
         epos = ct.get_position(eid)
+        if (
+            core_pos is not None
+            and _chebyshevToCore(epos, core_pos) > DEFEND_HOME_CHEBYSHEV
+        ):
+            continue
         dist = abs(pos.x - epos.x) + abs(pos.y - epos.y)
         if etype in (EntityType.GUNNER, EntityType.SENTINEL, EntityType.LAUNCHER):
             if dist < best_turret_d:
@@ -62,13 +79,17 @@ def _pickDefGunTarget(ct: Controller) -> Position | None:
     return best_builder
 
 
-def defGun(bot, ct: Controller) -> bool:
-    """Near-core defensive gunner placement (gunners only — never sentinels)."""
+def defGun(bot, ct: Controller, *, homeOnly: bool = False) -> bool:
+    """Near-core defensive gunner placement (gunners only — never sentinels).
+
+    `homeOnly` forbids any action that would need the caller to leave the leash
+    — guardians pass it, defaults do not.
+    """
     if bot.inRelay or getattr(bot, "recheckingOre", False):
         return False
     if not _nearCore(bot, ct):
         return False
-    target = _pickDefGunTarget(ct)
+    target = _pickDefGunTarget(ct, bot.corePos if homeOnly else None)
     if target is None:
         return False
     return placeGun(bot, ct, target)
@@ -80,142 +101,75 @@ _TURRET_TYPES = (EntityType.GUNNER, EntityType.SENTINEL, EntityType.LAUNCHER)
 _TURRET_PRIORITY = {
     EntityType.SENTINEL: 0,  # reach sqrt(32) ≈ 5.7 — shells the core from 5–6
     EntityType.LAUNCHER: 1,  # reach sqrt(26) ≈ 5.1
-    EntityType.GUNNER: 2,  # reach sqrt(13) ≈ 3.6 — must come close anyway
+    EntityType.GUNNER: 2,  # reach sqrt(13) ≈ 3.6 — defGun already covers these
 }
 
 
-def sortieEnabled() -> bool:
-    from main import GUARDIAN_SORTIE_CHEBYSHEV
+def threateningTurret(bot, ct: Controller) -> Position | None:
+    """Enemy turret parked within threat range of home, worst out-ranger first.
 
-    return (
-        GUARDIAN_SORTIE_CHEBYSHEV is not None and GUARDIAN_SORTIE_CHEBYSHEV > 0
-    )
-
-
-def _enemyTurretOnTile(ct: Controller, tile: Position) -> bool:
-    if not inBounds(ct, tile):
-        return False
-    bid = ct.get_tile_building_id(tile)
-    if bid is None:
-        return False
-    if ct.get_team(bid) == ct.get_team():
-        return False
-    return ct.get_entity_type(bid) in _TURRET_TYPES
-
-
-def _knownEnemyTurrets(bot, ct: Controller) -> list[tuple[EntityType, Position]]:
-    """Enemy turrets from the shared map, not just this unit's own vision.
-
-    A builder sees sqrt(20) ≈ 4.5 tiles, so a guardian sitting on its patrol
-    ring usually cannot see the sentinel that is shelling the core from 6 — the
-    core (sqrt(36)) or a passing builder spots it and the HiveMind ledger
-    carries it. Own vision is already folded into `local_map` by `tick`.
+    Reads the HiveMind ledger rather than this unit's own vision: a builder sees
+    sqrt(20) ≈ 4.5, so a guardian on its patrol ring usually cannot see the
+    sentinel shelling the core from 6 — the core (sqrt(36)) or a passing builder
+    spots it and the ledger carries it. Own vision is folded into `local_map` by
+    `tick`, so this covers both.
     """
-    from main import TURRET_MEMORY_TURNS
+    from main import TURRET_MEMORY_TURNS, TURRET_THREAT_CHEBYSHEV
 
+    core = bot.corePos
+    if core is None or not TURRET_THREAT_CHEBYSHEV:
+        return None
     hm = bot.hivemind
     me = ct.get_team()
     memory = TURRET_MEMORY_TURNS or 0
-    out: list[tuple[EntityType, Position]] = []
+    best: Position | None = None
+    best_key = None
     for (x, y), cell in hm.local_map.items():
         ent = cell.get("entity")
         if not ent or ent.get("team") == me:
             continue
-        if ent.get("type") not in _TURRET_TYPES:
+        etype = ent.get("type")
+        if etype not in _TURRET_TYPES:
             continue
         if memory > 0:
             age = hm.global_turn - cell.get("last_seen_turn", -(10**9))
             if age > memory:
                 continue
-        out.append((ent["type"], Position(x, y)))
-    return out
-
-
-def threateningTurret(bot, ct: Controller) -> Position | None:
-    """Nearest enemy turret parked within range of home, worst type first."""
-    from main import TURRET_THREAT_CHEBYSHEV
-
-    core = bot.corePos
-    if core is None or not TURRET_THREAT_CHEBYSHEV:
-        return None
-    best: Position | None = None
-    best_key = None
-    for etype, epos in _knownEnemyTurrets(bot, ct):
+        epos = Position(x, y)
         d = _chebyshevToCore(epos, core)
         if d > TURRET_THREAT_CHEBYSHEV:
             continue
-        key = (_TURRET_PRIORITY.get(etype, 3), d, epos.x, epos.y)
+        key = (_TURRET_PRIORITY.get(etype, 3), d, x, y)
         if best_key is None or key < best_key:
             best_key = key
             best = epos
     return best
 
 
-def refreshSortie(bot, ct: Controller) -> Position | None:
-    """Maintain the sticky sortie target. State only — costs no turn.
+def defSentinel(bot, ct: Controller) -> bool:
+    """Answer an out-of-leash turret with our own sentinel, from inside the leash.
 
-    Dropped when the turret is confirmed gone, drifts out of threat range, an
-    ally gunner already covers it, or we could not afford the counter-gun
-    anyway — in each case the widened leash collapses and the guardian walks
-    home on its own.
+    Sits below `defGun` — anything close enough for a gunner is cheaper to
+    answer that way — but above `defendHome`, whose no-enemy branch heals the
+    core. Healing loses that trade: a sentinel hits for 18 and core heal is
+    4 HP/turn, so killing it is the defence.
     """
-    from main import TURRET_THREAT_CHEBYSHEV
+    from main import DEF_SENTINEL
 
-    if not sortieEnabled() or bot.corePos is None:
-        bot.sortieTarget = None
-        return None
-    if not _canAffordGunPlace(ct):
-        bot.sortieTarget = None  # nothing to answer with; don't walk out to die
-        return None
-
-    target = getattr(bot, "sortieTarget", None)
-    if target is not None:
-        if _chebyshevToCore(target, bot.corePos) > TURRET_THREAT_CHEBYSHEV:
-            target = None
-        elif ct.is_in_vision(target) and not _enemyTurretOnTile(ct, target):
-            target = None  # dead or never there
+    if not DEF_SENTINEL or bot.corePos is None:
+        return False
+    if bot.inRelay or getattr(bot, "recheckingOre", False):
+        return False
+    if not _nearCore(bot, ct):
+        return False
+    target = threateningTurret(bot, ct)
     if target is None:
-        target = threateningTurret(bot, ct)
-    if target is not None and allyGunCovering(ct, target):
-        target = None  # someone already has the shot — hold the line at home
-    bot.sortieTarget = target
-    return target
-
-
-def interceptTurret(bot, ct: Controller) -> bool:
-    """Answer a turret parked outside the leash with a counter-gunner.
-
-    `defGun` cannot: it only fires while the guardian itself is within the
-    leash, and a gunner pad must be inside sqrt(13) ≈ 3.6 of the target, which
-    for a sentinel at 5–6 is outside it. Left to `placeGun`'s default pad order
-    the guardian is dragged onto the target and the leash step marches it back
-    the next turn — it ping-pongs and the sentinel is never answered.
-    """
-    from main import GUARDIAN_SORTIE_CHEBYSHEV
-
-    target = getattr(bot, "sortieTarget", None)
-    if target is None or bot.corePos is None:
         return False
-
-    from guns import placeGun
-
-    if placeGun(
-        bot,
-        ct,
-        target,
-        anchor_core=bot.corePos,
-        max_cheb=GUARDIAN_SORTIE_CHEBYSHEV,
-    ):
-        return True
-
-    # No usable pad yet — normally because the pad tiles around a turret we only
-    # know from the ledger are not in anyone's vision. Close in until they are.
-    if _chebyshevToCore(ct.get_position(), bot.corePos) >= GUARDIAN_SORTIE_CHEBYSHEV:
-        return False
-
-    from logistics import moveToward
-
-    return moveToward(bot, ct, target)
+    if allySentinelCovering(ct, target) or allyGunCovering(ct, target):
+        return False  # already answered — don't stack turrets on one threat
+    return placeDefSentinel(
+        bot, ct, target, bot.corePos, DEFEND_HOME_CHEBYSHEV
+    )
 
 
 def clearBarriers(bot, ct: Controller) -> bool:
