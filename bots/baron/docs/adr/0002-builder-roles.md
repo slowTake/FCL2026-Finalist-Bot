@@ -16,7 +16,7 @@ Builder role **names** and task lists (top of `builder.py`):
 |------|--------|---------|
 | **guardian** | `builder.runGuardian` | Home defence (`defence` / `logistics`): leash → react → `defGun` → `defendHome` → `healAlly` → `clearBarriers` → `patrolHome` |
 | **default** | `builder.runDefault` | Economy, relay, home (`defence` / `logistics`) |
-| **harasser** | `builder.runHarasser` | Helpers in `offense.py`: `offGun` → `seekHarvester` → `seekCore` |
+| **harasser** | `builder.runHarasser` | Helpers in `offense.py`: `snipeHarvester` → `offGun` → `avoidFire` → `seekHarvester` → `seekCore` |
 
 **Assignment** (`hivemind.my_index > 0`, `idx % 5`):
 

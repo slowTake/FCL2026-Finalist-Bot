@@ -51,10 +51,12 @@
 #    idx % 5 in (2, 4) (builders 2,4,7,9,…)
 #    OR wave attack: WAVE_ATTACK_TURN / WAVE_ATTACK_TI in main.py (>0 = set)
 #    Unaffected by SLOT_THREAT recall. Guardians never enter this path.
-# 1. offGun — placeGun/placeSentinel: core → gunner → sentinel → harvester → launcher;
+# 1. snipeHarvester — visible uncovered enemy harvester → placeGun
+# 2. offGun — placeGun/placeSentinel: core → gunner → sentinel → harvester → launcher;
 #        ≤1 ally gunner covering each enemy harvester
-# 2. seekHarvester — local_map enemy harvesters / scout ore nodes (vision updates map)
-# 3. seekCore — moveToward enemy core
+# 3. avoidFire — under enemy gunner LoS → step to safe tile toward goal
+# 4. seekHarvester — local_map enemy harvesters / scout ore nodes (vision updates map)
+# 5. seekCore — moveToward enemy core; if stuck, orbit mid-side / ring waypoints
 
 """Builder role orchestrators — dispatch into logistics / offence helpers."""
 
@@ -77,7 +79,7 @@ from logistics import (
     relayEverComplete,
 )
 from defence import clearBarriers, defGun, patrolHome
-from offense import offGun, seekCore, seekHarvester
+from offense import avoidFire, offGun, seekCore, seekHarvester, snipeHarvester
 
 
 def _resolveCores(bot, ct: Controller) -> None:
@@ -245,10 +247,14 @@ def runGuardian(bot, ct: Controller) -> None:
 
 
 def runHarasser(bot, ct: Controller) -> None:
-    """Harasser: offGun → seekHarvester → seekCore."""
+    """Harasser: snipeHarvester → offGun → avoidFire → seekHarvester → seekCore (orbit)."""
     _resolveCores(bot, ct)
     bot.nearCoreEconomy = False
+    if snipeHarvester(bot, ct):
+        return
     if offGun(bot, ct):
+        return
+    if avoidFire(bot, ct):
         return
     if seekHarvester(bot, ct):
         return

@@ -7,7 +7,7 @@ Multi-module bot on **HiveMind v2**. Per five builders: **2 guardians** / **2 ha
 - `main.py` — policy caps and `Player` dispatch (`BUILDER_HOME_TURNS`, `ORE_STAGGER`, …)
 - `builder.py` — role task lists + orchestrators (`runThreatHome`, `runGuardian`, `runDefault`, `runBuilderRoles`)
 - `defence.py` — home defence (`defGun`, `clearBarriers`, `patrolHome`)
-- `offense.py` — harasser helpers (`offGun`, `seekHarvester`, `seekCore`; `avoidFire` unused)
+- `offense.py` — harasser helpers (`snipeHarvester`, `offGun`, `avoidFire`, `seekHarvester`, `seekCore`)
 - `logistics.py` — default helpers (`buildHarvester`, `relayToCore`, …)
 - `pathing.py` — A*, `walkPassable`, `relayPassable`, `findPathAroundObstruction`
 - `respawn.py` — core spawn (uses HiveMind slot 4 registry)

@@ -50,6 +50,7 @@ AMMO_BASE = 12
 AMMO_PER_GUNNER = 3
 AMMO_PER_SENTINEL = 10
 AMMO_CONVERT_CHUNK = 10
+AMMO_CONVERT_MIN_TI = 30  # need bank ≥ this to convert; ≤0 disables
 AMMO_MIN_POOL = 20
 DEFAULT_AMMO_START_TURN = 1
 RAIDER_AMMO_START_TURN = 30
@@ -98,6 +99,7 @@ class Player:
         self.harassTarget: tuple[int, int] | None = None
         self.scoutedOres: set[tuple[int, int]] = set()
         self.patrolIdx = 0
+        self.harassOrbitIdx = 0
 
     def run(self, ct: Controller) -> None:
         try:

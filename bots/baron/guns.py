@@ -96,11 +96,16 @@ def topUpAmmo(
     from main import (
         AMMO_BASE,
         AMMO_CONVERT_CHUNK,
+        AMMO_CONVERT_MIN_TI,
         AMMO_MIN_POOL,
         AMMO_PER_GUNNER,
         AMMO_PER_SENTINEL,
         MAX_AMMO_POOL,
     )
+
+    if AMMO_CONVERT_MIN_TI is not None and AMMO_CONVERT_MIN_TI > 0:
+        if ct.get_global_resources() < AMMO_CONVERT_MIN_TI:
+            return
 
     gunners = 0
     sentinels = 0
@@ -547,7 +552,13 @@ def placeSentinel(bot, ct: Controller, target: Position) -> bool:
     if not pads:
         return False
     pos = ct.get_position()
-    pads.sort(key=lambda sf: manhattan(pos, sf[0]))
+    footprint = _coreFootprint(target)
+    pads.sort(
+        key=lambda sf: (
+            min(sf[0].distance_squared(t) for t in footprint),
+            manhattan(pos, sf[0]),
+        )
+    )
     if ct.get_action_cooldown() == 0:
         for site, facing in pads:
             if abs(pos.x - site.x) + abs(pos.y - site.y) != 1:

@@ -15,6 +15,107 @@ from logistics import moveToward
 from pathing import inBounds, manhattan, walkPassable
 
 _AVOID_RADIUS = 4
+_ORBIT_OFFSET = 3
+
+
+def _coreFootprint(core_pos: Position) -> list[Position]:
+    return [
+        core_pos,
+        Position(core_pos.x + 1, core_pos.y),
+        Position(core_pos.x, core_pos.y + 1),
+        Position(core_pos.x + 1, core_pos.y + 1),
+    ]
+
+
+def _chebyshevToFootprint(pos: Position, core_pos: Position) -> int:
+    return min(
+        max(abs(pos.x - t.x), abs(pos.y - t.y)) for t in _coreFootprint(core_pos)
+    )
+
+
+def _orbitMidSide(bot, ct: Controller, core: Position) -> list[Position]:
+    """Four mid-side tiles around enemy 2x2 at ORBIT_OFFSET."""
+    o = _ORBIT_OFFSET
+    raw = [
+        Position(core.x, core.y - o),  # N
+        Position(core.x + 1 + o, core.y),  # E
+        Position(core.x, core.y + 1 + o),  # S
+        Position(core.x - o, core.y),  # W
+    ]
+    local_map = bot.hivemind.local_map
+    out: list[Position] = []
+    for tile in raw:
+        if not inBounds(ct, tile):
+            continue
+        if not walkPassable(ct, tile, local_map=local_map):
+            continue
+        out.append(tile)
+    return out
+
+
+def _orbitRing(bot, ct: Controller, core: Position) -> list[Position]:
+    """Walkable tiles at Chebyshev ORBIT_OFFSET from nearest footprint tile."""
+    local_map = bot.hivemind.local_map
+    o = _ORBIT_OFFSET
+    # Bounding box around footprint expanded by o
+    xs = [t.x for t in _coreFootprint(core)]
+    ys = [t.y for t in _coreFootprint(core)]
+    scored: list[Position] = []
+    for y in range(min(ys) - o, max(ys) + o + 1):
+        for x in range(min(xs) - o, max(xs) + o + 1):
+            tile = Position(x, y)
+            if _chebyshevToFootprint(tile, core) != o:
+                continue
+            if not inBounds(ct, tile):
+                continue
+            if not walkPassable(ct, tile, local_map=local_map):
+                continue
+            scored.append(tile)
+    scored.sort(key=lambda p: (p.y, p.x))
+    return scored
+
+
+def _orbitJitter(bot, ct: Controller) -> bool:
+    """Step to any walkable cardinal neighbor."""
+    if ct.get_move_cooldown() != 0:
+        return False
+    pos = ct.get_position()
+    local_map = bot.hivemind.local_map
+    for d in (Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST):
+        cand = pos.add(d)
+        if not inBounds(ct, cand):
+            continue
+        if ct.is_in_vision(cand) and ct.get_tile_builder_bot_id(cand) is not None:
+            continue
+        if not walkPassable(ct, cand, local_map=local_map):
+            continue
+        if ct.can_move(d):
+            ct.move(d)
+            return True
+    return False
+
+
+def _orbitEnemyCore(bot, ct: Controller, core: Position) -> bool:
+    """Cycle mid-side / ring waypoints; jitter if none."""
+    waypoints = _orbitMidSide(bot, ct, core)
+    if len(waypoints) < 2:
+        ring = _orbitRing(bot, ct, core)
+        if ring:
+            waypoints = ring
+    if not waypoints:
+        return _orbitJitter(bot, ct)
+
+    idx = getattr(bot, "harassOrbitIdx", 0) % len(waypoints)
+    target = waypoints[idx]
+    pos = ct.get_position()
+    if pos.x == target.x and pos.y == target.y:
+        bot.harassOrbitIdx = (idx + 1) % len(waypoints)
+        target = waypoints[bot.harassOrbitIdx]
+    elif getattr(bot, "stuck", 0) >= 3:
+        bot.harassOrbitIdx = (idx + 1) % len(waypoints)
+        target = waypoints[bot.harassOrbitIdx]
+
+    return moveToward(bot, ct, target)
 
 
 def _enemyGunners(ct: Controller) -> list[tuple[Position, Direction]]:
@@ -46,8 +147,16 @@ def _tileUnderGunnerFire(
     return False
 
 
+def _avoidGoal(bot) -> Position | None:
+    """Prefer sticky harass target, else enemy core."""
+    sticky = getattr(bot, "harassTarget", None)
+    if sticky is not None:
+        return Position(sticky[0], sticky[1])
+    return getattr(bot, "enemyCorePos", None)
+
+
 def avoidFire(bot, ct: Controller) -> bool:
-    """If under enemy gunner LoS, step to a nearby tile outside that LoS."""
+    """If under enemy gunner LoS, step to a safe tile that still advances toward goal."""
     pos = ct.get_position()
     gunners = _enemyGunners(ct)
     if not gunners:
@@ -55,9 +164,11 @@ def avoidFire(bot, ct: Controller) -> bool:
     if not _tileUnderGunnerFire(ct, pos, gunners):
         return False
 
+    goal = _avoidGoal(bot)
+    goal_d = manhattan(pos, goal) if goal is not None else None
     local_map = bot.hivemind.local_map
-    best: Position | None = None
-    best_d = 10**9
+
+    safe: list[tuple[Position, int, int]] = []  # cand, dist_to_goal, step
     for dy in range(-_AVOID_RADIUS, _AVOID_RADIUS + 1):
         for dx in range(-_AVOID_RADIUS, _AVOID_RADIUS + 1):
             if dx == 0 and dy == 0:
@@ -71,13 +182,24 @@ def avoidFire(bot, ct: Controller) -> bool:
                 continue
             if _tileUnderGunnerFire(ct, cand, gunners):
                 continue
-            d = abs(dx) + abs(dy)
-            if d < best_d:
-                best_d = d
-                best = cand
-    if best is None:
+            step = abs(dx) + abs(dy)
+            if goal is not None:
+                safe.append((cand, manhattan(cand, goal), step))
+            else:
+                safe.append((cand, step, step))
+
+    if not safe:
         return False
-    return moveToward(bot, ct, best)
+
+    if goal is not None and goal_d is not None:
+        progress = [s for s in safe if s[1] < goal_d]
+        pool = progress if progress else safe
+        pool.sort(key=lambda s: (s[1], s[2]))
+    else:
+        # No goal — nearest safe step (legacy)
+        pool = sorted(safe, key=lambda s: s[2])
+
+    return moveToward(bot, ct, pool[0][0])
 
 
 def _nearestEnemyOfType(ct: Controller, etype: EntityType) -> Position | None:
@@ -96,6 +218,16 @@ def _nearestEnemyOfType(ct: Controller, etype: EntityType) -> Position | None:
             best_d = d
             best = epos
     return best
+
+
+def snipeHarvester(bot, ct: Controller) -> bool:
+    """Opportunistic: place gun on nearest visible enemy harvester not ally-covered."""
+    target = _nearestEnemyOfType(ct, EntityType.HARVESTER)
+    if target is None:
+        return False
+    if allyGunCovering(ct, target):
+        return False
+    return placeGun(bot, ct, target)
 
 
 def offGun(bot, ct: Controller) -> bool:
@@ -220,11 +352,13 @@ def seekHarvester(bot, ct: Controller) -> bool:
 
 
 def seekCore(bot, ct: Controller) -> bool:
-    """Push toward known enemy core."""
+    """Approach enemy core; if blocked, orbit mid-side / ring waypoints."""
     core = bot.enemyCorePos
     if core is None:
         return False
-    return moveToward(bot, ct, core)
+    if moveToward(bot, ct, core):
+        return True
+    return _orbitEnemyCore(bot, ct, core)
 
 
 def run_raider(bot, ct: Controller) -> None:
