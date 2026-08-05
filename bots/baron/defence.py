@@ -75,24 +75,29 @@ def defGun(bot, ct: Controller) -> bool:
 
 
 def clearBarriers(bot, ct: Controller) -> bool:
-    """Attack nearest enemy barrier in vision (prefer near-core)."""
+    """Attack nearest enemy barrier inside the guardian leash.
+
+    Barriers beyond the leash are ignored on purpose: walking out to one puts the
+    guardian outside Chebyshev 4, so `runGuardian`'s leash step marches it home
+    next turn and it ping-pongs forever without ever patrolling. Distant barriers
+    are the harassers' problem.
+    """
     me = ct.get_team()
     pos = ct.get_position()
+    core = bot.corePos
     best: Position | None = None
-    best_key: tuple[int, int] | None = None
+    best_d = 10**9
     for eid in ct.get_nearby_entities():
         if ct.get_team(eid) == me:
             continue
         if ct.get_entity_type(eid) != EntityType.BARRIER:
             continue
         epos = ct.get_position(eid)
-        near = 0
-        if bot.corePos is not None:
-            near = 0 if _chebyshevToCore(epos, bot.corePos) <= DEFEND_HOME_CHEBYSHEV else 1
+        if core is not None and _chebyshevToCore(epos, core) > DEFEND_HOME_CHEBYSHEV:
+            continue
         dist = abs(pos.x - epos.x) + abs(pos.y - epos.y)
-        key = (near, dist)
-        if best_key is None or key < best_key:
-            best_key = key
+        if dist < best_d:
+            best_d = dist
             best = epos
     if best is None:
         return False

@@ -8,7 +8,7 @@ For **where code lives**, see `AGENT.md` Key. For **behavior phases**, see task 
 
 ## Guardian
 
-Home defence role (`builder.runGuardian`, helpers in `defence.py`): leash (Chebyshev 4) → `_reactEnemyTurret` → `defGun` → `defendHome` → `healAlly` → `clearBarriers` → `patrolHome`. No economy. Assignment: `idx % 5 in (0, 1)`. Ignores wave. Home defence is entirely the guardians' job — there is no core-HP recall pulling other roles home.
+Home defence role (`builder.runGuardian`, helpers in `defence.py`): leash (Chebyshev 4) → `_reactEnemyTurret` (`skipEconomy=False`) → `defGun` → `defendHome` → `healAlly` → `clearBarriers` → `patrolHome`. No economy. `_reactEnemyTurret`'s terminal "consume the turn anyway" exists only to stop `maintainHarvester` re-entering a relay, so guardians opt out (`skipEconomy=False`) — otherwise a turret they cannot act on (bank under `GUN_PLACE_MIN_TI`, target outside `_nearCore`, nothing adjacent, nothing damaged) freezes them out of `clearBarriers` / `patrolHome` for as long as it stays visible. Assignment: `idx % 5 in (0, 1)`. Ignores wave. Home defence is entirely the guardians' job — there is no core-HP recall pulling other roles home.
 
 ## Default
 
@@ -48,7 +48,7 @@ Near-core only (Chebyshev 4 of footprint). Skipped while `inRelay` or `recheckin
 
 ## ClearBarriers
 
-Guardian helper: nearest enemy barrier in vision (prefer near-core) → adjacent fire, else `moveToward`.
+Guardian helper: nearest enemy barrier in vision **inside the leash** (Chebyshev 4 of the core footprint) → adjacent fire, else `moveToward`. Barriers beyond the leash are deliberately ignored: walking out to one puts the guardian outside the leash, so `runGuardian`'s leash step marches it home next turn and it ping-pongs forever without patrolling. Distant barriers are the harassers' job.
 
 ## PatrolHome
 

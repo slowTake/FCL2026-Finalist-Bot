@@ -7,11 +7,12 @@
 #    idx % 5 in (1, 0) (builders 1,5,6,10,11,…)
 #    Ignores wave. Home defence is entirely the guardians' job — no core-HP recall.
 # 1. leash — outside Chebyshev 4 of core → moveToward core
-# 2. reactEnemyTurret — contest / defGun / defendHome / healAlly
+# 2. reactEnemyTurret — contest / defGun / defendHome / healAlly (skipEconomy=False:
+#        an unactionable turret must not block patrol — guardians have no economy)
 # 3. defGun — near core; gunners only
 # 4. defendHome — attack enemy in vision, else heal core if HP < 500
 # 5. healAlly — core → gunner/sentinel → harvester
-# 6. clearBarriers — fire / move to nearest enemy barrier
+# 6. clearBarriers — fire / move to nearest enemy barrier inside the leash only
 # 7. patrolHome — cycle mid-side waypoints around core
 #
 # ## default — priority order (orchestrator: runDefault below)
@@ -146,8 +147,15 @@ def waveAttackActive(ct: Controller) -> bool:
     return False
 
 
-def _reactEnemyTurret(bot, ct: Controller) -> bool:
-    """Contest/defend when an enemy turret is in vision — never breaks off a relay."""
+def _reactEnemyTurret(bot, ct: Controller, *, skipEconomy: bool = True) -> bool:
+    """Contest/defend when an enemy turret is in vision — never breaks off a relay.
+
+    `skipEconomy`: when nothing could be done, still consume the turn so
+    `maintainHarvester` cannot re-enter a relay while the turret stays visible.
+    That guard only means anything for default builders. Guardians have no
+    economy and pass False, so an unactionable turret leaves them free to fall
+    through to `clearBarriers` / `patrolHome` instead of freezing in place.
+    """
     if not enemyTurretInVision(ct):
         return False
     # Committed to a belt: finish it. relayToCore drops the relay itself if the
@@ -162,8 +170,7 @@ def _reactEnemyTurret(bot, ct: Controller) -> bool:
         return True
     if healAlly(bot, ct):
         return True
-    # Skip economy so maintain cannot re-enter relay while turret stays visible
-    return True
+    return skipEconomy
 
 
 def _dodgeWhileRelaying(bot, ct: Controller) -> bool:
@@ -230,7 +237,8 @@ def runGuardian(bot, ct: Controller) -> None:
     if not _nearCore(bot, ct):
         moveToward(bot, ct, bot.corePos)
         return
-    if _reactEnemyTurret(bot, ct):
+    # skipEconomy=False: a turret we can't act on must not block patrol
+    if _reactEnemyTurret(bot, ct, skipEconomy=False):
         return
     if defGun(bot, ct):
         return
