@@ -22,6 +22,8 @@
 #        while inRelay: a committed belt is always finished.
 #    0b. dodgeWhileRelaying — inRelay and standing in gunner LoS → avoidFire toward
 #        ally core. Relays are dropped per-tile in relayToCore, never wholesale.
+#    0c. breakOreDeadlock — motionless (bot.stuck) ≥ ORE_DEADLOCK_TURNS outside a
+#        relay → blacklist the ore claim and re-pick. State-only, no turn cost.
 #    Early phase (age < BUILDER_HOME_TURNS after birth_round): defend-first +
 #    nearCoreEconomy (Chebyshev 4 ore). ≤0 disables. Harassers/guardians never enter.
 #    Early (after react):
@@ -71,6 +73,7 @@ from fcode import Controller, Position
 from hivemind import CoreState, unpack_cores
 from logistics import (
     _nearCore,
+    breakOreDeadlock,
     buildHarvester,
     contestTurret,
     defendHome,
@@ -177,6 +180,7 @@ def _runDefaultHome(bot, ct: Controller) -> None:
         return
     if _dodgeWhileRelaying(bot, ct):
         return
+    breakOreDeadlock(bot, ct)  # state-only; economy below re-picks this turn
 
     if defGun(bot, ct):
         return
@@ -203,6 +207,7 @@ def runDefault(bot, ct: Controller) -> None:
         return
     if _dodgeWhileRelaying(bot, ct):
         return
+    breakOreDeadlock(bot, ct)  # state-only; economy below re-picks this turn
     if buildHarvester(bot, ct):
         return
     if maintainHarvester(bot, ct):

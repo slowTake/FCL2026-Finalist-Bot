@@ -410,6 +410,12 @@ def pickEmptyOre(bot, ct: Controller) -> Position | None:
     if not eligible:
         return None
 
+    # Honour the deadlock/recheck blacklist, but fall back if it empties the pool
+    skipped = getattr(bot, "skippedOres", set())
+    unskipped = [o for o in eligible if (o.x, o.y) not in skipped]
+    if unskipped:
+        eligible = unskipped
+
     # On-tile claim only — adjacent would thrash as builders approach neighboring pads
     free = [o for o in eligible if not allyBuilderOnOre(ct, o)]
     pool = free if free else eligible
@@ -948,7 +954,10 @@ def checkOre(bot, ct: Controller, tile: Position) -> bool:
         bot.relayOrigin = tile
         bot.inRelay = True
         relayToCore(bot, ct)
-        return True
+        # relayToCore clears inRelay when it aborts or completes, in both cases
+        # without consuming an action. Report that honestly so maintainHarvester
+        # falls through to recheckOreNodes instead of burning the turn.
+        return bot.inRelay
 
     if etype in _ORE_BLOCK_CLEAR:
         if team == mine:
@@ -1194,6 +1203,38 @@ def _pickRecheckOre(bot, ct: Controller) -> Position | None:
     if blocked_best is not None:
         return blocked_best
     return harv_best
+
+
+def breakOreDeadlock(bot, ct: Controller) -> bool:
+    """Drop the ore claim when a builder has sat motionless too long.
+
+    `bot.stuck` counts turns with no position change (maintained in main). Only
+    harasser orbit and guardian patrol read it; economy builders never did, so a
+    cluster stuck on one node could sit there for the rest of the game —
+    `_clearStickyIfAllyClaimed` exempts anyone already adjacent, so nobody yields.
+
+    State-only: clears the claim so the same turn's economy re-picks. Does not
+    consume the turn. Relays are left alone — `relayStuck` already covers those.
+    """
+    from main import ORE_DEADLOCK_TURNS
+
+    if ORE_DEADLOCK_TURNS is None or ORE_DEADLOCK_TURNS <= 0:
+        return False
+    if bot.inRelay:
+        return False
+    if getattr(bot, "stuck", 0) < ORE_DEADLOCK_TURNS:
+        return False
+
+    if bot.oreSite is not None:
+        if not hasattr(bot, "skippedOres"):
+            bot.skippedOres = set()
+        bot.skippedOres.add((bot.oreSite.x, bot.oreSite.y))
+    bot.oreSite = None
+    bot.cachedPath = None
+    bot.cachedPathTarget = None
+    clearRelay(bot)
+    bot.stuck = 0  # re-arm; don't fire again until it stalls afresh
+    return True
 
 
 def recheckOreNodes(bot, ct: Controller) -> bool:

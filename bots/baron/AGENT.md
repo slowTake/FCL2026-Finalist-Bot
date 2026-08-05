@@ -17,7 +17,7 @@ Quick index: where to edit and main entrypoints. Update when adding public funct
 | `hivemind.py` → `hivemind_v2` | Map fingerprint, delta ledger | `HiveMind.tick`, `unpack_cores`, `spawn_builder` |
 | `vision_v2.py` | Ledger pack/unpack (required by v2) | `pack_ledger_slot` |
 
-**Policy knobs** (builders, ammo, wave, home-guard, ore stagger, Ti tiers) → top block in `main.py` (`SPAWN_INTERVAL_BY_TI`, `WAVE_ATTACK_*`, `BUILDER_HOME_TURNS`, `ORE_STAGGER`, `GUN_PLACE_MIN_TI`, `AMMO_CONVERT_MIN_TI`).
+**Policy knobs** (builders, ammo, wave, home-guard, ore stagger, ore deadlock, Ti tiers) → top block in `main.py` (`SPAWN_INTERVAL_BY_TI`, `WAVE_ATTACK_*`, `BUILDER_HOME_TURNS`, `ORE_STAGGER`, `ORE_DEADLOCK_TURNS`, `GUN_PLACE_MIN_TI`, `AMMO_CONVERT_MIN_TI`).
 
 Role **task lists** → top comments in `builder.py`.
 
@@ -56,7 +56,7 @@ Example — `runHarasser` → `snipeHarvester` → `offGun` → `avoidFire` → 
 
 1. **Read first**: repo [`AGENT.md`](../../AGENT.md), this file, `CONTEXT.md`, `builder.py` task lists, `README.md`.
 2. **Guardian**: `idx % 5 in (0, 1)` (builders 1,5,6,10,…) → `builder.runGuardian`; helpers in `defence.py`. Leashed home defence; ignores wave. Guardians are the *only* home defence — no core-HP recall pulls other roles back.
-3. **Default role tasks**: orchestrator `runDefault` in `builder.py` (`idx % 5 == 3`); helpers in `logistics.py` / `defence.py` / `guns.py`. Empty ore via `pickEmptyOre` (`ORE_STAGGER` off = convenience; on = index slots). Enemy turret in vision → contest before economy, **unless `inRelay`**: a committed belt is always finished, and the builder dodges (`avoidFire` toward ally core) rather than fighting. For `BUILDER_HOME_TURNS` after `birth_round`, default uses defend-first + near-core economy (`≤0` disables). Harassers and guardians never enter this phase.
+3. **Default role tasks**: orchestrator `runDefault` in `builder.py` (`idx % 5 == 3`); helpers in `logistics.py` / `defence.py` / `guns.py`. Empty ore via `pickEmptyOre` (`ORE_STAGGER` off = convenience; on = index slots; honours `skippedOres`). A default motionless for `ORE_DEADLOCK_TURNS` outside a relay drops and blacklists its ore claim (`breakOreDeadlock`) — the anti-pile-up guard. Enemy turret in vision → contest before economy, **unless `inRelay`**: a committed belt is always finished, and the builder dodges (`avoidFire` toward ally core) rather than fighting. For `BUILDER_HOME_TURNS` after `birth_round`, default uses defend-first + near-core economy (`≤0` disables). Harassers and guardians never enter this phase.
 4. **Harasser**: `idx % 5 in (2, 4)` (builders 2,4,7,9,…) → `builder.runHarasser`; helpers in `offense.py`. Wave: set `WAVE_ATTACK_TURN` / `WAVE_ATTACK_TI` (>0) in `main.py` to switch **non-guardian** builders to harasser once the gate hits. `seekCore` approaches then orbits the enemy core.
 5. **Relay / pathing**: geometry in `pathing.py`; belt facing and clear/place in `logistics.py` helpers. `relayToCore` aborts only when the next belt tile is under a visible gunner (`oreThreatenedByGunner`) — never merely because a turret is in vision.
 6. **Caps**: only `main.py` policy block.

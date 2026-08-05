@@ -37,6 +37,12 @@ BUILDER_HOME_TURNS = 0
 # False = nearest convenient (core then self). True = index-stagger slots.
 ORE_STAGGER = False
 
+# --- Ore deadlock breaker (≤0 disables) ---
+# Turns a default builder may sit motionless outside a relay before it drops its
+# ore claim, blacklists the node and re-picks. Guards against builders piling up
+# on one node and never yielding it.
+ORE_DEADLOCK_TURNS = 8
+
 # --- Gun placement (≤0 disables) ---
 GUN_PLACE_MIN_TI = 100  # need bank ≥ this to place gunner/sentinel
 

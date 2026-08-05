@@ -34,6 +34,10 @@ Core rushes `MAX_BUILDERS_EARLY`, then +1 builder on an effective interval: base
 
 Near-core defensive **gunner** placement only (`defence.defGun` → `guns.placeGun`). Never places sentinels. Skipped while relaying or rechecking ore. Gunner/sentinel pads never on ore.
 
+## BreakOreDeadlock
+
+Anti-livelock for economy defaults (`logistics.breakOreDeadlock`, knob `ORE_DEADLOCK_TURNS` in `main.py`; `≤0` disables). `bot.stuck` counts turns with no position change (maintained in `main.py`) and was previously read only by harasser orbit and guardian patrol. When a default sits motionless for `ORE_DEADLOCK_TURNS` **outside a relay**, it blacklists its `oreSite` into `skippedOres`, clears sticky site / path cache / relay state, and re-arms the counter. State-only — it costs no turn, and the economy steps below it re-pick immediately. Relays are exempt (`relayStuck` already covers those). Needed because `_clearStickyIfAllyClaimed` exempts any builder already on the ore or cardinally adjacent to it (`_selfNearOre`, manhattan ≤ 1), so a cluster that forms on one node never yields it. `pickEmptyOre` also honours `skippedOres` (falling back to the full pool if that would empty it) so a blacklisted node isn't immediately re-picked.
+
 ## RecheckOreNodes
 
 Last-resort helper: clears sticky `oreSite` / path cache and picks a fresh empty ore or harvester so builders keep maintaining/stealing after relays finish.
