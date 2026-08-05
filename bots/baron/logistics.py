@@ -301,12 +301,22 @@ def allyBuilderNearOre(ct: Controller, ore: Position) -> bool:
     return False
 
 
+def allyBuilderOnOre(ct: Controller, ore: Position) -> bool:
+    """True if a visible ally builder (not self) is standing on the ore tile."""
+    if not ct.is_in_vision(ore):
+        return False
+    bid = ct.get_tile_builder_bot_id(ore)
+    if bid is None or bid == ct.get_id():
+        return False
+    return ct.get_team(bid) == ct.get_team()
+
+
 def _defaultOreRank(bot) -> int:
-    """Stable rank among default (odd) builders: 1→0, 3→1, 5→2, …"""
+    """Stable rank among economy defaults (idx % 5 == 3): 3→0, 8→1, 13→2, …"""
     idx = bot.hivemind.my_index
-    if idx <= 0 or idx % 2 == 0:
+    if idx <= 0 or idx % 5 != 3:
         return 0
-    return (idx - 1) // 2
+    return (idx - 3) // 5
 
 
 def _oreStaggerKey(ore: Position, core: Position | None) -> tuple:
@@ -314,6 +324,15 @@ def _oreStaggerKey(ore: Position, core: Position | None) -> tuple:
     if core is not None:
         return (manhattan(ore, core), ore.x, ore.y)
     return (ore.x, ore.y)
+
+
+def _oreConvenienceKey(
+    ore: Position, core: Position | None, self_pos: Position
+) -> tuple:
+    """Near core (defendable), then near builder (reachable), then x/y."""
+    if core is not None:
+        return (manhattan(ore, core), manhattan(ore, self_pos), ore.x, ore.y)
+    return (manhattan(ore, self_pos), ore.x, ore.y)
 
 
 def _clearStickyIfAllyClaimed(bot, ct: Controller) -> None:
@@ -329,9 +348,30 @@ def _clearStickyIfAllyClaimed(bot, ct: Controller) -> None:
         bot.oreSite = None
 
 
+def _stickyEmptyTarget(bot, ct: Controller) -> Position | None:
+    """Keep committed empty oreSite if still valid; else clear and return None."""
+    _clearStickyIfAllyClaimed(bot, ct)
+    site = bot.oreSite
+    if site is None:
+        return None
+    if not _allowOreSite(bot, site):
+        bot.oreSite = None
+        return None
+    if oreThreatenedByGunner(ct, site):
+        bot.oreSite = None
+        return None
+    if ct.is_in_vision(site) and ct.get_tile_building_id(site) is not None:
+        bot.oreSite = None
+        return None
+    return site
+
+
 def pickEmptyOre(bot, ct: Controller) -> Position | None:
-    """Pick empty ore: index-stagger among defaults, skip ally-claimed pads."""
+    """Pick empty ore: convenience or index-stagger; skip ally-on-tile pads."""
+    from main import ORE_STAGGER
+
     core = bot.corePos
+    self_pos = ct.get_position()
 
     seen: set[tuple[int, int]] = set()
     raw: list[Position] = []
@@ -370,10 +410,15 @@ def pickEmptyOre(bot, ct: Controller) -> Position | None:
     if not eligible:
         return None
 
-    eligible.sort(key=lambda o: _oreStaggerKey(o, core))
-    free = [o for o in eligible if not allyBuilderNearOre(ct, o)]
-    # Gap-fill: if every empty pad has an ally on it, still assign something
+    # On-tile claim only — adjacent would thrash as builders approach neighboring pads
+    free = [o for o in eligible if not allyBuilderOnOre(ct, o)]
     pool = free if free else eligible
+
+    if not ORE_STAGGER:
+        pool.sort(key=lambda o: _oreConvenienceKey(o, core, self_pos))
+        return pool[0]
+
+    pool.sort(key=lambda o: _oreStaggerKey(o, core))
     rank = _defaultOreRank(bot)
     return pool[rank % len(pool)]
 
@@ -847,7 +892,10 @@ def buildHarvester(bot, ct: Controller) -> bool:
                 bot.relayBuiltTo = -1
                 return True
 
-    target = pickEmptyOre(bot, ct)
+    # Commit to sticky empty target; only re-stagger when unset/invalid
+    target = _stickyEmptyTarget(bot, ct)
+    if target is None:
+        target = pickEmptyOre(bot, ct)
     if target is None:
         return False
     bot.oreSite = target

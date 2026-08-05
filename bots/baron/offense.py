@@ -139,13 +139,37 @@ def _localEnemyHarvesters(bot, ct: Controller) -> list[Position]:
     return found
 
 
+def _scoutedOres(bot) -> set[tuple[int, int]]:
+    s = getattr(bot, "scoutedOres", None)
+    if s is None:
+        bot.scoutedOres = set()
+        return bot.scoutedOres
+    return s
+
+
+def _markOreScouted(bot, tile: Position) -> None:
+    _scoutedOres(bot).add((tile.x, tile.y))
+
+
+def _enemyHarvesterOnTile(ct: Controller, tile: Position) -> bool:
+    bid = ct.get_tile_building_id(tile)
+    return (
+        bid is not None
+        and ct.get_entity_type(bid) == EntityType.HARVESTER
+        and ct.get_team(bid) != ct.get_team()
+    )
+
+
 def _scoutOreTargets(bot, ct: Controller) -> list[Position]:
     """Ore tiles to inspect: hostile entity on ore, or ore without ally harvester."""
     me = ct.get_team()
     pos = ct.get_position()
+    seen = _scoutedOres(bot)
     scored: list[tuple[int, int, Position]] = []
     for (x, y), cell in bot.hivemind.local_map.items():
         if not cell.get("ore"):
+            continue
+        if (x, y) in seen:
             continue
         ent = cell.get("entity")
         # Skip friendly harvesters we're not clearing
@@ -167,14 +191,11 @@ def seekHarvester(bot, ct: Controller) -> bool:
         sx, sy = sticky
         tile = Position(sx, sy)
         if ct.is_in_vision(tile):
-            # Cleared or no longer hostile harvester → drop sticky
-            bid = ct.get_tile_building_id(tile)
-            still = (
-                bid is not None
-                and ct.get_entity_type(bid) == EntityType.HARVESTER
-                and ct.get_team(bid) != ct.get_team()
-            )
-            if not still:
+            if _enemyHarvesterOnTile(ct, tile):
+                pass  # keep sticky on live enemy harvester
+            else:
+                # Inspected empty / friendly / cleared — don't re-scout this pad
+                _markOreScouted(bot, tile)
                 bot.harassTarget = None
                 sticky = None
         if sticky is not None and moveToward(bot, ct, tile):
@@ -186,6 +207,12 @@ def seekHarvester(bot, ct: Controller) -> bool:
             return True
 
     for ore in _scoutOreTargets(bot, ct):
+        # Already standing on / next to an empty scout ore → mark and skip
+        if ct.is_in_vision(ore) and not _enemyHarvesterOnTile(ct, ore):
+            pos = ct.get_position()
+            if abs(pos.x - ore.x) + abs(pos.y - ore.y) <= 1:
+                _markOreScouted(bot, ore)
+                continue
         bot.harassTarget = (ore.x, ore.y)
         if moveToward(bot, ct, ore):
             return True

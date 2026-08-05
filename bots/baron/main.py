@@ -31,8 +31,12 @@ WAVE_ATTACK_TURN: int | None = -1  # e.g. 300 → all builders harass from that 
 WAVE_ATTACK_TI: int | None = 2000  # e.g. 2000 → all harass once bank ≥ this
 
 # --- Default early defend (age after birth_round; ≤0 disables) ---
-# Only applies inside runDefault — harassers never see this.
-BUILDER_HOME_TURNS = 30
+# Only applies inside runDefault — harassers/guardians never see this.
+BUILDER_HOME_TURNS = 0
+
+# --- Empty-ore pick (defaults) ---
+# False = nearest convenient (core then self). True = index-stagger slots.
+ORE_STAGGER = False
 
 # --- Core threat recall (default builders; sticky between ON and OFF) ---
 THREAT_CORE_HP_ON = 400  # set SLOT_THREAT when HP < this
@@ -92,6 +96,7 @@ class Player:
         self.skippedOres: set[tuple[int, int]] = set()
         self.lastOreRecheckRound = -999
         self.harassTarget: tuple[int, int] | None = None
+        self.scoutedOres: set[tuple[int, int]] = set()
         self.patrolIdx = 0
 
     def run(self, ct: Controller) -> None:

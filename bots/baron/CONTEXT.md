@@ -4,7 +4,7 @@ For **where code lives**, see `AGENT.md` Key. For **behavior phases**, see task 
 
 ## Builder role
 
-**default**, **guardian**, or **harasser**. Assignment from `hivemind.my_index` (`> 0`): `% 4 == 1` → guardian (1, 5, 9, …); `% 2 == 0` → harasser (2, 4, 6, …); else default (3, 7, 11, …). Wave gates switch non-guardians to harasser; guardians stay home.
+**default**, **guardian**, or **harasser**. Assignment from `hivemind.my_index` (`> 0`, `idx % 5`): `1` or `0` → guardian (1, 5, 6, 10, …); `2` or `4` → harasser (2, 4, 7, 9, …); `3` → default (3, 8, 13, …). Per five spawns: 2 guardians / 2 harassers / 1 default. Wave gates switch non-guardians to harasser; guardians stay home.
 
 ## Threat recall
 
@@ -12,7 +12,7 @@ Core latches `SLOT_THREAT` with HP hysteresis (`THREAT_CORE_HP_ON` / `OFF` in `m
 
 ## Guardian
 
-Home defence role (`builder.runGuardian`, helpers in `defence.py`): leash (Chebyshev 4) → `_reactEnemyTurret` → `defGun` → `defendHome` → `healAlly` → `clearBarriers` → `patrolHome`. No economy. Assignment: builders 1, 5, 9, …. Ignores wave. Shares threat recall with default.
+Home defence role (`builder.runGuardian`, helpers in `defence.py`): leash (Chebyshev 4) → `_reactEnemyTurret` → `defGun` → `defendHome` → `healAlly` → `clearBarriers` → `patrolHome`. No economy. Assignment: `idx % 5 in (0, 1)`. Ignores wave. Shares threat recall with default.
 
 ## Default
 
@@ -20,7 +20,7 @@ Economy and home duties orchestrated by `builder.runDefault` (only when threat i
 
 ## Harasser
 
-Offense role (`builder.runHarasser`, helpers in `offense.py`): `offGun` → `seekHarvester` → `seekCore`. No economy. Assignment: every even builder (`my_index % 2 == 0`), or **non-guardian** builders once a wave gate fires (`WAVE_ATTACK_TURN` / `WAVE_ATTACK_TI` in `main.py`; `≤0` or `None` = unset). Unaffected by default’s early defend phase and by `SLOT_THREAT` recall.
+Offense role (`builder.runHarasser`, helpers in `offense.py`): `offGun` → `seekHarvester` → `seekCore`. No economy. Assignment: `idx % 5 in (2, 4)`, or **non-guardian** builders once a wave gate fires (`WAVE_ATTACK_TURN` / `WAVE_ATTACK_TI` in `main.py`; `≤0` or `None` = unset). Unaffected by default’s early defend phase and by `SLOT_THREAT` recall.
 
 ## Wave attack
 
@@ -28,7 +28,7 @@ Tunable in `main.py`. Positive turn → non-guardians harass from that round; po
 
 ## BuildHarvester
 
-Places on empty ore (not in relay). Empty targets are **staggered** by default-builder rank (`my_index` odd → `(index-1)//2`) over ores sorted by distance to core; pads with a visible ally builder adjacent are skipped (gap-fill if all claimed). Also skips a node if a **visible enemy gunner** is aiming at that tile (`oreThreatenedByGunner`). No store-based harvester cap.
+Places on empty ore (not in relay). With `ORE_STAGGER = False` (default), picks the most convenient empty pad `(dist to core, dist to self)`. With `ORE_STAGGER = True`, index-staggers economy defaults (`idx % 5 == 3`) over ores sorted by core distance. Pads with a visible ally builder **on the ore tile** are skipped (gap-fill if all claimed). Sticky `oreSite` is kept until invalid. Also skips a node if a **visible enemy gunner** is aiming at that tile (`oreThreatenedByGunner`). No store-based harvester cap.
 
 ## Spawn
 

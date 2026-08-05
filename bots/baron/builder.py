@@ -3,8 +3,11 @@
 # ## threatHome — SLOT_THREAT set (core HP latch); default + guardian
 #    Harassers skip. Abort relay → move to core → react/defGun/defend/heal.
 #
+# ## Assignment (my_index > 0; idx % 5) — 2 guardians / 2 harassers / 1 default
+#    1 → guardian · 2 → harasser · 3 → default · 4 → harasser · 0 → guardian
+#
 # ## guardian (orchestrator: runGuardian below; helpers in defence.py)
-#    my_index > 0 and my_index % 4 == 1 (builders 1,5,9,…)
+#    idx % 5 in (1, 0) (builders 1,5,6,10,11,…)
 #    Ignores wave. Shares SLOT_THREAT recall with default.
 # 1. leash — outside Chebyshev 4 of core → moveToward core
 # 2. reactEnemyTurret — contest / defGun / defendHome / healAlly
@@ -15,11 +18,12 @@
 # 7. patrolHome — cycle mid-side waypoints around core
 #
 # ## default — priority order (orchestrator: runDefault below)
+#    idx % 5 == 3 (builders 3,8,13,…)
 #    0. reactEnemyTurret — enemy gunner/sentinel/launcher in vision → abortRelay (only
 #        after first completed relay) + placeGun / defGun / defendHome / healAlly;
 #        skip economy this turn. While first relay in progress: ignore (keep belt).
 #    Early phase (age < BUILDER_HOME_TURNS after birth_round): defend-first +
-#    nearCoreEconomy (Chebyshev 4 ore). Harassers/guardians never enter this path.
+#    nearCoreEconomy (Chebyshev 4 ore). ≤0 disables. Harassers/guardians never enter.
 #    Early (after react):
 #      1. defGun — near core; gunners only
 #      2. defendHome — near core; attack / heal core
@@ -44,7 +48,7 @@
 # # idleHome — commented out (soft-idle trap)
 #
 # ## harasser (orchestrator: runHarasser below; helpers in offense.py)
-#    my_index > 0 and my_index % 2 == 0 (builders 2,4,6,…)
+#    idx % 5 in (2, 4) (builders 2,4,7,9,…)
 #    OR wave attack: WAVE_ATTACK_TURN / WAVE_ATTACK_TI in main.py (>0 = set)
 #    Unaffected by SLOT_THREAT recall. Guardians never enter this path.
 # 1. offGun — placeGun/placeSentinel: core → gunner → sentinel → harvester → launcher;
@@ -88,6 +92,21 @@ def _resolveCores(bot, ct: Controller) -> None:
         bot.enemyCorePos = bot.hivemind.enemy_core_pos
 
 
+def isGuardian(idx: int) -> bool:
+    """True for builders 1,5,6,10,… (idx % 5 in {0, 1})."""
+    return idx > 0 and idx % 5 in (0, 1)
+
+
+def isHarasser(idx: int) -> bool:
+    """True for builders 2,4,7,9,… (idx % 5 in {2, 4})."""
+    return idx > 0 and idx % 5 in (2, 4)
+
+
+def isDefaultRole(idx: int) -> bool:
+    """True for builders 3,8,13,… (idx % 5 == 3)."""
+    return idx > 0 and idx % 5 == 3
+
+
 def homeGuardActive(bot, ct: Controller) -> bool:
     """True while default-role age is under BUILDER_HOME_TURNS after birth_round."""
     from main import BUILDER_HOME_TURNS
@@ -127,8 +146,8 @@ def _reactEnemyTurret(bot, ct: Controller) -> bool:
     # Finish the first inbound relay before abandoning belts for combat
     if bot.inRelay and not relayEverComplete(ct):
         return False
-#    if bot.inRelay:
-#        abortRelay(bot)
+    if bot.inRelay:
+        abortRelay(bot)
     if contestTurret(bot, ct):
         return True
     if defGun(bot, ct):
@@ -239,13 +258,13 @@ def runHarasser(bot, ct: Controller) -> None:
 def runBuilderRoles(bot, ct: Controller) -> None:
     """Dispatch: guardian → harasser/wave → threat home → default."""
     idx = bot.hivemind.my_index
-    if idx > 0 and idx % 4 == 1:
+    if isGuardian(idx):
         if threatActive(ct):
             runThreatHome(bot, ct)
         else:
             runGuardian(bot, ct)
         return
-    if waveAttackActive(ct) or (idx > 0 and idx % 2 == 0):
+    if waveAttackActive(ct) or isHarasser(idx):
         runHarasser(bot, ct)
         return
     if threatActive(ct):

@@ -1,10 +1,10 @@
 # baron
 
-Multi-module bot on **HiveMind v2**. Default builders: harvesters + inbound relay. Indices `% 4 == 1` are **guardians** (home defence). Every even-indexed builder (2,4,6,…) is a **harasser**.
+Multi-module bot on **HiveMind v2**. Per five builders: **2 guardians** / **2 harassers** / **1 default** (`idx % 5`). Defaults run harvesters + inbound relay; guardians leash home; harassers pressure.
 
 ## Layout
 
-- `main.py` — policy caps and `Player` dispatch
+- `main.py` — policy caps and `Player` dispatch (`BUILDER_HOME_TURNS`, `ORE_STAGGER`, …)
 - `builder.py` — role task lists + orchestrators (`runThreatHome`, `runGuardian`, `runDefault`, `runBuilderRoles`)
 - `defence.py` — home defence (`defGun`, `clearBarriers`, `patrolHome`)
 - `offense.py` — harasser helpers (`offGun`, `seekHarvester`, `seekCore`; `avoidFire` unused)
