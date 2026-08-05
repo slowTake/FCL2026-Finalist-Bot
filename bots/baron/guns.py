@@ -570,6 +570,110 @@ def placeSentinel(bot, ct: Controller, target: Position) -> bool:
     return moveToward(bot, ct, best_site)
 
 
+def chebyshevToCore(pos: Position, core_pos: Position) -> int:
+    """Chebyshev distance from pos to the nearest core footprint tile."""
+    return min(
+        max(abs(pos.x - t.x), abs(pos.y - t.y)) for t in _coreFootprint(core_pos)
+    )
+
+
+def allySentinelCovering(ct: Controller, tile: Position) -> bool:
+    """True if any ally sentinel in vision can already hit tile."""
+    me = ct.get_team()
+    for eid in ct.get_nearby_entities():
+        if ct.get_team(eid) != me:
+            continue
+        if ct.get_entity_type(eid) != EntityType.SENTINEL:
+            continue
+        spos = ct.get_position(eid)
+        if tile.distance_squared(spos) > SENTINEL_RANGE_SQ:
+            continue
+        try:
+            facing = ct.get_direction(eid)
+        except Exception:
+            continue
+        if _sentinelHitsTile(ct, spos, facing, tile):
+            return True
+    return False
+
+
+def _defSentinelPads(
+    ct: Controller, target: Position, core_pos: Position, max_cheb: int
+) -> list[tuple[Position, Direction]]:
+    """Empty pads within max_cheb of our core with a facing that hits target.
+
+    Single-tile counterpart to `_sentinelPadsNearTarget`, which aims at a 2x2
+    core footprint. Home stays the anchor: pads outside the leash are dropped
+    rather than merely deprioritised, so this can never walk a guardian out.
+    """
+    pads: list[tuple[Position, Direction]] = []
+    w, h = ct.get_map_width(), ct.get_map_height()
+    for dy in range(-6, 7):
+        for dx in range(-6, 7):
+            site = Position(target.x + dx, target.y + dy)
+            if not (0 <= site.x < w and 0 <= site.y < h):
+                continue
+            if site.distance_squared(target) > SENTINEL_RANGE_SQ:
+                continue
+            if chebyshevToCore(site, core_pos) > max_cheb:
+                continue
+            if not ct.is_in_vision(site):
+                continue
+            env = ct.get_tile_env(site)
+            if env == Environment.WALL or env == Environment.ORE_TITANIUM:
+                continue
+            if not ct.is_tile_empty(site):
+                continue
+            facing = None
+            preferred = facing8way(site, target)
+            ordered = (preferred,) + tuple(
+                d for d in _FACE_DIRS if d != preferred
+            )
+            for d in ordered:
+                if d != Direction.CENTRE and _sentinelHitsTile(ct, site, d, target):
+                    facing = d
+                    break
+            if facing is None:
+                continue
+            pads.append((site, facing))
+    return pads
+
+
+def placeDefSentinel(
+    bot, ct: Controller, target: Position, core_pos: Position, max_cheb: int
+) -> bool:
+    """Plant a sentinel inside the leash that can hit target."""
+    if not _canAffordGunPlace(ct):
+        return False
+    pads = _defSentinelPads(ct, target, core_pos, max_cheb)
+    if not pads:
+        return False
+
+    pos = ct.get_position()
+    # Nearest home first, then nearest us — the shot is equal from any of them.
+    pads.sort(
+        key=lambda sf: (
+            chebyshevToCore(sf[0], core_pos),
+            manhattan(pos, sf[0]),
+        )
+    )
+
+    if ct.get_action_cooldown() == 0:
+        for site, facing in pads:
+            if abs(pos.x - site.x) + abs(pos.y - site.y) != 1:
+                continue
+            if ct.can_build_sentinel(site, facing):
+                ct.build_sentinel(site, facing)
+                return True
+
+    best_site = pads[0][0]
+    if abs(pos.x - best_site.x) + abs(pos.y - best_site.y) <= 1:
+        return False
+    from logistics import moveToward
+
+    return moveToward(bot, ct, best_site)
+
+
 def place_sentinel_aggressive(bot, ct: Controller, **kwargs: Any) -> bool:
     target = kwargs.get("target")
     if target is None:

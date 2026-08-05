@@ -33,6 +33,16 @@ WAVE_ATTACK_TI: int | None = 2000  # e.g. 2000 → all harass once bank ≥ this
 # Only applies inside runDefault — harassers/guardians never see this.
 BUILDER_HOME_TURNS = 0
 
+# --- Defensive sentinel (False disables) ---
+# An enemy sentinel reaches sqrt(32) ≈ 5.7 and shells the core from outside the
+# Chebyshev-4 leash, where a gunner (reach sqrt(13) ≈ 3.6) cannot answer it
+# without leaving home. Our own sentinel has the same 5.7, so a pad *inside* the
+# leash covers the gap — the guardian never breaks the leash. Detection reads the
+# HiveMind ledger, not just own vision (builder vision is only sqrt(20) ≈ 4.5).
+DEF_SENTINEL = True
+TURRET_THREAT_CHEBYSHEV = 6  # enemy turret this close to core counts as a threat
+TURRET_MEMORY_TURNS = 20  # how stale a ledger sighting may be and still count
+
 # --- Guardian idle economy (False disables) ---
 # While no enemy unit is in vision, guardians build harvesters on ore inside the
 # leash and finish/repair belt relays back to core instead of only patrolling.

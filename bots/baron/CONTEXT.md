@@ -8,7 +8,7 @@ For **where code lives**, see `AGENT.md` Key. For **behavior phases**, see task 
 
 ## Guardian
 
-Home defence role (`builder.runGuardian`, helpers in `defence.py`): leash (Chebyshev 4) → `_reactEnemyTurret` (`skipEconomy=False`) → `defGun` → `defendHome` → `healAlly` → `clearBarriers` → **idle economy** → `patrolHome`. `_reactEnemyTurret`'s terminal "consume the turn anyway" exists only to stop `maintainHarvester` re-entering a relay, so guardians opt out (`skipEconomy=False`) — otherwise a turret they cannot act on (bank under `GUN_PLACE_MIN_TI`, target outside `_nearCore`, nothing adjacent, nothing damaged) freezes them out of `clearBarriers` / `patrolHome` for as long as it stays visible. Assignment: `idx % 5 in (0, 1)`. Ignores wave. Home defence is entirely the guardians' job — there is no core-HP recall pulling other roles home.
+Home defence role (`builder.runGuardian`, helpers in `defence.py`): leash (Chebyshev 4) → `_reactEnemyTurret` (`skipEconomy=False`, `homeOnly=True`) → `defGun` → `defSentinel` → `defendHome` → `healAlly` → `clearBarriers` → **idle economy** → `patrolHome`. `_reactEnemyTurret`'s terminal "consume the turn anyway" exists only to stop `maintainHarvester` re-entering a relay, so guardians opt out (`skipEconomy=False`) — otherwise a turret they cannot act on (bank under `GUN_PLACE_MIN_TI`, target outside `_nearCore`, nothing adjacent, nothing damaged) freezes them out of `clearBarriers` / `patrolHome` for as long as it stays visible. Assignment: `idx % 5 in (0, 1)`. Ignores wave. Home defence is entirely the guardians' job — there is no core-HP recall pulling other roles home.
 
 ## Default
 
@@ -32,7 +32,17 @@ Core rushes `MAX_BUILDERS_EARLY`, then +1 builder on an effective interval: base
 
 ## DefGun
 
-Near-core defensive **gunner** placement only (`defence.defGun` → `guns.placeGun`). Never places sentinels. Skipped while relaying or rechecking ore. Gunner/sentinel pads never on ore.
+Near-core defensive **gunner** placement only (`defence.defGun` → `guns.placeGun`). Never places sentinels. Skipped while relaying or rechecking ore. Gunner/sentinel pads never on ore. With `homeOnly` (guardians only — defaults pass it unset and are unchanged) targets are restricted to **inside the leash**: a gunner pad must sit within sqrt(13) ≈ 3.6 of its target, so aiming at something further out sends the guardian to a pad the leash step then marches it back from — it ping-pongs and never places. Out-of-leash turrets belong to `defSentinel`.
+
+## DefSentinel
+
+Answer to turrets parked outside the leash (`defence.defSentinel` → `guns.placeDefSentinel`, knobs `DEF_SENTINEL`, `TURRET_THREAT_CHEBYSHEV`, `TURRET_MEMORY_TURNS` in `main.py`). The geometry is the whole problem: an enemy sentinel's attack radius is sqrt(32) ≈ 5.7, so it shells the core from Chebyshev 5–6, outside the guardian leash of 4 and beyond a gunner's 3.6 reach. **Our own sentinel has the same 5.7**, so a pad *inside* the leash covers the gap and the guardian never leaves home — no leash arithmetic, no sticky sortie state, no travel phase.
+
+Detection reads the HiveMind `local_map` rather than `get_nearby_units`, because builder vision is sqrt(20) ≈ 4.5 and a guardian on its patrol ring usually cannot see the thing at all; the core (sqrt(36)) or a passing builder spots it and the ledger carries it (own vision is folded in by `tick`). Sightings older than `TURRET_MEMORY_TURNS` are ignored. Candidates are enemy gunner/sentinel/launcher within `TURRET_THREAT_CHEBYSHEV` of the core footprint, ranked sentinel → launcher → gunner, then by distance to core.
+
+Order matters and is deliberate: **below `defGun`** (anything a gunner can reach is cheaper answered that way, so a gunner or builder pressing the core still comes first) and **above `defendHome`**, whose no-enemy branch heals the core — healing loses that trade at 4 HP/turn against 18 a shot. `placeDefSentinel` drops pads outside the leash rather than merely deprioritising them, so it cannot walk a guardian out; pads are then sorted nearest-home first. Skipped when an ally gunner or sentinel already covers the target, which also keeps the second guardian from stacking turrets on one threat.
+
+*Note:* the threat gate is Chebyshev while sentinel range is Euclidean, so a turret on the diagonal at Chebyshev 6 (Euclidean 8.5) passes the gate without actually being able to hit the core. It may still be shelling outlying belts or harvesters. Tighten to an r²≤32 test against the footprint if that matters.
 
 ## BreakOreDeadlock
 
