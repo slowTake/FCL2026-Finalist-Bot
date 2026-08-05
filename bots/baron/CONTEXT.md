@@ -28,7 +28,7 @@ Tunable in `main.py`. Positive turn → non-guardians harass from that round; po
 
 ## BuildHarvester
 
-Places on empty ore (not in relay). Skips a node if a **visible enemy gunner** is currently aiming at that tile (`oreThreatenedByGunner`). No store-based harvester cap.
+Places on empty ore (not in relay). Empty targets are **staggered** by default-builder rank (`my_index` odd → `(index-1)//2`) over ores sorted by distance to core; pads with a visible ally builder adjacent are skipped (gap-fill if all claimed). Also skips a node if a **visible enemy gunner** is aiming at that tile (`oreThreatenedByGunner`). No store-based harvester cap.
 
 ## Spawn
 

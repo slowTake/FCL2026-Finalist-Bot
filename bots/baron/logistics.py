@@ -275,44 +275,107 @@ def _allowOreSite(bot, ore: Position) -> bool:
     return _chebyshevToCore(ore, bot.corePos) <= DEFEND_HOME_CHEBYSHEV
 
 
-def pickEmptyOre(bot, ct: Controller) -> Position | None:
+def _selfNearOre(ct: Controller, ore: Position) -> bool:
+    """True if this unit is on ore or cardinally adjacent."""
     pos = ct.get_position()
-    core = bot.corePos
-    best: Position | None = None
-    best_key = None
+    return abs(pos.x - ore.x) + abs(pos.y - ore.y) <= 1
 
-    candidates: list[Position] = []
+
+def allyBuilderNearOre(ct: Controller, ore: Position) -> bool:
+    """True if a visible ally builder (not self) is on ore or a cardinal neighbor."""
+    me = ct.get_team()
+    self_id = ct.get_id()
+    tiles = [ore]
+    for d in CARDINALS:
+        tiles.append(ore.add(d))
+    for tile in tiles:
+        if not inBounds(ct, tile):
+            continue
+        if not ct.is_in_vision(tile):
+            continue
+        bid = ct.get_tile_builder_bot_id(tile)
+        if bid is None or bid == self_id:
+            continue
+        if ct.get_team(bid) == me:
+            return True
+    return False
+
+
+def _defaultOreRank(bot) -> int:
+    """Stable rank among default (odd) builders: 1→0, 3→1, 5→2, …"""
+    idx = bot.hivemind.my_index
+    if idx <= 0 or idx % 2 == 0:
+        return 0
+    return (idx - 1) // 2
+
+
+def _oreStaggerKey(ore: Position, core: Position | None) -> tuple:
+    """Team-stable sort: closer to core first, then x/y."""
+    if core is not None:
+        return (manhattan(ore, core), ore.x, ore.y)
+    return (ore.x, ore.y)
+
+
+def _clearStickyIfAllyClaimed(bot, ct: Controller) -> None:
+    """Drop sticky empty ore if another ally already sits on the pad."""
+    site = bot.oreSite
+    if site is None:
+        return
+    if not ct.is_in_vision(site):
+        return
+    if ct.get_tile_building_id(site) is not None:
+        return
+    if allyBuilderNearOre(ct, site) and not _selfNearOre(ct, site):
+        bot.oreSite = None
+
+
+def pickEmptyOre(bot, ct: Controller) -> Position | None:
+    """Pick empty ore: index-stagger among defaults, skip ally-claimed pads."""
+    core = bot.corePos
+
+    seen: set[tuple[int, int]] = set()
+    raw: list[Position] = []
+
+    def add(ore: Position) -> None:
+        key = (ore.x, ore.y)
+        if key in seen:
+            return
+        seen.add(key)
+        raw.append(ore)
+
     for tile in ct.get_nearby_tiles():
         if ct.get_tile_env(tile) != Environment.ORE_TITANIUM:
             continue
         if ct.get_tile_building_id(tile) is not None:
             continue
-        candidates.append(tile)
+        add(tile)
 
     for ore in knownOreTiles(bot):
-        if ore in candidates:
-            continue
         entry = bot.hivemind.local_map.get((ore.x, ore.y), {})
         ent = entry.get("entity")
         if ent and ent.get("type") == EntityType.HARVESTER:
             continue
         if ct.is_in_vision(ore) and ct.get_tile_building_id(ore) is not None:
             continue
-        candidates.append(ore)
+        add(ore)
 
-    for ore in candidates:
+    eligible: list[Position] = []
+    for ore in raw:
         if not _allowOreSite(bot, ore):
             continue
         if oreThreatenedByGunner(ct, ore):
             continue
-        if core is not None:
-            key = (manhattan(ore, core), manhattan(ore, pos))
-        else:
-            key = (manhattan(ore, pos),)
-        if best_key is None or key < best_key:
-            best_key = key
-            best = ore
-    return best
+        eligible.append(ore)
+
+    if not eligible:
+        return None
+
+    eligible.sort(key=lambda o: _oreStaggerKey(o, core))
+    free = [o for o in eligible if not allyBuilderNearOre(ct, o)]
+    # Gap-fill: if every empty pad has an ally on it, still assign something
+    pool = free if free else eligible
+    rank = _defaultOreRank(bot)
+    return pool[rank % len(pool)]
 
 
 def oreThreatenedByGunner(ct: Controller, tile: Position) -> bool:
@@ -389,24 +452,28 @@ def _approachOreBlock(bot, ct: Controller, tile: Position) -> bool:
 
 
 def pickMaintainOre(bot, ct: Controller) -> Position | None:
-    """Prefer sticky site, else nearest empty / clearable-blocked / harvester ore."""
+    """Prefer sticky site, else staggered empty or nearest harvester/block."""
+    _clearStickyIfAllyClaimed(bot, ct)
     if bot.oreSite is not None:
         if _allowOreSite(bot, bot.oreSite):
             return bot.oreSite
         bot.oreSite = None
+
     pos = ct.get_position()
     core = bot.corePos
     best: Position | None = None
     best_key = None
 
+    def score(ore: Position) -> tuple:
+        if core is not None:
+            return (manhattan(ore, core), manhattan(ore, pos))
+        return (manhattan(ore, pos),)
+
     def consider(ore: Position) -> None:
         nonlocal best, best_key
         if not _allowOreSite(bot, ore):
             return
-        if core is not None:
-            key = (manhattan(ore, core), manhattan(ore, pos))
-        else:
-            key = (manhattan(ore, pos),)
+        key = score(ore)
         if best_key is None or key < best_key:
             best_key = key
             best = ore
@@ -415,25 +482,39 @@ def pickMaintainOre(bot, ct: Controller) -> Position | None:
         if ct.is_in_vision(ore):
             bid = ct.get_tile_building_id(ore)
             if bid is None:
-                consider(ore)
-            elif ct.get_entity_type(bid) == EntityType.HARVESTER:
+                continue  # empties via pickEmptyOre
+            if ct.get_entity_type(bid) == EntityType.HARVESTER:
                 consider(ore)
             elif _shouldClearAllyOreBlock(ct, ore):
                 consider(ore)
         else:
-            # Fog: keep considering known ores (may be empty/harvester/block)
-            consider(ore)
+            entry = bot.hivemind.local_map.get((ore.x, ore.y), {})
+            ent = entry.get("entity")
+            if ent and ent.get("type") == EntityType.HARVESTER:
+                consider(ore)
+            elif ent:
+                # Fog: possible ally block / other — keep old consider behavior
+                consider(ore)
 
     for tile in ct.get_nearby_tiles():
         if ct.get_tile_env(tile) != Environment.ORE_TITANIUM:
             continue
         bid = ct.get_tile_building_id(tile)
         if bid is None:
-            consider(tile)
-        elif ct.get_entity_type(bid) == EntityType.HARVESTER:
+            continue
+        if ct.get_entity_type(bid) == EntityType.HARVESTER:
             consider(tile)
         elif _shouldClearAllyOreBlock(ct, tile):
             consider(tile)
+
+    empty = pickEmptyOre(bot, ct)
+    if empty is None:
+        return best
+    if best is None:
+        return empty
+    # Closer work wins; empties are already index-staggered among themselves
+    if score(empty) <= score(best):
+        return empty
     return best
 
 

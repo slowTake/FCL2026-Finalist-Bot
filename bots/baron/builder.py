@@ -127,7 +127,7 @@ def _reactEnemyTurret(bot, ct: Controller) -> bool:
     # Finish the first inbound relay before abandoning belts for combat
     if bot.inRelay and not relayEverComplete(ct):
         return False
-    if bot.inRelay:
+#    if bot.inRelay:
 #        abortRelay(bot)
     if contestTurret(bot, ct):
         return True
