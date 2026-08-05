@@ -33,6 +33,17 @@ WAVE_ATTACK_TI: int | None = 2000  # e.g. 2000 → all harass once bank ≥ this
 # Only applies inside runDefault — harassers/guardians never see this.
 BUILDER_HOME_TURNS = 0
 
+# --- Guardian turret sortie (≤0 disables) ---
+# An enemy sentinel reaches sqrt(32) ≈ 5.7 tiles, so it can shell the core from
+# outside the Chebyshev-4 leash and never be answered. Guardians break the leash
+# out to GUARDIAN_SORTIE_CHEBYSHEV to plant a counter-gunner on any enemy turret
+# within TURRET_THREAT_CHEBYSHEV of the core footprint. TURRET_MEMORY_TURNS is
+# how stale a HiveMind sighting may be and still be worth a sortie (builder
+# vision is only sqrt(20) ≈ 4.5 — the core usually spots these first).
+TURRET_THREAT_CHEBYSHEV = 6
+GUARDIAN_SORTIE_CHEBYSHEV = 8
+TURRET_MEMORY_TURNS = 20
+
 # --- Guardian idle economy (False disables) ---
 # While no enemy unit is in vision, guardians build harvesters on ore inside the
 # leash and finish/repair belt relays back to core instead of only patrolling.
@@ -115,6 +126,7 @@ class Player:
         self.scoutedOres: set[tuple[int, int]] = set()
         self.patrolIdx = 0
         self.harassOrbitIdx = 0
+        self.sortieTarget: Position | None = None
 
     def run(self, ct: Controller) -> None:
         try:
