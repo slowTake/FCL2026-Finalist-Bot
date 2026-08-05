@@ -944,7 +944,7 @@ def maintainHarvester(bot, ct: Controller) -> bool:
 #     return False
 
 
-DEFEND_HOME_CHEBYSHEV = 8
+DEFEND_HOME_CHEBYSHEV = 4
 ORE_RECHECK_CLEAR_INTERVAL = 50
 
 

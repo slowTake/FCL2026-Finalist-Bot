@@ -109,6 +109,7 @@ def offGun(bot, ct: Controller) -> bool:
 
     for etype in (
         EntityType.GUNNER,
+        EntityType.SENTINEL,
         EntityType.HARVESTER,
         EntityType.LAUNCHER,
     ):
