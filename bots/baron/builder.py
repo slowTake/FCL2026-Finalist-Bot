@@ -8,7 +8,7 @@
 #        after first completed relay) + placeGun / defGun / defendHome / healAlly;
 #        skip economy this turn. While first relay in progress: ignore (keep belt).
 #    Early phase (age < BUILDER_HOME_TURNS after birth_round): defend-first +
-#    nearCoreEconomy (Chebyshev 8 ore). Harassers never enter this path.
+#    nearCoreEconomy (Chebyshev 4 ore). Harassers never enter this path.
 #    Early (after react):
 #      1. defGun — near core; gunners only
 #      2. defendHome — near core; attack / heal core
@@ -36,11 +36,10 @@
 #    my_index > 0 and my_index % 2 == 0 (builders 2,4,6,…)
 #    OR wave attack: WAVE_ATTACK_TURN / WAVE_ATTACK_TI in main.py (>0 = set)
 #    Unaffected by SLOT_THREAT recall.
-# 1. avoidFire — under enemy gunner LoS → move outside LoS
-# 2. offGun — placeGun/placeSentinel: core → gunner → harvester → launcher;
+# 1. offGun — placeGun/placeSentinel: core → gunner → sentinel → harvester → launcher;
 #        ≤1 ally gunner covering each enemy harvester
-# 3. seekHarvester — local_map enemy harvesters / scout ore nodes (vision updates map)
-# 4. seekCore — moveToward enemy core
+# 2. seekHarvester — local_map enemy harvesters / scout ore nodes (vision updates map)
+# 3. seekCore — moveToward enemy core
 
 """Builder role orchestrators — dispatch into logistics / offence helpers."""
 
@@ -63,7 +62,7 @@ from logistics import (
     relayEverComplete,
 )
 from defence import defGun
-from offense import avoidFire, offGun, seekCore, seekHarvester
+from offense import offGun, seekCore, seekHarvester
 
 
 def _resolveCores(bot, ct: Controller) -> None:
@@ -194,11 +193,9 @@ def runDefault(bot, ct: Controller) -> None:
 
 
 def runHarasser(bot, ct: Controller) -> None:
-    """Harasser: avoidFire → offGun → seekHarvester → seekCore."""
+    """Harasser: offGun → seekHarvester → seekCore."""
     _resolveCores(bot, ct)
     bot.nearCoreEconomy = False
-    if avoidFire(bot, ct):
-        return
     if offGun(bot, ct):
         return
     if seekHarvester(bot, ct):

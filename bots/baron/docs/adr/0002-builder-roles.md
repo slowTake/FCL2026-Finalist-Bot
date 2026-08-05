@@ -15,7 +15,7 @@ Builder role **names** and task lists (top of `builder.py`):
 | Role | Entry | Modules |
 |------|--------|---------|
 | **default** | `builder.runDefault` | Economy, relay, home (`defence` / `logistics`) |
-| **harasser** | `builder.runHarasser` | Helpers in `offense.py`: `avoidFire` → `offGun` → `seekHarvester` → `seekCore` |
+| **harasser** | `builder.runHarasser` | Helpers in `offense.py`: `offGun` → `seekHarvester` → `seekCore` |
 
 **Assignment**: `hivemind.my_index > 0 and my_index % 2 == 0` (spawned builders **2, 4, 6, …**). Index `0` means unassigned — stay on default until HiveMind sets the registry index.
 

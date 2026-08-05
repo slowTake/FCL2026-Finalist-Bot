@@ -8,7 +8,7 @@ For **where code lives**, see `AGENT.md` Key. For **behavior phases**, see task 
 
 ## Threat recall
 
-Core latches `SLOT_THREAT` with HP hysteresis (`THREAT_CORE_HP_ON` / `OFF` in `main.py`: set when HP &lt; ON, clear when HP ≥ OFF, sticky in between). While set, **default** builders run `runThreatHome`: abort relay (even mid first relay) → move to Chebyshev 8 of core → `_reactEnemyTurret` / `defGun` / `defendHome` / `healAlly`. No economy. Harassers ignore the flag.
+Core latches `SLOT_THREAT` with HP hysteresis (`THREAT_CORE_HP_ON` / `OFF` in `main.py`: set when HP &lt; ON, clear when HP ≥ OFF, sticky in between). While set, **default** builders run `runThreatHome`: abort relay (even mid first relay) → move to Chebyshev 4 of core → `_reactEnemyTurret` / `defGun` / `defendHome` / `healAlly`. No economy. Harassers ignore the flag.
 
 ## Default
 
@@ -16,7 +16,7 @@ Economy and home duties orchestrated by `builder.runDefault` (only when threat i
 
 ## Harasser
 
-Offense role (`builder.runHarasser`, helpers in `offense.py`): `avoidFire` → `offGun` → `seekHarvester` → `seekCore`. No economy. Assignment: every even builder (`my_index % 2 == 0`), or **all** builders once a wave gate fires (`WAVE_ATTACK_TURN` / `WAVE_ATTACK_TI` in `main.py`; `≤0` or `None` = unset). Unaffected by default’s early defend phase and by `SLOT_THREAT` recall.
+Offense role (`builder.runHarasser`, helpers in `offense.py`): `offGun` → `seekHarvester` → `seekCore`. No economy. Assignment: every even builder (`my_index % 2 == 0`), or **all** builders once a wave gate fires (`WAVE_ATTACK_TURN` / `WAVE_ATTACK_TI` in `main.py`; `≤0` or `None` = unset). Unaffected by default’s early defend phase and by `SLOT_THREAT` recall.
 
 ## Wave attack
 
@@ -40,7 +40,7 @@ Last-resort helper: clears sticky `oreSite` / path cache and picks a fresh empty
 
 ## DefendHome
 
-Near-core only (Chebyshev 8 of footprint). Skipped while `inRelay` or `recheckingOre`. Attacks enemy gunner/sentinel/builder in vision; otherwise heals core if HP &lt; 500.
+Near-core only (Chebyshev 4 of footprint). Skipped while `inRelay` or `recheckingOre`. Attacks enemy gunner/sentinel/builder in vision; otherwise heals core if HP &lt; 500.
 
 ## MaintainHarvester / checkOre
 

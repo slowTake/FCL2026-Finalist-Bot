@@ -28,7 +28,7 @@ SPAWN_INTERVAL_BY_TI: list[tuple[int, int]] = [
 
 # --- Wave attack (≤0 / None = unset; positive = active gate) ---
 WAVE_ATTACK_TURN: int | None = -1  # e.g. 300 → all builders harass from that turn
-WAVE_ATTACK_TI: int | None = 500  # e.g. 2000 → all harass once bank ≥ this
+WAVE_ATTACK_TI: int | None = 2000  # e.g. 2000 → all harass once bank ≥ this
 
 # --- Default early defend (age after birth_round; ≤0 disables) ---
 # Only applies inside runDefault — harassers never see this.

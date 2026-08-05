@@ -6,7 +6,7 @@ from fcode import Controller, EntityType, Position
 
 from guns import placeGun
 
-DEFEND_HOME_CHEBYSHEV = 8
+DEFEND_HOME_CHEBYSHEV = 4
 
 
 def _coreFootprint(core_pos: Position) -> list[Position]:

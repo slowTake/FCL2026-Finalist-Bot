@@ -11,7 +11,7 @@ Quick index: where to edit and main entrypoints. Update when adding public funct
 | `defence.py` | Defensive orchestrators | `defGun` (gunners only → `placeGun`) |
 | `logistics.py` | Default helpers | `buildHarvester`, `maintainHarvester`, `checkOre`, `relayToCore`, `defendHome`, `healAlly`, `recheckOreNodes` |
 | `pathing.py` | A*, passable, obstruction fallback | `astar`, `astarFromSeeds`, `walkPassable`, `relayPassable`, `findPathAroundObstruction` |
-| `offense.py` | Harasser helpers | `avoidFire`, `offGun`, `seekHarvester`, `seekCore` |
+| `offense.py` | Harasser helpers | `offGun`, `seekHarvester`, `seekCore` (`avoidFire` unused) |
 | `guns.py` | Placement + turret loops | `placeGun`, `allyGunCovering`, `gunnerLoop`, `placeSentinel`, `sentinelLoop`, `topUpAmmo` |
 | `respawn.py` | Core spawn schedule | `Respawn.run_core_spawn`, `SpawnSchedule` |
 | `hivemind.py` → `hivemind_v2` | Map fingerprint, delta ledger | `HiveMind.tick`, `unpack_cores`, `spawn_builder` |
@@ -46,7 +46,7 @@ Example — `relayToCore`:
 
 Example — `defGun` → `placeGun` only (never sentinels).
 
-Example — `runHarasser` → `avoidFire` → `offGun` → `seekHarvester` → `seekCore`.
+Example — `runHarasser` → `offGun` → `seekHarvester` → `seekCore`.
 
 ---
 
