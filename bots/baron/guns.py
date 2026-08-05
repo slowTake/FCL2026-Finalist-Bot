@@ -29,12 +29,11 @@ def _coreFootprint(core_pos: Position) -> list[Position]:
         Position(core_pos.x + 1, core_pos.y + 1),
     ]
 
-# Placement LoS: pass through destroyables + turrets; walls/cores mid-ray block.
+# Placement LoS: pass through destroyables + turrets; walls/cores/barriers mid-ray block.
 _TRANSPARENT_LOS = frozenset(
     {
         EntityType.CONVEYOR,
         EntityType.SPLITTER,
-        EntityType.BARRIER,
         EntityType.HARVESTER,
         EntityType.BUILDER_BOT,
         EntityType.LAUNCHER,
@@ -166,7 +165,7 @@ def gunnerHasLos(
     facing: Direction,
     target: Position,
 ) -> bool:
-    """True if gunner at site facing can reach target; destroyables/turrets clear."""
+    """True if gunner at site facing can reach target; belts/turrets clear, barriers block."""
     if site.distance_squared(target) < 1:
         return False
     if site.distance_squared(target) > GUNNER_RANGE_SQ:
@@ -418,10 +417,7 @@ def _bestRotateTarget(ct: Controller, priority: dict) -> Position | None:
             facing = facing8way(pos, epos)
             if facing == Direction.CENTRE:
                 continue
-            if not (
-                ct.can_fire_from(pos, facing, EntityType.GUNNER, epos)
-                or gunnerHasLos(ct, pos, facing, epos)
-            ):
+            if not ct.can_fire_from(pos, facing, EntityType.GUNNER, epos):
                 continue
             key = (priority[etype], manhattan(pos, epos))
             if best_key is None or key < best_key:

@@ -1,14 +1,14 @@
 # Baron builder roles — human task lists (check behavior here first)
 #
-# ## threatHome — SLOT_THREAT set (core HP latch); default + guardian
-#    Harassers skip. Abort relay → move to core → react/defGun/defend/heal.
+# ## threatHome — SLOT_THREAT set (core HP latch); guardian only
+#    Default + harassers ignore the flag. Move to core → react/defGun/defend/heal.
 #
 # ## Assignment (my_index > 0; idx % 5) — 2 guardians / 2 harassers / 1 default
 #    1 → guardian · 2 → harasser · 3 → default · 4 → harasser · 0 → guardian
 #
 # ## guardian (orchestrator: runGuardian below; helpers in defence.py)
 #    idx % 5 in (1, 0) (builders 1,5,6,10,11,…)
-#    Ignores wave. Shares SLOT_THREAT recall with default.
+#    Ignores wave. Sole owner of SLOT_THREAT recall.
 # 1. leash — outside Chebyshev 4 of core → moveToward core
 # 2. reactEnemyTurret — contest / defGun / defendHome / healAlly
 # 3. defGun — near core; gunners only
@@ -19,6 +19,7 @@
 #
 # ## default — priority order (orchestrator: runDefault below)
 #    idx % 5 == 3 (builders 3,8,13,…)
+#    Unaffected by SLOT_THREAT recall — keeps relays / harvesters under attack.
 #    0. reactEnemyTurret — enemy gunner/sentinel/launcher in vision → abortRelay (only
 #        after first completed relay) + placeGun / defGun / defendHome / healAlly;
 #        skip economy this turn. While first relay in progress: ignore (keep belt).
@@ -163,7 +164,7 @@ def _reactEnemyTurret(bot, ct: Controller) -> bool:
 
 
 def runThreatHome(bot, ct: Controller) -> None:
-    """Default/guardian recall: abort work, return to core, defend/heal only."""
+    """Guardian recall: return to core, defend/heal only (no patrol / barrier work)."""
     _resolveCores(bot, ct)
     bot.nearCoreEconomy = False
     if bot.inRelay:
@@ -262,7 +263,7 @@ def runHarasser(bot, ct: Controller) -> None:
 
 
 def runBuilderRoles(bot, ct: Controller) -> None:
-    """Dispatch: guardian → harasser/wave → threat home → default."""
+    """Dispatch: guardian (threat home) → harasser/wave → default."""
     idx = bot.hivemind.my_index
     if isGuardian(idx):
         if threatActive(ct):
@@ -272,9 +273,6 @@ def runBuilderRoles(bot, ct: Controller) -> None:
         return
     if waveAttackActive(ct) or isHarasser(idx):
         runHarasser(bot, ct)
-        return
-    if threatActive(ct):
-        runThreatHome(bot, ct)
         return
     runDefault(bot, ct)
 

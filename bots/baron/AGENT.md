@@ -55,8 +55,8 @@ Example — `runHarasser` → `snipeHarvester` → `offGun` → `avoidFire` → 
 ## Workflows
 
 1. **Read first**: repo [`AGENT.md`](../../AGENT.md), this file, `CONTEXT.md`, `builder.py` task lists, `README.md`.
-2. **Threat recall**: core writes `SLOT_THREAT` with HP hysteresis (`THREAT_CORE_HP_ON` / `OFF`). While set, default and guardian builders run `runThreatHome` (abort relay → move to core → defend/heal). Harassers skip.
-3. **Guardian**: `idx % 5 in (0, 1)` (builders 1,5,6,10,…) → `builder.runGuardian`; helpers in `defence.py`. Leashed home defence; ignores wave; shares threat recall with default.
+2. **Threat recall**: core writes `SLOT_THREAT` with HP hysteresis (`THREAT_CORE_HP_ON` / `OFF`). While set, **guardians only** run `runThreatHome` (move to core → defend/heal, no patrol / barrier work). Default and harasser builders skip — defaults keep relays and harvester upkeep running under attack.
+3. **Guardian**: `idx % 5 in (0, 1)` (builders 1,5,6,10,…) → `builder.runGuardian`; helpers in `defence.py`. Leashed home defence; ignores wave; sole owner of threat recall.
 4. **Default role tasks**: orchestrator `runDefault` in `builder.py` (`idx % 5 == 3`); helpers in `logistics.py` / `defence.py` / `guns.py`. Empty ore via `pickEmptyOre` (`ORE_STAGGER` off = convenience; on = index slots). Enemy turret in vision → abort relay + contest before economy. For `BUILDER_HOME_TURNS` after `birth_round`, default uses defend-first + near-core economy (`≤0` disables). Harassers and guardians never enter this phase.
 5. **Harasser**: `idx % 5 in (2, 4)` (builders 2,4,7,9,…) → `builder.runHarasser`; helpers in `offense.py`. Wave: set `WAVE_ATTACK_TURN` / `WAVE_ATTACK_TI` (>0) in `main.py` to switch **non-guardian** builders to harasser once the gate hits. Unaffected by `SLOT_THREAT`. `seekCore` approaches then orbits the enemy core.
 6. **Relay / pathing**: geometry in `pathing.py`; belt facing and clear/place in `logistics.py` helpers. `relayToCore` aborts on enemy turret only after `SLOT_RELAY_COMPLETE`.

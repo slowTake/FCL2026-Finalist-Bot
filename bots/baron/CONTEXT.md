@@ -8,15 +8,15 @@ For **where code lives**, see `AGENT.md` Key. For **behavior phases**, see task 
 
 ## Threat recall
 
-Core latches `SLOT_THREAT` with HP hysteresis (`THREAT_CORE_HP_ON` / `OFF` in `main.py`: set when HP &lt; ON, clear when HP ≥ OFF, sticky in between). While set, **default and guardian** builders run `runThreatHome`: abort relay (even mid first relay) → move to Chebyshev 4 of core → `_reactEnemyTurret` / `defGun` / `defendHome` / `healAlly`. No economy. Harassers ignore the flag.
+Core latches `SLOT_THREAT` with HP hysteresis (`THREAT_CORE_HP_ON` / `OFF` in `main.py`: set when HP &lt; ON, clear when HP ≥ OFF, sticky in between). While set, **guardians only** run `runThreatHome`: move to Chebyshev 4 of core → `_reactEnemyTurret` / `defGun` / `defendHome` / `healAlly` — i.e. `runGuardian` minus `clearBarriers` / `patrolHome`. Default builders and harassers ignore the flag; defaults keep their relays and harvester upkeep running while the core is under attack, since guardians carry home defence.
 
 ## Guardian
 
-Home defence role (`builder.runGuardian`, helpers in `defence.py`): leash (Chebyshev 4) → `_reactEnemyTurret` → `defGun` → `defendHome` → `healAlly` → `clearBarriers` → `patrolHome`. No economy. Assignment: `idx % 5 in (0, 1)`. Ignores wave. Shares threat recall with default.
+Home defence role (`builder.runGuardian`, helpers in `defence.py`): leash (Chebyshev 4) → `_reactEnemyTurret` → `defGun` → `defendHome` → `healAlly` → `clearBarriers` → `patrolHome`. No economy. Assignment: `idx % 5 in (0, 1)`. Ignores wave. Sole owner of threat recall.
 
 ## Default
 
-Economy and home duties orchestrated by `builder.runDefault` (only when threat is clear). First: if any enemy gunner/sentinel is in vision (and the first relay is already complete, or the builder is not mid-first-relay), abort relay and contest (`contestTurret` / `defGun` / `defendHome` / `healAlly`) — skip economy that turn. For `BUILDER_HOME_TURNS` after `birth_round` (default path only): defend-first + near-core economy. After that: `buildHarvester` → `maintainHarvester` → `defGun` → `defendHome` → `healAlly` → `recheckOreNodes`. Knob `≤0` disables the early phase. Harassers and guardians never run this phase.
+Economy and home duties orchestrated by `builder.runDefault`; runs regardless of `SLOT_THREAT`. First: if any enemy gunner/sentinel is in vision (and the first relay is already complete, or the builder is not mid-first-relay), abort relay and contest (`contestTurret` / `defGun` / `defendHome` / `healAlly`) — skip economy that turn. For `BUILDER_HOME_TURNS` after `birth_round` (default path only): defend-first + near-core economy. After that: `buildHarvester` → `maintainHarvester` → `defGun` → `defendHome` → `healAlly` → `recheckOreNodes`. Knob `≤0` disables the early phase. Harassers and guardians never run this phase.
 
 ## Harasser
 
@@ -68,7 +68,7 @@ Ordered phases inside a role; first match wins each turn.
 
 ## Guns layer
 
-`placeGun` / `gunnerLoop` for gunners (destroyable-transparent LoS). `placeSentinel` / `sentinelLoop` used by harasser `offGun` toward enemy core; not by `defGun`. Sentinel pads require a facing that hits the **2x2 core footprint** (nearest footprint tile; no NORTH fallback) and prefer pads nearer the core, then nearer the builder. Pads skip ore tiles, tiles on an ally gunner’s facing ray (8-dir belt-style), and Chebyshev-1 neighbors of ally gunners. `offGun` skips placing another gunner on an enemy harvester already covered by an ally gunner (`allyGunCovering`).
+`placeGun` / `gunnerLoop` for gunners (destroyable-transparent LoS except **barriers**, which are opaque). Rotate uses engine `can_fire_from` only so ally barriers force a re-aim; enemy barriers stay on the fire priority list. `placeSentinel` / `sentinelLoop` used by harasser `offGun` toward enemy core; not by `defGun`. Sentinel pads require a facing that hits the **2x2 core footprint** (nearest footprint tile; no NORTH fallback) and prefer pads nearer the core, then nearer the builder. Pads skip ore tiles, tiles on an ally gunner’s facing ray (8-dir belt-style), and Chebyshev-1 neighbors of ally gunners. `offGun` skips placing another gunner on an enemy harvester already covered by an ally gunner (`allyGunCovering`).
 
 ## HiveMind v2
 

@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted.
+Accepted. **Amended:** threat recall (`SLOT_THREAT`) is now guardian-only — default builders keep their relays and harvester upkeep while the core is under attack, since guardians already carry home defence.
 
 ## Context
 
