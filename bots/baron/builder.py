@@ -1,14 +1,11 @@
 # Baron builder roles — human task lists (check behavior here first)
 #
-# ## threatHome — SLOT_THREAT set (core HP latch); guardian only
-#    Default + harassers ignore the flag. Move to core → react/defGun/defend/heal.
-#
 # ## Assignment (my_index > 0; idx % 5) — 2 guardians / 2 harassers / 1 default
 #    1 → guardian · 2 → harasser · 3 → default · 4 → harasser · 0 → guardian
 #
 # ## guardian (orchestrator: runGuardian below; helpers in defence.py)
 #    idx % 5 in (1, 0) (builders 1,5,6,10,11,…)
-#    Ignores wave. Sole owner of SLOT_THREAT recall.
+#    Ignores wave. Home defence is entirely the guardians' job — no core-HP recall.
 # 1. leash — outside Chebyshev 4 of core → moveToward core
 # 2. reactEnemyTurret — contest / defGun / defendHome / healAlly
 # 3. defGun — near core; gunners only
@@ -19,10 +16,12 @@
 #
 # ## default — priority order (orchestrator: runDefault below)
 #    idx % 5 == 3 (builders 3,8,13,…)
-#    Unaffected by SLOT_THREAT recall — keeps relays / harvesters under attack.
-#    0. reactEnemyTurret — enemy gunner/sentinel/launcher in vision → abortRelay (only
-#        after first completed relay) + placeGun / defGun / defendHome / healAlly;
-#        skip economy this turn. While first relay in progress: ignore (keep belt).
+#    Never recalled home — economy runs regardless of ally core HP.
+#    0. reactEnemyTurret — enemy gunner/sentinel/launcher in vision → placeGun /
+#        defGun / defendHome / healAlly; skip economy this turn. Skipped entirely
+#        while inRelay: a committed belt is always finished.
+#    0b. dodgeWhileRelaying — inRelay and standing in gunner LoS → avoidFire toward
+#        ally core. Relays are dropped per-tile in relayToCore, never wholesale.
 #    Early phase (age < BUILDER_HOME_TURNS after birth_round): defend-first +
 #    nearCoreEconomy (Chebyshev 4 ore). ≤0 disables. Harassers/guardians never enter.
 #    Early (after react):
@@ -39,8 +38,8 @@
 #    2a. checkOre — harvester → relayToCore; empty → build (same gunner-aim gate);
 #        ally block → destroy (skip gunner/sentinel if that ore is threatened);
 #        enemy gunner/sentinel/belt/launcher/barrier → placeGunnerOnOre (stub)
-#    2b. relayToCore — abort on enemy turret only after SLOT_RELAY_COMPLETE;
-#        else path → facing / clearWrongBelt → placeRelayBelt → watermark
+#    2b. relayToCore — abort only if the next belt tile is under a visible gunner's
+#        LoS/arc; else path → facing / clearWrongBelt → placeRelayBelt → watermark
 # 3. defGun — near core only; enemy builder/gunner/sentinel/launcher in vision → placeGun
 #        (gunners only — never sentinels)
 # 4. defendHome — near core only; attack enemy in vision, else heal core if HP < 500
@@ -51,7 +50,7 @@
 # ## harasser (orchestrator: runHarasser below; helpers in offense.py)
 #    idx % 5 in (2, 4) (builders 2,4,7,9,…)
 #    OR wave attack: WAVE_ATTACK_TURN / WAVE_ATTACK_TI in main.py (>0 = set)
-#    Unaffected by SLOT_THREAT recall. Guardians never enter this path.
+#    Guardians never enter this path.
 # 1. snipeHarvester — visible uncovered enemy harvester → placeGun
 # 2. offGun — placeGun/placeSentinel: core → gunner → sentinel → harvester → launcher;
 #        ≤1 ally gunner covering each enemy harvester
@@ -68,7 +67,6 @@ from fcode import Controller, Position
 from hivemind import CoreState, unpack_cores
 from logistics import (
     _nearCore,
-    abortRelay,
     buildHarvester,
     contestTurret,
     defendHome,
@@ -77,7 +75,6 @@ from logistics import (
     maintainHarvester,
     moveToward,
     recheckOreNodes,
-    relayEverComplete,
 )
 from defence import clearBarriers, defGun, patrolHome
 from offense import avoidFire, offGun, seekCore, seekHarvester, snipeHarvester
@@ -135,22 +132,14 @@ def waveAttackActive(ct: Controller) -> bool:
     return False
 
 
-def threatActive(ct: Controller) -> bool:
-    """True while core has latched SLOT_THREAT (HP hysteresis)."""
-    from main import SLOT_THREAT
-
-    return ct.read_store(SLOT_THREAT) != 0
-
-
 def _reactEnemyTurret(bot, ct: Controller) -> bool:
-    """Abort relay and contest/defend when an enemy turret is in vision."""
+    """Contest/defend when an enemy turret is in vision — never breaks off a relay."""
     if not enemyTurretInVision(ct):
         return False
-    # Finish the first inbound relay before abandoning belts for combat
-    if bot.inRelay and not relayEverComplete(ct):
-        return False
+    # Committed to a belt: finish it. relayToCore drops the relay itself if the
+    # next tile is under a gunner; dodging is handled by _dodgeWhileRelaying.
     if bot.inRelay:
-        abortRelay(bot)
+        return False
     if contestTurret(bot, ct):
         return True
     if defGun(bot, ct):
@@ -163,30 +152,19 @@ def _reactEnemyTurret(bot, ct: Controller) -> bool:
     return True
 
 
-def runThreatHome(bot, ct: Controller) -> None:
-    """Guardian recall: return to core, defend/heal only (no patrol / barrier work)."""
-    _resolveCores(bot, ct)
-    bot.nearCoreEconomy = False
-    if bot.inRelay:
-        abortRelay(bot)
-    if bot.corePos is None:
-        return
-    if not _nearCore(bot, ct):
-        moveToward(bot, ct, bot.corePos)
-        return
-    if _reactEnemyTurret(bot, ct):
-        return
-    if defGun(bot, ct):
-        return
-    if defendHome(bot, ct):
-        return
-    healAlly(bot, ct)
+def _dodgeWhileRelaying(bot, ct: Controller) -> bool:
+    """Mid-relay and standing in a gunner's LoS → step to a safe tile, homeward."""
+    if not bot.inRelay:
+        return False
+    return avoidFire(bot, ct, goal=bot.corePos)
 
 
 def _runDefaultHome(bot, ct: Controller) -> None:
     """Default early phase: defend first, then near-core economy only."""
     bot.nearCoreEconomy = True
     if _reactEnemyTurret(bot, ct):
+        return
+    if _dodgeWhileRelaying(bot, ct):
         return
 
     if defGun(bot, ct):
@@ -211,6 +189,8 @@ def runDefault(bot, ct: Controller) -> None:
 
     bot.nearCoreEconomy = False
     if _reactEnemyTurret(bot, ct):
+        return
+    if _dodgeWhileRelaying(bot, ct):
         return
     if buildHarvester(bot, ct):
         return
@@ -263,13 +243,10 @@ def runHarasser(bot, ct: Controller) -> None:
 
 
 def runBuilderRoles(bot, ct: Controller) -> None:
-    """Dispatch: guardian (threat home) → harasser/wave → default."""
+    """Dispatch: guardian → harasser/wave → default."""
     idx = bot.hivemind.my_index
     if isGuardian(idx):
-        if threatActive(ct):
-            runThreatHome(bot, ct)
-        else:
-            runGuardian(bot, ct)
+        runGuardian(bot, ct)
         return
     if waveAttackActive(ct) or isHarasser(idx):
         runHarasser(bot, ct)

@@ -730,10 +730,6 @@ def relayToCore(bot, ct: Controller) -> None:
         abortRelay(bot)
         return
 
-    if enemyTurretInVision(ct) and relayEverComplete(ct):
-        abortRelay(bot)
-        return
-
     enemy_core = getattr(bot, "enemyCorePos", None)
     if bot.relayOrigin is None:
         bot.relayOrigin = bot.oreSite or ct.get_position()
@@ -785,6 +781,11 @@ def relayToCore(bot, ct: Controller) -> None:
     tile = path[idx]
     needed = neededBeltFacing(path, idx, core_pos)
     pos = ct.get_position()
+
+    # Don't spend titanium on a tile a visible enemy gunner is covering
+    if oreThreatenedByGunner(ct, tile):
+        abortRelay(bot)
+        return
 
     # Non-belt building blocking — replan
     if ct.is_in_vision(tile):

@@ -17,6 +17,10 @@ from pathing import inBounds, manhattan, walkPassable
 _AVOID_RADIUS = 4
 _ORBIT_OFFSET = 3
 
+# Sentinel: caller did not pass a goal — fall back to _avoidGoal(bot).
+# Distinct from an explicit None, which means "no preferred direction".
+_GOAL_DEFAULT = object()
+
 
 def _coreFootprint(core_pos: Position) -> list[Position]:
     return [
@@ -155,8 +159,13 @@ def _avoidGoal(bot) -> Position | None:
     return getattr(bot, "enemyCorePos", None)
 
 
-def avoidFire(bot, ct: Controller) -> bool:
-    """If under enemy gunner LoS, step to a safe tile that still advances toward goal."""
+def avoidFire(bot, ct: Controller, *, goal=_GOAL_DEFAULT) -> bool:
+    """If under enemy gunner LoS, step to a safe tile that still advances toward goal.
+
+    goal defaults to the harass target / enemy core. Pass an explicit Position to
+    retreat elsewhere (relaying builders pass the ally core); pass None for the
+    nearest safe tile with no preferred direction.
+    """
     pos = ct.get_position()
     gunners = _enemyGunners(ct)
     if not gunners:
@@ -164,7 +173,8 @@ def avoidFire(bot, ct: Controller) -> bool:
     if not _tileUnderGunnerFire(ct, pos, gunners):
         return False
 
-    goal = _avoidGoal(bot)
+    if goal is _GOAL_DEFAULT:
+        goal = _avoidGoal(bot)
     goal_d = manhattan(pos, goal) if goal is not None else None
     local_map = bot.hivemind.local_map
 

@@ -5,7 +5,7 @@ Multi-module bot on **HiveMind v2**. Per five builders: **2 guardians** / **2 ha
 ## Layout
 
 - `main.py` — policy caps and `Player` dispatch (`BUILDER_HOME_TURNS`, `ORE_STAGGER`, …)
-- `builder.py` — role task lists + orchestrators (`runThreatHome`, `runGuardian`, `runDefault`, `runBuilderRoles`)
+- `builder.py` — role task lists + orchestrators (`runGuardian`, `runDefault`, `runHarasser`, `runBuilderRoles`)
 - `defence.py` — home defence (`defGun`, `clearBarriers`, `patrolHome`)
 - `offense.py` — harasser helpers (`snipeHarvester`, `offGun`, `avoidFire`, `seekHarvester`, `seekCore`)
 - `logistics.py` — default helpers (`buildHarvester`, `relayToCore`, …)
@@ -20,8 +20,7 @@ Agents: [`AGENT.md`](AGENT.md). Terms: [`CONTEXT.md`](CONTEXT.md).
 | Slot | Owner | Purpose |
 |------|-------|---------|
 | 0 | Player | `SLOT_RELAY_COMPLETE` |
-| 1 | Player | `SLOT_THREAT` — core HP hysteresis (on &lt;400, off ≥500) |
-| 2–3 | Player | free |
+| 1–3 | Player | free |
 | 4 | HiveMind | Builder registry count |
 | 5–12 | HiveMind | Delta ledger |
 | 13 | HiveMind | Metronome |

@@ -2,8 +2,7 @@
 
 Store slots (HiveMind v2):
   0  SLOT_RELAY_COMPLETE   1 after first inbound relay finishes
-  1  SLOT_THREAT           core HP hysteresis (on <400, off ≥500)
-  2–3 Player free
+  1–3 Player free
   4–15 HiveMind-owned — never write from Player
        4 builder registry · 5–12 delta ledger · 13 metronome
        14 map id · 15 packed cores
@@ -38,10 +37,6 @@ BUILDER_HOME_TURNS = 0
 # False = nearest convenient (core then self). True = index-stagger slots.
 ORE_STAGGER = False
 
-# --- Core threat recall (default builders; sticky between ON and OFF) ---
-THREAT_CORE_HP_ON = 400  # set SLOT_THREAT when HP < this
-THREAT_CORE_HP_OFF = 500  # clear SLOT_THREAT when HP >= this
-
 # --- Gun placement (≤0 disables) ---
 GUN_PLACE_MIN_TI = 100  # need bank ≥ this to place gunner/sentinel
 
@@ -56,9 +51,8 @@ DEFAULT_AMMO_START_TURN = 1
 RAIDER_AMMO_START_TURN = 30
 MAX_AMMO_POOL: int | None = None
 
-# --- Store slots (Player 0–3 only; 2–3 free) ---
+# --- Store slots (Player 0–3 only; 1–3 free) ---
 SLOT_RELAY_COMPLETE = 0
-SLOT_THREAT = 1
 SLOT_PACKED_CORES = 15
 
 DEBUG = False
@@ -117,8 +111,6 @@ class Player:
             return
 
     def _run_core(self, ct: Controller) -> None:
-        self._updateThreatFlag(ct)
-
         round_n = ct.get_current_round()
         min_turn = (
             DEFAULT_AMMO_START_TURN
@@ -138,14 +130,6 @@ class Player:
             goal=goal,
             hivemind=self.hivemind,
         )
-
-    def _updateThreatFlag(self, ct: Controller) -> None:
-        """Hysteresis: set SLOT_THREAT when HP < ON, clear when HP >= OFF."""
-        hp = ct.get_hp()
-        if hp < THREAT_CORE_HP_ON:
-            ct.write_store(SLOT_THREAT, 1)
-        elif hp >= THREAT_CORE_HP_OFF:
-            ct.write_store(SLOT_THREAT, 0)
 
     def _resolveEnemyCore(self, ct: Controller) -> Position | None:
         _, enemy = unpack_cores(ct.read_store(SLOT_PACKED_CORES))

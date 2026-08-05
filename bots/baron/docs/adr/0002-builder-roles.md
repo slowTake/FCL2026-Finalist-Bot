@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted. **Amended:** threat recall (`SLOT_THREAT`) is now guardian-only — default builders keep their relays and harvester upkeep while the core is under attack, since guardians already carry home defence.
+Accepted. **Amended:** threat recall (`SLOT_THREAT`) has been removed outright, and player store slot 1 is free again. Guardians are the sole home defence; no role is recalled on core HP. `runThreatHome` was the same task list as `runGuardian` minus `clearBarriers` / `patrolHome`, and those tails were already unreachable below 500 HP (where `defendHome` engages), so the recall bought nothing the guardian loop did not already do.
+
+Relay abandonment was narrowed in the same change: `relayToCore` no longer aborts because an enemy turret is somewhere in vision, only when the next belt tile is itself under a visible gunner's LoS/arc. A builder mid-relay dodges (`avoidFire` toward the ally core) instead of breaking off to contest.
 
 ## Context
 
@@ -26,7 +28,7 @@ Builder role **names** and task lists (top of `builder.py`):
 
 Per five spawns: **2 guardians / 2 harassers / 1 default**. Index `0` means unassigned — stay on default until HiveMind sets the registry index.
 
-Guardians ignore wave gates; non-guardians switch to harasser when a wave gate fires. Guardians share `SLOT_THREAT` recall with default.
+Guardians ignore wave gates; non-guardians switch to harasser when a wave gate fires. Guardians share `SLOT_THREAT` recall with default. *(Superseded — see the amendment under Status.)*
 
 Empty-ore stagger is optional (`ORE_STAGGER` in `main.py`); default off uses convenience pick (core then self distance).
 
