@@ -33,6 +33,14 @@ WAVE_ATTACK_TI: int | None = 2000  # e.g. 2000 → all harass once bank ≥ this
 # Only applies inside runDefault — harassers/guardians never see this.
 BUILDER_HOME_TURNS = 0
 
+# --- Guardian idle economy (False disables) ---
+# While no enemy unit is in vision, guardians build harvesters on ore inside the
+# leash and finish/repair belt relays back to core instead of only patrolling.
+GUARDIAN_ECONOMY = True
+# Extra Chebyshev slack on the guardian leash while it is committed to a node or
+# relay — an ore at the leash edge is worked from an adjacent tile one step out.
+GUARDIAN_ECON_SLACK = 1
+
 # --- Empty-ore pick (defaults) ---
 # False = nearest convenient (core then self). True = index-stagger slots.
 ORE_STAGGER = False
@@ -42,6 +50,12 @@ ORE_STAGGER = False
 # ore claim, blacklists the node and re-picks. Guards against builders piling up
 # on one node and never yielding it.
 ORE_DEADLOCK_TURNS = 8
+
+# --- Encirclement breaker (≤0 disables) ---
+# Turns a builder may sit motionless with no legal move in any direction before
+# it destroys/fires at an adjacent building to open a door. Catches a harasser
+# that fenced itself in with its own denyBelt barriers.
+ENCIRCLED_TURNS = 8
 
 # --- Gun placement (≤0 disables) ---
 GUN_PLACE_MIN_TI = 100  # need bank ≥ this to place gunner/sentinel

@@ -281,6 +281,118 @@ def relayPassable(
     return False
 
 
+# Cheapest thing to knock down first when a builder has walled itself in.
+# Barriers are the usual culprit (harasser denyBelt builds them adjacent to
+# itself); the core is never a candidate. Anything not listed ranks last.
+_DOOR_SACRIFICE_ORDER = (
+    EntityType.BARRIER,
+    EntityType.CONVEYOR,
+    EntityType.SPLITTER,
+    EntityType.HARVESTER,
+    EntityType.LAUNCHER,
+    EntityType.SENTINEL,
+    EntityType.GUNNER,
+)
+
+
+def _doorRank(etype: EntityType) -> int:
+    try:
+        return _DOOR_SACRIFICE_ORDER.index(etype)
+    except ValueError:
+        return len(_DOOR_SACRIFICE_ORDER)
+
+
+def _doorCandidates(
+    ct: Controller, local_map: dict | None
+) -> tuple[list[tuple], list[tuple]]:
+    """Adjacent building-blocked tiles, ally and enemy, best door first.
+
+    Sorted by whether the tile *behind* the door is walkable — punching into
+    another sealed cell buys nothing — then by how cheap the building is to
+    lose, then x/y so the choice is stable across turns.
+    """
+    pos = ct.get_position()
+    me = ct.get_team()
+    ally: list[tuple] = []
+    enemy: list[tuple] = []
+    for d in CARDINALS:
+        tile = pos.add(d)
+        if not inBounds(ct, tile):
+            continue
+        if not ct.is_in_vision(tile):
+            continue
+        if ct.get_tile_env(tile) == Environment.WALL:
+            continue  # terrain — not targetable, not destructible
+        bid = ct.get_tile_building_id(tile)
+        if bid is None:
+            continue  # blocked by a unit or nothing at all — no door to make
+        etype = ct.get_entity_type(bid)
+        if etype == EntityType.CORE:
+            continue
+        beyond = 0 if walkPassable(ct, tile.add(d), local_map=local_map) else 1
+        entry = ((beyond, _doorRank(etype), tile.x, tile.y), d, tile)
+        if ct.get_team(bid) == me:
+            ally.append(entry)
+        else:
+            enemy.append(entry)
+    ally.sort(key=lambda e: e[0])
+    enemy.sort(key=lambda e: e[0])
+    return ally, enemy
+
+
+def breakEncirclement(bot, ct: Controller, *, local_map: dict | None = None) -> bool:
+    """Motionless and boxed in on all four sides → knock a door open.
+
+    `bot.stuck` counts turns without a position change. A builder that fenced
+    itself in — the harasser's `denyBelt` barriers are the known case — has no
+    legal move at all, so every role's movement falls through silently and it
+    sits there for the rest of the game. Ally buildings come down with
+    `destroy` (no action cooldown, so we step through the gap the same turn);
+    enemy buildings only take the guarded adjacent-fire attempt used elsewhere,
+    which the engine refuses unless the shot is legal.
+
+    Returns True if a door was opened this turn.
+    """
+    from main import ENCIRCLED_TURNS
+
+    if ENCIRCLED_TURNS is None or ENCIRCLED_TURNS <= 0:
+        return False
+    if getattr(bot, "stuck", 0) < ENCIRCLED_TURNS:
+        return False
+    # Under move cooldown every can_move is False — that reads as walled in when
+    # the unit is merely waiting. Only judge on a turn where moving is possible.
+    if ct.get_move_cooldown() != 0:
+        return False
+    for d in CARDINALS:
+        if ct.can_move(d):
+            return False  # a way out exists; the stall is a routing problem
+
+    ally, enemy = _doorCandidates(ct, local_map)
+
+    for _key, d, tile in ally:
+        if not ct.can_destroy(tile):
+            continue
+        ct.destroy(tile)
+        bot.cachedPath = None
+        bot.cachedPathTarget = None
+        bot.stuck = 0  # re-arm; don't fire again until it stalls afresh
+        if ct.get_move_cooldown() == 0 and ct.can_move(d):
+            ct.move(d)
+        return True
+
+    if ct.get_action_cooldown() == 0:
+        for _key, _d, tile in enemy:
+            if not ct.can_fire(tile):
+                continue
+            ct.fire(tile)
+            bot.cachedPath = None
+            bot.cachedPathTarget = None
+            bot.stuck = 0
+            return True
+
+    return False
+
+
 def findPathAroundObstruction(
     ct: Controller,
     start: Position,

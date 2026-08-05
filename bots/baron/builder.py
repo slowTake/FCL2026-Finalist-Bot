@@ -3,6 +3,13 @@
 # ## Assignment (my_index > 0; idx % 5) — 2 guardians / 2 harassers / 1 default
 #    1 → guardian · 2 → harasser · 3 → default · 4 → harasser · 0 → guardian
 #
+# ## all roles (runBuilderRoles, before dispatch)
+#    breakEncirclement — motionless (bot.stuck) ≥ ENCIRCLED_TURNS with no legal
+#        move in any direction → destroy the cheapest adjacent ally building
+#        (barrier → belt → harvester → turret) and step through, else try firing
+#        at an adjacent enemy building. Known case: a harasser fencing itself in
+#        with its own denyBelt barriers.
+#
 # ## guardian (orchestrator: runGuardian below; helpers in defence.py)
 #    idx % 5 in (1, 0) (builders 1,5,6,10,11,…)
 #    Ignores wave. Home defence is entirely the guardians' job — no core-HP recall.
@@ -13,7 +20,13 @@
 # 4. defendHome — attack enemy in vision, else heal core if HP < 500
 # 5. healAlly — core → gunner/sentinel → harvester
 # 6. clearBarriers — fire / move to nearest enemy barrier inside the leash only
-# 7. patrolHome — cycle mid-side waypoints around core
+# 7. economy — only while no enemy turret/builder is in vision (GUARDIAN_ECONOMY
+#        in main.py). nearCoreEconomy=True, so ore is limited to the leash:
+#        buildHarvester on empty leash ore, then maintainHarvester, which also
+#        finishes/repairs a harvester's belt line back to core. A visible enemy
+#        unit drops the relay claim so defence isn't blocked by the inRelay
+#        guards; the leash widens by GUARDIAN_ECON_SLACK while a claim is held.
+# 8. patrolHome — cycle mid-side waypoints around core
 #
 # ## default — priority order (orchestrator: runDefault below)
 #    idx % 5 == 3 (builders 3,8,13,…)
@@ -69,11 +82,14 @@
 
 from __future__ import annotations
 
-from fcode import Controller, Position
+from fcode import Controller, EntityType, Position
 
 from hivemind import CoreState, unpack_cores
 from logistics import (
+    DEFEND_HOME_CHEBYSHEV,
+    _chebyshevToCore,
     _nearCore,
+    abortRelay,
     breakOreDeadlock,
     buildHarvester,
     contestTurret,
@@ -85,6 +101,7 @@ from logistics import (
     recheckOreNodes,
 )
 from defence import clearBarriers, defGun, patrolHome
+from pathing import breakEncirclement
 from offense import (
     avoidFire,
     denyBelt,
@@ -228,13 +245,81 @@ def runDefault(bot, ct: Controller) -> None:
     recheckOreNodes(bot, ct)
 
 
+_ENEMY_THREAT_TYPES = (
+    EntityType.GUNNER,
+    EntityType.SENTINEL,
+    EntityType.LAUNCHER,
+    EntityType.BUILDER_BOT,
+)
+
+
+def guardianEconomyOn() -> bool:
+    from main import GUARDIAN_ECONOMY
+
+    return bool(GUARDIAN_ECONOMY)
+
+
+def _enemyUnitInVision(ct: Controller) -> bool:
+    """Any enemy turret or builder in this unit's vision."""
+    me = ct.get_team()
+    for eid in ct.get_nearby_units():
+        if ct.get_team(eid) == me:
+            continue
+        if ct.get_entity_type(eid) in _ENEMY_THREAT_TYPES:
+            return True
+    return False
+
+
+def _guardianLeashOk(bot, ct: Controller) -> bool:
+    """Leash test, widened by GUARDIAN_ECON_SLACK while working a node/relay.
+
+    An ore sitting on the leash edge is built and relayed from a neighbouring
+    tile, which is one step further out. Without the slack the leash step would
+    march the guardian home every other turn and the relay would never finish.
+    """
+    if _nearCore(bot, ct):
+        return True
+    if not guardianEconomyOn():
+        return False
+    if not (bot.inRelay or bot.oreSite is not None):
+        return False
+    from main import GUARDIAN_ECON_SLACK
+
+    slack = GUARDIAN_ECON_SLACK or 0
+    if slack <= 0:
+        return False
+    reach = DEFEND_HOME_CHEBYSHEV + slack
+    return _chebyshevToCore(ct.get_position(), bot.corePos) <= reach
+
+
+def _guardianEconomy(bot, ct: Controller) -> bool:
+    """Idle-time economy inside the leash: build harvesters, finish relays."""
+    if not guardianEconomyOn():
+        return False
+    bot.nearCoreEconomy = True  # _allowOreSite → ore within the leash only
+    breakOreDeadlock(bot, ct)  # state-only; picks below re-choose this turn
+    if buildHarvester(bot, ct):
+        return True
+    return maintainHarvester(bot, ct)
+
+
 def runGuardian(bot, ct: Controller) -> None:
-    """Guardian: leash → react → defGun → defendHome → healAlly → clearBarriers → patrol."""
+    """Guardian: leash → react → defGun → defendHome → healAlly → clearBarriers
+    → economy (only while nothing hostile is in vision) → patrol."""
     _resolveCores(bot, ct)
     bot.nearCoreEconomy = False
     if bot.corePos is None:
         return
-    if not _nearCore(bot, ct):
+
+    # Defence outranks economy: drop the relay claim so the inRelay guards in
+    # _reactEnemyTurret / defGun don't lock the guardian out of fighting. Belts
+    # already placed stay on the map and the watermark rebuilds on the re-pick.
+    underAttack = _enemyUnitInVision(ct)
+    if underAttack and (bot.inRelay or bot.oreSite is not None):
+        abortRelay(bot)
+        bot.oreSite = None
+
+    if not _guardianLeashOk(bot, ct):
         moveToward(bot, ct, bot.corePos)
         return
     # skipEconomy=False: a turret we can't act on must not block patrol
@@ -247,6 +332,8 @@ def runGuardian(bot, ct: Controller) -> None:
     if healAlly(bot, ct):
         return
     if clearBarriers(bot, ct):
+        return
+    if not underAttack and _guardianEconomy(bot, ct):
         return
     patrolHome(bot, ct)
 
@@ -270,6 +357,10 @@ def runHarasser(bot, ct: Controller) -> None:
 
 def runBuilderRoles(bot, ct: Controller) -> None:
     """Dispatch: guardian → harasser/wave → default."""
+    # Ahead of every role: boxed in on all four sides, nothing below can move.
+    # Runs before breakOreDeadlock, which shares the stuck counter and resets it.
+    if breakEncirclement(bot, ct, local_map=bot.hivemind.local_map):
+        return
     idx = bot.hivemind.my_index
     if isGuardian(idx):
         runGuardian(bot, ct)
