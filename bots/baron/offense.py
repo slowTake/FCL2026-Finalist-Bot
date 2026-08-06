@@ -285,6 +285,8 @@ def offGun(bot, ct: Controller) -> bool:
 
 
 def _enemyBeltAt(ct: Controller, tile: Position) -> bool:
+    if not ct.is_in_vision(tile):
+        return False
     bid = ct.get_tile_building_id(tile)
     if bid is None:
         return False

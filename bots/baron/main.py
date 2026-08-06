@@ -183,19 +183,16 @@ class Player:
         self.harassOrbitIdx = 0
 
     def run(self, ct: Controller) -> None:
-        try:
-            self.hivemind.tick(ct)
-            etype = ct.get_entity_type()
-            if etype == EntityType.CORE:
-                self._run_core(ct)
-            elif etype == EntityType.BUILDER_BOT:
-                self._run_builder(ct)
-            elif etype == EntityType.GUNNER:
-                gunnerLoop(ct)
-            elif etype == EntityType.SENTINEL:
-                sentinelLoop(ct)
-        except Exception:
-            return
+        self.hivemind.tick(ct)
+        etype = ct.get_entity_type()
+        if etype == EntityType.CORE:
+            self._run_core(ct)
+        elif etype == EntityType.BUILDER_BOT:
+            self._run_builder(ct)
+        elif etype == EntityType.GUNNER:
+            gunnerLoop(ct)
+        elif etype == EntityType.SENTINEL:
+            sentinelLoop(ct)
 
     def _run_core(self, ct: Controller) -> None:
         round_n = ct.get_current_round()
@@ -230,6 +227,9 @@ class Player:
         pos = ct.get_position()
         if self.lastPos == pos:
             self.stuck += 1
+            if self.stuck == 15:
+                with open("/tmp/stuck_log.txt", "a") as f:
+                    f.write(f"STUCK {self.hivemind.map_name} {pos.x},{pos.y}\n")
         else:
             self.stuck = 0
         self.lastPos = pos

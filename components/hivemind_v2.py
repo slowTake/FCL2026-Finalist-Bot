@@ -59,8 +59,6 @@ class HiveMind:
             self.map_id, self.map_name, enemy_x, enemy_y = KNOWN_MAPS[fingerprint]
             enemy_state = CoreState.ASSUMED
             self.enemy_core_pos = Position(enemy_x, enemy_y)
-        
-        print(f"HIVEMIND FINGERPRINT: {fingerprint} -> Map ID: {self.map_id} ({self.map_name})")
 
         ct.write_store(14, self.map_id)
 

@@ -124,14 +124,7 @@ def topUpAmmo(
         target = min(target, MAX_AMMO_POOL)
     target = max(target, AMMO_MIN_POOL)
 
-    ammo = ct.get_global_ammo()
-    if ammo >= target:
-        return
-    need = min(AMMO_CONVERT_CHUNK, target - ammo)
-    if need <= 0:
-        return
-    if ct.can_convert_ammo(need):
-        ct.convert_ammo(need)
+    pass
 
 
 def top_up_ammo(
