@@ -1,7 +1,7 @@
 # Baron builder roles — human task lists (check behavior here first)
 #
-# ## Assignment (my_index > 0; idx % 5) — 2 guardians / 2 harassers / 1 default
-#    1 → guardian · 2 → harasser · 3 → default · 4 → harasser · 0 → guardian
+# ## Assignment (my_index > 0; idx % 5) — 2 guardians / 1 harasser / 2 defaults
+#    1 → guardian · 2 → harasser · 3 → default · 4 → default · 0 → guardian
 #    Capped: guardian slots past MAX_GUARDIANS (main.py) dispatch as non-guardians
 #    — guardianRank 1,2,3,4 = builders 1,5,6,10, so a cap of 4 first bites at
 #    builder 11 and the opening is untouched. A capped guardian is a default from
@@ -63,7 +63,7 @@
 # 9. patrolHome — cycle mid-side waypoints around core
 #
 # ## default — priority order (orchestrator: runDefault below)
-#    idx % 5 == 3 (builders 3,8,13,…)
+#    idx % 5 in (3, 4) (builders 3,4,8,9,…)
 #    Never recalled home — economy runs regardless of ally core HP.
 #    0. reactEnemyTurret — enemy gunner/sentinel/launcher in vision → placeGun /
 #        defGun / defendHome / healAlly; skip economy this turn — but only once the
@@ -114,7 +114,7 @@
 # # idleHome — commented out (soft-idle trap)
 #
 # ## harasser (orchestrator: runHarasser below; helpers in offense.py)
-#    idx % 5 in (2, 4) (builders 2,4,7,9,…)
+#    idx % 5 == 2 (builders 2,7,12,…)
 #    OR wave attack: WAVE_ATTACK_TURN / WAVE_ATTACK_TI in main.py (>0 = set)
 #    Uncapped guardians never enter this path; capped ones (guardianRank >
 #    MAX_GUARDIANS) are non-guardians and do, once a wave gate fires.
@@ -226,13 +226,13 @@ def guardianCapped(idx: int) -> bool:
 
 
 def isHarasser(idx: int) -> bool:
-    """True for builders 2,4,7,9,… (idx % 5 in {2, 4})."""
-    return idx > 0 and idx % 5 in (2, 4)
+    """True for builders 2,7,12,… (idx % 5 == 2)."""
+    return idx > 0 and idx % 5 == 2
 
 
 def isDefaultRole(idx: int) -> bool:
-    """True for builders 3,8,13,… (idx % 5 == 3)."""
-    return idx > 0 and idx % 5 == 3
+    """True for builders 3,4,8,9,… (idx % 5 in {3, 4})."""
+    return idx > 0 and idx % 5 in (3, 4)
 
 
 def homeGuardActive(bot, ct: Controller) -> bool:

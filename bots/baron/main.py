@@ -13,25 +13,30 @@ from __future__ import annotations
 from fcode import Controller, EntityType, Position
 
 # --- Builder spawn policy ---
-# Rush MAX_BUILDERS_EARLY ASAP, then +1 every effective interval turns (cap MAX_BUILDERS).
-MAX_BUILDERS_EARLY = 5
-MAX_BUILDERS = 15000
-SPAWN_INTERVAL = 50  # base when below all Ti tiers
+# Crew size tracks the bank, counted in *living* builders so losses are replaced.
+# Rush MAX_BUILDERS_EARLY unpaced, then hold whatever the bank justifies.
+# Previously the target was `MAX_BUILDERS_EARLY + round_n // interval`, i.e. a
+# function of round number with the current Ti tier applied retroactively: crossing
+# a bracket leapt the target and spawned a run of builders back to back, and falling
+# back froze spawning for hundreds of rounds because it compared against a lifetime
+# counter that never decreases. Both are gone with the round arithmetic.
+MAX_BUILDERS_EARLY = 5  # unpaced rush; also the poor-state floor
+MAX_BUILDERS = 10  # hard ceiling on living builders
 
-# Richer bank → shorter interval. Empty list = time-only (base interval).
-# (min_ti, interval); highest matching min_ti wins.
-SPAWN_INTERVAL_BY_TI: list[tuple[int, int]] = [
-    (2000, 25),
-    (1000, 35),
+# Richer bank → bigger crew. (min_ti, target); highest matching min_ti wins.
+# Below all tiers the target is MAX_BUILDERS_EARLY.
+BUILDER_TARGET_BY_TI: list[tuple[int, int]] = [
+    (2000, 10),
+    (1000, 7),
 ]
 
 # --- Guardian cap (≤0 / None disables) ---
-# Guardian slots are idx % 5 in (0, 1) — 2 per 5 spawns, forever — so they grow
-# without bound and pile up idling at home. Guardians past this rank dispatch as
-# non-guardians instead. Rank is derived from my_index alone (builder.guardianRank),
-# so role stays a pure function of the index: deterministic, permanent per unit, no
-# coordination, no oscillation. Ranks 1-4 are builders 1, 5, 6, 10 — a cap of 4
-# first bites at builder 11, so the opening is untouched.
+# Guardian slots are idx % 5 in (0, 1) — 2 per 5 spawns. Guardians past this rank
+# dispatch as non-guardians instead. Inert while MAX_BUILDERS is 10: guardians at a
+# crew of 10 are ranks 1-4, so the cap first binds at builder 11. Kept as a safety
+# net for raising the crew ceiling later. Rank is derived from my_index alone
+# (builder.guardianRank), so role stays a pure function of the index: deterministic,
+# permanent per unit, no coordination, no oscillation.
 MAX_GUARDIANS: int | None = 4
 
 # --- Wave attack (≤0 / None = unset; positive = active gate) ---
@@ -139,8 +144,7 @@ from builder import runBuilderRoles
 SPAWN_SCHEDULE = SpawnSchedule(
     max_builders_early=MAX_BUILDERS_EARLY,
     max_builders=MAX_BUILDERS,
-    spawn_interval=SPAWN_INTERVAL,
-    spawn_interval_by_ti=tuple(SPAWN_INTERVAL_BY_TI),
+    builder_target_by_ti=tuple(BUILDER_TARGET_BY_TI),
 )
 
 

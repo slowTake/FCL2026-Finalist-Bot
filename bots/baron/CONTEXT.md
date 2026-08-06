@@ -4,7 +4,7 @@ For **where code lives**, see `AGENT.md` Key. For **behavior phases**, see task 
 
 ## Builder role
 
-**default**, **guardian**, or **harasser**. Assignment from `hivemind.my_index` (`> 0`, `idx % 5`): `1` or `0` → guardian (1, 5, 6, 10, …); `2` or `4` → harasser (2, 4, 7, 9, …); `3` → default (3, 8, 13, …). Per five spawns: 2 guardians / 2 harassers / 1 default. Guardian slots past `MAX_GUARDIANS` (`main.py`, `≤0`/`None` disables) dispatch as **non**-guardians instead — `builder.guardianRank` maps slots 1, 5, 6, 10, 11, … to ranks 1, 2, 3, 4, 5, …, so a cap of 4 first applies to builder 11 and the opening is unchanged. Deriving the cap from `my_index` alone keeps role a pure function of the index: deterministic, permanent per unit, no coordination and no oscillation. A capped guardian is a default from birth and is wave-eligible like any other non-guardian. Wave gates switch non-guardians to harasser; guardians stay home.
+**default**, **guardian**, or **harasser**. Assignment from `hivemind.my_index` (`> 0`, `idx % 5`): `1` or `0` → guardian (1, 5, 6, 10, …); `2` → harasser (2, 7, 12, …); `3` or `4` → default (3, 4, 8, 9, …). Per five spawns: **2 guardians / 1 harasser / 2 defaults**, order `G H D D G`. Guardian slots past `MAX_GUARDIANS` (`main.py`, `≤0`/`None` disables) dispatch as **non**-guardians instead — `builder.guardianRank` maps slots 1, 5, 6, 10, 11, … to ranks 1, 2, 3, 4, 5, …, so a cap of 4 first applies to builder 11 — which `MAX_BUILDERS = 10` prevents, leaving the cap **inert** in practice and kept only as a safety net for raising the crew ceiling. Deriving the cap from `my_index` alone keeps role a pure function of the index: deterministic, permanent per unit, no coordination and no oscillation. A capped guardian is a default from birth and is wave-eligible like any other non-guardian. Wave gates switch non-guardians to harasser; guardians stay home.
 
 ## Guardian
 
@@ -22,7 +22,7 @@ Economy and home duties orchestrated by `builder.runDefault`; runs regardless of
 
 ## Harasser
 
-Offense role (`builder.runHarasser`, helpers in `offense.py`): `snipeHarvester` → `offGun` → `avoidFire` → `denyOre` → `denyBelt` → `seekHarvester` → `seekCore`. No economy. Assignment: `idx % 5 in (2, 4)`, or **non-guardian** builders once a wave gate fires (`WAVE_ATTACK_TURN` / `WAVE_ATTACK_TI` in `main.py`; `≤0` or `None` = unset). Unaffected by default’s early defend phase. `snipeHarvester` places a gun on the nearest visible uncovered enemy harvester; `avoidFire` steps to safe tiles that still advance toward `harassTarget` / enemy core. `denyBelt` attacks enemy logistics two ways: **Mode A** plants a barrier on the empty tile one step ahead of an enemy belt's facing (blocks throughput, no fight); **Mode B** cuts an enemy belt from an adjacent tile and barriers the cleared tile in place — staying adjacent means the barrier goes down the moment the belt dies, with no move-on / step-off.
+Offense role (`builder.runHarasser`, helpers in `offense.py`): `snipeHarvester` → `offGun` → `avoidFire` → `denyOre` → `denyBelt` → `seekHarvester` → `seekCore`. No economy. Assignment: `idx % 5 == 2`, or **non-guardian** builders once a wave gate fires (`WAVE_ATTACK_TURN` / `WAVE_ATTACK_TI` in `main.py`; `≤0` or `None` = unset). Unaffected by default’s early defend phase. `snipeHarvester` places a gun on the nearest visible uncovered enemy harvester; `avoidFire` steps to safe tiles that still advance toward `harassTarget` / enemy core. `denyBelt` attacks enemy logistics two ways: **Mode A** plants a barrier on the empty tile one step ahead of an enemy belt's facing (blocks throughput, no fight); **Mode B** cuts an enemy belt from an adjacent tile and barriers the cleared tile in place — staying adjacent means the barrier goes down the moment the belt dies, with no move-on / step-off.
 
 Mode B is rationed on the way in and committed to once begun. A cut is 20 HP at 2 dmg an attack: **10 shots, 20 Ti, 10 turns**. Completed it is strongly positive — they pay 9–33 Ti to reopen and the whole downstream line delivers nothing meanwhile (a harvester is 2.5 Ti/turn). Abandoned it is pure waste.
 
@@ -46,11 +46,17 @@ Tunable in `main.py`. Positive turn → non-guardians harass from that round; po
 
 ## BuildHarvester
 
-Places on empty ore (not in relay). With `ORE_STAGGER = False` (default), picks the most convenient empty pad `(dist to core, dist to self)`. With `ORE_STAGGER = True`, index-staggers economy defaults (`idx % 5 == 3`) over ores sorted by core distance. Pads with a visible ally builder **on the ore tile** are skipped (gap-fill if all claimed). "Empty" admits ore carrying one of our own `denyOre` barriers (`_allyBarrierOnOre`, barrier-only — not the wider `_shouldClearAllyOreBlock` set); `checkOre` clears it and builds on arrival. Sticky `oreSite` is kept until invalid. Also skips a node if a **visible enemy gunner** is aiming at that tile (`tileThreatenedByGunner`). No store-based harvester cap.
+Places on empty ore (not in relay). With `ORE_STAGGER = False` (default), picks the most convenient empty pad `(dist to core, dist to self)`. With `ORE_STAGGER = True`, index-staggers economy defaults (`idx % 5 in (3, 4)`) over ores sorted by core distance. Pads with a visible ally builder **on the ore tile** are skipped (gap-fill if all claimed). "Empty" admits ore carrying one of our own `denyOre` barriers (`_allyBarrierOnOre`, barrier-only — not the wider `_shouldClearAllyOreBlock` set); `checkOre` clears it and builds on arrival. Sticky `oreSite` is kept until invalid. Also skips a node if a **visible enemy gunner** is aiming at that tile (`tileThreatenedByGunner`). No store-based harvester cap.
 
 ## Spawn
 
-Core rushes `MAX_BUILDERS_EARLY`, then +1 builder on an effective interval: base `SPAWN_INTERVAL`, shortened by `SPAWN_INTERVAL_BY_TI` tiers when the Ti bank is rich (capped at `MAX_BUILDERS`). Registry is HiveMind slot 4.
+Crew size tracks the bank and is counted in **living** builders (`respawn.run_core_spawn`). Core rushes `MAX_BUILDERS_EARLY` (5) unpaced, then holds whatever `BUILDER_TARGET_BY_TI` justifies — 5 poor, 7 at 1000 Ti, 10 at 2000 — clamped by `MAX_BUILDERS` (10). Spawning is otherwise ungated: the engine allows one spawn per turn and the target is bounded, so growth is gradual by construction.
+
+`_aliveBuilders` counts ally `BUILDER_BOT` cells in the core's `local_map`, clamped to slot 4. Slot 4 is builders *ever spawned* and must stay monotonic — it is the `my_index` allocator — so it cannot answer "how many are left"; the ledger can, because every builder broadcasts itself and the core already garbage-collects entries unseen for `total_builders + 2` turns. Counting alive is what makes **losses get replaced**. Under-counting (a live builder that missed a broadcast rotation) costs an extra spawn, which is the safer direction to be wrong in.
+
+This replaced `MAX_BUILDERS_EARLY + round_n // interval`, which was a function of round number with the current Ti tier applied *retroactively*. Crossing 2000 Ti at round 400 leapt the target 13 → 21 and spawned eight builders back to back; falling back froze spawning for 400 rounds, because the lifetime counter it compared against never decreases. Both failures are gone with the round arithmetic, and `SPAWN_INTERVAL` / `SPAWN_INTERVAL_BY_TI` were removed with it.
+
+Resulting crew: 5 poor → 2G/1H/2D, 7 → 3G/1H/3D, 10 rich → 4G/2H/4D.
 
 ## DefGun
 
