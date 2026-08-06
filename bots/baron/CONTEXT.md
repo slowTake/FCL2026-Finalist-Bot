@@ -24,7 +24,7 @@ Tunable in `main.py`. Positive turn → non-guardians harass from that round; po
 
 ## BuildHarvester
 
-Places on empty ore (not in relay). With `ORE_STAGGER = False` (default), picks the most convenient empty pad `(dist to core, dist to self)`. With `ORE_STAGGER = True`, index-staggers economy defaults (`idx % 5 == 3`) over ores sorted by core distance. Pads with a visible ally builder **on the ore tile** are skipped (gap-fill if all claimed). Sticky `oreSite` is kept until invalid. Also skips a node if a **visible enemy gunner** is aiming at that tile (`oreThreatenedByGunner`). No store-based harvester cap.
+Places on empty ore (not in relay). With `ORE_STAGGER = False` (default), picks the most convenient empty pad `(dist to core, dist to self)`. With `ORE_STAGGER = True`, index-staggers economy defaults (`idx % 5 == 3`) over ores sorted by core distance. Pads with a visible ally builder **on the ore tile** are skipped (gap-fill if all claimed). Sticky `oreSite` is kept until invalid. Also skips a node if a **visible enemy gunner** is aiming at that tile (`tileThreatenedByGunner`). No store-based harvester cap.
 
 ## Spawn
 
@@ -80,7 +80,7 @@ Sticky ore site inspection: empty → build; harvester → `relayToCore`; ally i
 
 ## RelayToCore
 
-Inbound conveyor chain from ore/harvester to ally-core-adjacent tiles. Aborts **only** when the next belt tile is under a visible enemy gunner's LoS/arc (`oreThreatenedByGunner`, the same predicate `buildHarvester` uses to skip ore) — so titanium is never spent into a firing line, but an enemy turret merely being in vision no longer drops the belt. Other aborts are failure exits: no ally core, no viable path, path adjacent to the enemy core, or `relayStuck >= 3`. Orchestrator plus facing/clear/place helpers. Belts face next hop; corners face the new outbound direction. Wrong-facing ally belts destroyed; enemy belts cleared by builder fire.
+Inbound conveyor chain from ore/harvester to ally-core-adjacent tiles. Aborts **only** when the next belt tile is under a visible enemy gunner's LoS/arc (`tileThreatenedByGunner`, the same predicate `buildHarvester` uses to skip ore) — so titanium is never spent into a firing line, but an enemy turret merely being in vision no longer drops the belt. Other aborts are failure exits: no ally core, no viable path, path adjacent to the enemy core, or `relayStuck >= 3`. Orchestrator plus facing/clear/place helpers. Belts face next hop; corners face the new outbound direction. Wrong-facing ally belts destroyed; enemy belts cleared by builder fire.
 
 ## Task list
 

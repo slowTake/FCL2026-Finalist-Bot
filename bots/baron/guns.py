@@ -177,7 +177,7 @@ def gunnerHasLos(
 
     `shooterIsAlly` says whose gunner this is, because the same helper is used for
     both teams' rays. Ours (placement, `allyGunCovering`): enemy entities are
-    chewable, our own block. Theirs (`oreThreatenedByGunner`, `_tileUnderGunnerFire`):
+    chewable, our own block. Theirs (`tileThreatenedByGunner`, `_tileUnderGunnerFire`):
     it inverts — our entities are what they chew, and their own buildings shield
     the target. Getting this backwards reports ore as threatened when the enemy's
     own belt is in fact shielding it, and we decline to build there.

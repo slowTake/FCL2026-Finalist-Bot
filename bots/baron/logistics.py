@@ -357,7 +357,7 @@ def _stickyEmptyTarget(bot, ct: Controller) -> Position | None:
     if not _allowOreSite(bot, site):
         bot.oreSite = None
         return None
-    if oreThreatenedByGunner(ct, site):
+    if tileThreatenedByGunner(ct, site):
         bot.oreSite = None
         return None
     if ct.is_in_vision(site) and ct.get_tile_building_id(site) is not None:
@@ -403,7 +403,7 @@ def pickEmptyOre(bot, ct: Controller) -> Position | None:
     for ore in raw:
         if not _allowOreSite(bot, ore):
             continue
-        if oreThreatenedByGunner(ct, ore):
+        if tileThreatenedByGunner(ct, ore):
             continue
         eligible.append(ore)
 
@@ -429,7 +429,7 @@ def pickEmptyOre(bot, ct: Controller) -> Position | None:
     return pool[rank % len(pool)]
 
 
-def oreThreatenedByGunner(ct: Controller, tile: Position) -> bool:
+def tileThreatenedByGunner(ct: Controller, tile: Position) -> bool:
     """True if a visible enemy gunner is currently aimed at tile with LoS."""
     from guns import GUNNER_RANGE_SQ, gunnerHasLos
 
@@ -471,7 +471,7 @@ def _shouldClearAllyOreBlock(ct: Controller, tile: Position) -> bool:
     etype = _allyOreBlock(ct, tile)
     if etype is None:
         return False
-    if etype in (EntityType.GUNNER, EntityType.SENTINEL) and oreThreatenedByGunner(
+    if etype in (EntityType.GUNNER, EntityType.SENTINEL) and tileThreatenedByGunner(
         ct, tile
     ):
         return False
@@ -790,7 +790,7 @@ def relayToCore(bot, ct: Controller) -> None:
     pos = ct.get_position()
 
     # Don't spend titanium on a tile a visible enemy gunner is covering
-    if oreThreatenedByGunner(ct, tile):
+    if tileThreatenedByGunner(ct, tile):
         abortRelay(bot)
         return
 
@@ -889,7 +889,7 @@ def buildHarvester(bot, ct: Controller) -> bool:
                 continue
             if not _allowOreSite(bot, tile):
                 continue
-            if oreThreatenedByGunner(ct, tile):
+            if tileThreatenedByGunner(ct, tile):
                 continue
             if ct.can_build_harvester(tile):
                 ct.build_harvester(tile)
@@ -925,7 +925,7 @@ def checkOre(bot, ct: Controller, tile: Position) -> bool:
 
     if bid is None:
         # Empty — build if adjacent / move (skip if enemy gunner aims here)
-        if oreThreatenedByGunner(ct, tile):
+        if tileThreatenedByGunner(ct, tile):
             return False
 
         pos = ct.get_position()
