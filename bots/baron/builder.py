@@ -23,6 +23,13 @@
 #        not just own vision) → our own sentinel on a pad inside the leash. Its
 #        5.7 reach covers what a gunner's 3.6 cannot, without leaving home.
 #        Above defendHome: healing loses to a sentinel (18/shot vs 4 HP/turn).
+# 3c. avoidFire — standing in an enemy gunner's LoS → step to a safe tile,
+#        goal=corePos so the dodge stays homeward and inside the leash. Below the
+#        turret answers (placing a counter-gunner is worth eating a shot for) and
+#        above every chore (healing 4 HP/turn while taking 10 is not).
+#        Caveat: step 2's _reactEnemyTurret runs defendHome/healAlly internally, so
+#        a guardian that can heal something will still do so from inside the line
+#        before ever reaching this step.
 # 4. defendHome — heal core if HP < 500. No attack branch: builder fire is
 #        1.0 Ti/dmg against a gunner's 0.20, and the approach walked a 40 HP
 #        builder into something dealing 10 dmg/turn. Turrets answer turrets.
@@ -348,8 +355,9 @@ def _guardianEconomy(bot, ct: Controller) -> bool:
 
 
 def runGuardian(bot, ct: Controller) -> None:
-    """Guardian: leash → react → defGun → defendHome → healAlly → clearBarriers
-    → economy (only while nothing hostile is in vision) → patrol."""
+    """Guardian: leash → react → defGun → defSentinel → avoidFire → defendHome
+    → healAlly → clearBarriers → reconnectBelts → economy (last three only while
+    nothing hostile is in vision) → patrol."""
     _resolveCores(bot, ct)
     bot.nearCoreEconomy = False
     if bot.corePos is None:
@@ -379,9 +387,16 @@ def runGuardian(bot, ct: Controller) -> None:
         return
     if defGun(bot, ct, homeOnly=True):
         return
-    # Above defendHome: its no-enemy branch heals the core, which loses to a
-    # sentinel parked outside the leash (18 a shot vs 4 HP/turn of healing).
+    # Above defendHome, which heals the core: healing alone loses to a sentinel
+    # parked outside the leash (18 a shot vs 4 HP/turn), so killing it is the
+    # defence and the heal is only the holding action underneath.
     if defSentinel(bot, ct):
+        return
+    # Below the turret answers, above every chore. Placing a counter-gunner is
+    # worth eating a shot for — it is the actual response. Healing at 4 HP/turn
+    # while taking 10 is not, and neither is clearing a barrier or laying a belt.
+    # goal=corePos so the dodge retreats homeward and stays inside the leash.
+    if avoidFire(bot, ct, goal=bot.corePos):
         return
     if defendHome(bot, ct):
         return

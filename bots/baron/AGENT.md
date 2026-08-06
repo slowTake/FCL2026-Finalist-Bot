@@ -8,7 +8,7 @@ Quick index: where to edit and main entrypoints. Update when adding public funct
 |--------|------|-----------------|
 | `main.py` | Policy caps, store slots, `Player.run` | `Player.run`, `_run_core`, `_run_builder` |
 | `builder.py` | Role orchestrators + task lists | `runBuilderRoles`, `isGuardian`, `isHarasser`, `runGuardian`, `runDefault`, `runHarasser` |
-| `defence.py` | Defensive orchestrators | `defGun`, `defSentinel`, `threateningTurret`, `clearBarriers`, `patrolHome` |
+| `defence.py` | Defensive orchestrators | `defGun`, `defSentinel`, `threateningTurret`, `clearBarriers`, `reconnectBelts`, `patrolHome` |
 | `logistics.py` | Default helpers | `buildHarvester`, `maintainHarvester`, `checkOre`, `relayToCore`, `defendHome`, `healAlly`, `recheckOreNodes` |
 | `pathing.py` | A*, passable, obstruction fallback, encirclement breakout | `astar`, `astarFromSeeds`, `walkPassable`, `relayPassable`, `findPathAroundObstruction`, `breakEncirclement` |
 | `offense.py` | Harasser helpers | `snipeHarvester`, `offGun`, `avoidFire`, `seekHarvester`, `seekCore` |
@@ -46,7 +46,7 @@ Example — `relayToCore`:
 
 Example — `defGun` → `placeGun` only (never sentinels); out-of-leash turrets → `defSentinel` → `placeDefSentinel`.
 
-Example — `runGuardian` → leash → `_reactEnemyTurret` → `defGun` → `defSentinel` → `defendHome` → `healAlly` → *[not `underAttack`]* `clearBarriers` → *[not `underAttack`]* `reconnectBelts` → *[not `underAttack`]* economy → `patrolHome`. No builder-attack anywhere in the chain except `clearBarriers`; turrets answer turrets.
+Example — `runGuardian` → leash → `_reactEnemyTurret` → `defGun` → `defSentinel` → `avoidFire` → `defendHome` → `healAlly` → *[not `underAttack`]* `clearBarriers` → *[not `underAttack`]* `reconnectBelts` → *[not `underAttack`]* economy → `patrolHome`. No builder-attack anywhere in the chain except `clearBarriers`; turrets answer turrets.
 
 Example — `runHarasser` → `snipeHarvester` → `offGun` → `avoidFire` → `seekHarvester` → `seekCore`.
 
