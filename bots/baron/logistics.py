@@ -1022,51 +1022,27 @@ def _nearCore(bot, ct: Controller) -> bool:
     return _chebyshevToCore(ct.get_position(), bot.corePos) <= DEFEND_HOME_CHEBYSHEV
 
 
-def _findDefendTarget(ct: Controller) -> Position | None:
-    """Nearest enemy gunner/sentinel/launcher (prefer) or builder in this unit's vision."""
-    me = ct.get_team()
-    pos = ct.get_position()
-    best_turret: Position | None = None
-    best_turret_d = 10**9
-    best_builder: Position | None = None
-    best_builder_d = 10**9
-    for eid in ct.get_nearby_units():
-        if ct.get_team(eid) == me:
-            continue
-        etype = ct.get_entity_type(eid)
-        epos = ct.get_position(eid)
-        dist = manhattan(pos, epos)
-        if etype in (EntityType.GUNNER, EntityType.SENTINEL, EntityType.LAUNCHER):
-            if dist < best_turret_d:
-                best_turret_d = dist
-                best_turret = epos
-        elif etype == EntityType.BUILDER_BOT:
-            if dist < best_builder_d:
-                best_builder_d = dist
-                best_builder = epos
-    if best_turret is not None:
-        return best_turret
-    return best_builder
-
-
 def defendHome(bot, ct: Controller) -> bool:
-    """Near-core only: attack enemy combat in vision, else heal damaged core."""
+    """Near-core only: keep a damaged ally core alive.
+
+    This used to lead with an attack branch — nearest enemy turret (else builder),
+    `moveToward` it, poke for 2 dmg at 2 Ti. That is dropped. The Ti rate alone was
+    bad (1.0 Ti/dmg against a gunner's 0.20), but the approach was worse: a 40 HP
+    builder closing on something dealing 10 dmg/turn at sqrt(13) dies in four turns
+    and has to survive the walk before landing a single 2-damage hit. We were
+    trading a 30 Ti builder for ~6 damage to a 10 Ti gunner. Turrets answer turrets
+    — `defGun` and `defSentinel` sit above this in the chain.
+
+    Healing is no longer gated on an empty vision either. The core is healed
+    *because* something is shelling it; the old gate meant any enemy builder
+    wandering into view flipped the guardian into the attack branch and it
+    abandoned the core to give chase.
+    """
     if bot.inRelay or getattr(bot, "recheckingOre", False):
         return False
     if not _nearCore(bot, ct):
         return False
 
-    target = _findDefendTarget(ct)
-    if target is not None:
-        pos = ct.get_position()
-        if abs(pos.x - target.x) + abs(pos.y - target.y) == 1:
-            if ct.get_action_cooldown() == 0 and ct.can_fire(target):
-                ct.fire(target)
-                return True
-            return False
-        return moveToward(bot, ct, target)
-
-    # No enemy in vision — heal core if HP < 500
     if bot.corePos is None or ct.get_action_cooldown() != 0:
         return False
     for tile in _coreFootprint(bot.corePos):

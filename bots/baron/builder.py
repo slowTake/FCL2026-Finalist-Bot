@@ -364,7 +364,10 @@ def runGuardian(bot, ct: Controller) -> None:
         return
     if healAlly(bot, ct):
         return
-    if clearBarriers(bot, ct):
+    # Barrier clearing is a chore, not a response: 30 HP at 2 dmg is 15 turns and
+    # 30 Ti to remove a 3 Ti barrier, so it must never run while anything hostile
+    # is in vision. Same gate as the economy below it.
+    if not underAttack and clearBarriers(bot, ct):
         return
     if not underAttack and _guardianEconomy(bot, ct):
         return
