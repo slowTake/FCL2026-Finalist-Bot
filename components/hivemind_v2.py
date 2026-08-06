@@ -45,7 +45,12 @@ class HiveMind:
         team = ct.get_team()
         pos = ct.get_position()
 
-        fingerprint = (w, h, team, pos.x, pos.y)
+        wall_count = 0
+        for tile in ct.get_nearby_tiles():
+            if ct.get_tile_env(tile) == Environment.WALL:
+                wall_count += 1
+
+        fingerprint = (w, h, team, pos.x, pos.y, wall_count)
         enemy_state = CoreState.UNKNOWN
         enemy_x = 0
         enemy_y = 0
