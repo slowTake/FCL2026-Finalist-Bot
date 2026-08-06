@@ -195,12 +195,23 @@ def _resolveCores(bot, ct: Controller) -> None:
     from main import SLOT_PACKED_CORES
 
     ally, enemy = unpack_cores(ct.read_store(SLOT_PACKED_CORES))
-    if bot.corePos is None and ally[0] != CoreState.UNKNOWN:
-        bot.corePos = Position(ally[1], ally[2])
+    if bot.corePos is None:
+        if ally[0] != CoreState.UNKNOWN:
+            bot.corePos = Position(ally[1], ally[2])
+        else:
+            bot.corePos = ct.get_position()
+            
     if enemy[0] != CoreState.UNKNOWN:
         bot.enemyCorePos = Position(enemy[1], enemy[2])
-    elif bot.enemyCorePos is None and bot.hivemind.enemy_core_pos is not None:
-        bot.enemyCorePos = bot.hivemind.enemy_core_pos
+    elif bot.enemyCorePos is None:
+        if bot.hivemind.enemy_core_pos is not None:
+            bot.enemyCorePos = bot.hivemind.enemy_core_pos
+        else:
+            w, h = ct.get_map_width(), ct.get_map_height()
+            cp = bot.corePos or ct.get_position()
+            ex = w - 1 - cp.x if cp.x > w // 2 else w - 2 - cp.x
+            ey = h - 1 - cp.y if cp.y > h // 2 else h - 2 - cp.y
+            bot.enemyCorePos = Position(max(0, ex), max(0, ey))
 
 
 def isGuardian(idx: int) -> bool:
