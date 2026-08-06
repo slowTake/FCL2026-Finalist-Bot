@@ -77,6 +77,14 @@ ORE_DEADLOCK_TURNS = 8
 # to give up on it. ≤0 disables.
 HARASS_DEADLOCK_TURNS = 8
 
+# --- Blocked-route breaker (False disables) ---
+# When A* proves the ore claim unreachable, replan with enemy barriers passable to
+# find which one seals the lane, and answer it with a gunner: 3 shots / 6 Ti and ~3
+# turns, against a builder's 15 turns and 30 Ti. The gunner then stays and kills
+# re-walls. No barrier on the route (terrain or ally buildings) → the node is
+# blacklisted instead. Known case: the walled-off centre ore on atoll.
+OPEN_BLOCKED_ROUTE = True
+
 # --- Encirclement breaker (≤0 disables) ---
 # Turns a builder may sit motionless with no legal move in any direction before
 # it destroys/fires at an adjacent building to open a door. Catches a harasser
@@ -130,6 +138,11 @@ class Player:
         self.relayBuiltTo = -1
         self.relayStuck = 0
         self.relayThreatBlocked: set[tuple[int, int]] = set()
+        self.blockadeDoor: tuple[int, int] | None = None
+        self.relayPathBlocked = False
+        self.relayPathBlockedFrom: tuple[int, int] | None = None
+        self.lastPathFailed = False
+        self.lastPathFailedTarget: tuple[int, int] | None = None
         self.cachedPath: list[Position] | None = None
         self.cachedPathTarget: Position | None = None
         self.lastPos: Position | None = None

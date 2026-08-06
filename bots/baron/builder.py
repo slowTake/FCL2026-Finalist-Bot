@@ -68,8 +68,20 @@
 #        committed belt is always finished.
 #    0b. dodgeWhileRelaying — inRelay and standing in gunner LoS → avoidFire toward
 #        ally core. Threatened belt tiles are routed around in relayToCore.
+#    0b2. openBlockedRoute — walk to oreSite proven unreachable, or relay from
+#        relayOrigin proven unreachable → replan with doors passable to find the one
+#        sealing the lane. Ally door (barrier/launcher/sentinel/gunner — never core
+#        or harvester) → destroy: free, no cooldown. Enemy barrier → placeGun
+#        (3 shots / 6 Ti vs a builder's 15 turns / 30 Ti; the gunner stays and kills
+#        re-walls). Sticky via bot.blockadeDoor so the walk to the pad cannot lose
+#        it. Above breakOreDeadlock, which clears the claim it needs. Terrain, core
+#        or harvester in the way → falls through and the node is blacklisted.
 #    0c. breakOreDeadlock — motionless (bot.stuck) ≥ ORE_DEADLOCK_TURNS outside a
 #        relay → blacklist the ore claim and re-pick. State-only, no turn cost.
+#        Fires immediately, without the wait, when A* has proven the claim
+#        unreachable (pathKnownBlocked) — a walled-off node is not a timing
+#        problem. Note skippedOres is still wiped every ORE_RECHECK_CLEAR_INTERVAL
+#        (50) rounds, so an unreachable node does come back around.
 #    Early phase (age < BUILDER_HOME_TURNS after birth_round): defend-first +
 #    nearCoreEconomy (Chebyshev 4 ore). ≤0 disables. Harassers/guardians never enter.
 #    Early (after react):
@@ -133,6 +145,7 @@ from logistics import (
     abortRelay,
     breakOreDeadlock,
     buildHarvester,
+    openBlockedRoute,
     contestTurret,
     defendHome,
     enemyTurretInVision,
@@ -279,6 +292,8 @@ def _runDefaultHome(bot, ct: Controller) -> None:
         return
     if _dodgeWhileRelaying(bot, ct):
         return
+    if openBlockedRoute(bot, ct):
+        return
     breakOreDeadlock(bot, ct)  # state-only; economy below re-picks this turn
 
     if defGun(bot, ct):
@@ -310,6 +325,10 @@ def runDefault(bot, ct: Controller) -> None:
     if _reactEnemyTurret(bot, ct, skipEconomy=relayEverComplete(ct)):
         return
     if _dodgeWhileRelaying(bot, ct):
+        return
+    # Above breakOreDeadlock, which clears oreSite — this needs the claim to know
+    # what route was blocked. Removing the blockage beats giving up on the node.
+    if openBlockedRoute(bot, ct):
         return
     breakOreDeadlock(bot, ct)  # state-only; economy below re-picks this turn
     if buildHarvester(bot, ct):

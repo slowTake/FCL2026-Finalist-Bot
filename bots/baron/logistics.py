@@ -193,6 +193,38 @@ def facingIntoCore(pos: Position, core_pos: Position) -> Direction:
     return nearestCardinal(pos.direction_to(core_pos))
 
 
+def _notePathVerdict(bot, target: Position, failed: bool) -> None:
+    """Record whether A* could reach `target` on the known map.
+
+    `moveToward` returns a bare False for three unrelated situations — move
+    cooldown, a legal step that `can_move` refused, and *no route exists at all* —
+    so nothing upstream could tell "wait a turn" from "that ore is walled off".
+    `breakOreDeadlock` therefore blamed the ore node and re-picked another one
+    behind the same wall, forever. The verdict is paired with the target because a
+    single turn may call `moveToward` for several different goals as the role chain
+    falls through; a bare flag would describe whichever ran last.
+
+    Only set on turns that actually planned — under cooldown the unit has learned
+    nothing new, so the previous verdict stands.
+    """
+    bot.lastPathFailed = failed
+    bot.lastPathFailedTarget = (target.x, target.y) if failed else None
+
+
+def pathKnownBlocked(bot, target: Position) -> bool:
+    """True if the last planned route to `target` proved unreachable.
+
+    Conservative by construction. `walkPassable` treats tiles that are neither in
+    vision nor in `local_map` as passable, so A* routes optimistically through fog
+    and only fails once the known map *proves* the region is sealed. It errs toward
+    "reachable", which is the right direction — we would rather walk out and
+    discover a wall than wrongly abandon ore.
+    """
+    if not getattr(bot, "lastPathFailed", False):
+        return False
+    return getattr(bot, "lastPathFailedTarget", None) == (target.x, target.y)
+
+
 def moveToward(bot, ct: Controller, target: Position) -> bool:
     if ct.get_move_cooldown() != 0:
         return False
@@ -220,6 +252,7 @@ def moveToward(bot, ct: Controller, target: Position) -> bool:
         and cached[0] == pos
     ):
         path = cached
+        _notePathVerdict(bot, target, False)  # cache hit — a route was found
     else:
         path = astarFromSeeds(
             [pos],
@@ -230,6 +263,9 @@ def moveToward(bot, ct: Controller, target: Position) -> bool:
         )
         bot.cachedPath = path
         bot.cachedPathTarget = target
+        # Only `path is None` means "no route on the known map". A short path is a
+        # planner quirk, not proof of blockage, so it must not read as unreachable.
+        _notePathVerdict(bot, target, path is None)
 
     if not path or len(path) < 2:
         step = nearestCardinal(pos.direction_to(target))
@@ -737,6 +773,12 @@ def pickRelayPath(
             local_map=local_map,
             max_iters=PATH_MAX_ITERS,
         )
+    # Both planners failing is the relay's own "no route exists" verdict. Without
+    # recording it, relayToCore just aborts and the reason is indistinguishable from
+    # every other abort — so a relay sealed by our own gunner never reached the door
+    # search, which reads `moveToward`'s walking verdict only.
+    bot.relayPathBlocked = path is None
+    bot.relayPathBlockedFrom = (origin.x, origin.y) if path is None else None
     return path
 
 
@@ -1245,6 +1287,220 @@ def _pickRecheckOre(bot, ct: Controller) -> Position | None:
     return harv_best
 
 
+def _enemyBarrierAt(bot, ct: Controller, tile: Position) -> bool:
+    """Enemy barrier on tile, from vision or the ledger."""
+    me = ct.get_team()
+    if ct.is_in_vision(tile):
+        bid = ct.get_tile_building_id(tile)
+        if bid is None:
+            return False
+        return (
+            ct.get_entity_type(bid) == EntityType.BARRIER
+            and ct.get_team(bid) != me
+        )
+    cell = bot.hivemind.local_map.get((tile.x, tile.y))
+    ent = cell.get("entity") if cell else None
+    if not ent or ent.get("team") == me:
+        return False
+    return ent.get("type") == EntityType.BARRIER
+
+
+# Ally buildings we are willing to demolish to reopen a sealed route. `destroy` is
+# allied-only, free and costs no action cooldown, so an ally door is the cheapest of
+# all — but the list is deliberately short. The CORE is never a candidate, and
+# neither is a HARVESTER: 20 Ti and actively producing, so if one seals the only
+# corridor the node gets blacklisted instead. Conveyors and splitters are already
+# walkable, so they never block in the first place.
+_ALLY_DOOR_TYPES = (
+    EntityType.BARRIER,
+    EntityType.LAUNCHER,
+    EntityType.SENTINEL,
+    EntityType.GUNNER,
+)
+
+
+def _allyDoorAt(bot, ct: Controller, tile: Position) -> bool:
+    """Ally building on tile that we would demolish to reopen a route."""
+    me = ct.get_team()
+    if ct.is_in_vision(tile):
+        bid = ct.get_tile_building_id(tile)
+        if bid is None:
+            return False
+        return (
+            ct.get_team(bid) == me
+            and ct.get_entity_type(bid) in _ALLY_DOOR_TYPES
+        )
+    cell = bot.hivemind.local_map.get((tile.x, tile.y))
+    ent = cell.get("entity") if cell else None
+    if not ent or ent.get("team") != me:
+        return False
+    return ent.get("type") in _ALLY_DOOR_TYPES
+
+
+def _isDoor(bot, ct: Controller, tile: Position) -> bool:
+    return _enemyBarrierAt(bot, ct, tile) or _allyDoorAt(bot, ct, tile)
+
+
+def findBlockingDoor(
+    bot, ct: Controller, target: Position, *, relay: bool = False
+) -> Position | None:
+    """The building sealing the route to `target`, or None.
+
+    `pathKnownBlocked` says a route does not exist; it cannot say what to remove.
+    Replanning with doors treated as *passable* answers that: if a route appears,
+    the first door along it is the tile holding the lane shut.
+
+    `relay=True` plans with `relayPassable` instead of `walkPassable`, because a
+    relay needs a *layable* corridor, which is stricter than a walkable one — a
+    belt cannot be laid where a builder can happily stand.
+
+    None means the blockage is something we will not open: terrain, the ally core,
+    or an ally harvester. The caller falls through to blacklisting the node.
+
+    This never second-guesses the pathfinder. Both planners already route *around*
+    obstructions — `relayPassable` rejects `_RELAY_BLOCK_TYPES` and
+    `findPathAroundObstruction` is the explicit fallback — so by the time we get
+    here A* has proven there is no way around, which only happens at a choke.
+    """
+    local_map = bot.hivemind.local_map
+    pos = ct.get_position()
+
+    def ok(p: Position) -> bool:
+        if p == pos:
+            return True
+        if not inBounds(ct, p):
+            return False
+        if _isDoor(bot, ct, p):
+            return True  # pretend it is open — this is what we are looking for
+        if relay:
+            return relayPassable(ct, p, local_map=local_map)
+        if ct.is_in_vision(p) and ct.get_tile_builder_bot_id(p) is not None:
+            return False
+        return walkPassable(ct, p, local_map=local_map)
+
+    path = astarFromSeeds(
+        [pos],
+        is_passable=ok,
+        is_goal=lambda p: p == target,
+        heuristic=lambda p: manhattan(p, target),
+        max_iters=PATH_MAX_ITERS,
+    )
+    if not path:
+        return None
+    for tile in path:
+        if _isDoor(bot, ct, tile):
+            return tile
+    return None
+
+
+def _clearBlockageState(bot) -> None:
+    """Forget the stale "no route" verdicts after acting on a door.
+
+    Without this, `breakOreDeadlock` runs next turn on a verdict recorded *before*
+    we opened the lane and blacklists the very node we just unblocked. `bot.stuck`
+    matters for the same reason: a builder that stood still for twenty turns would
+    otherwise trip the deadlock breaker the moment the door came down.
+    """
+    bot.lastPathFailed = False
+    bot.lastPathFailedTarget = None
+    bot.relayPathBlocked = False
+    bot.relayPathBlockedFrom = None
+    bot.cachedPath = None
+    bot.cachedPathTarget = None
+    bot.stuck = 0
+
+
+def _blockedRouteTarget(bot) -> tuple[Position, bool] | None:
+    """What is sealed and how to plan for it: (target, relay_mode), or None.
+
+    Walking comes first because it is the more common stall; a blocked relay only
+    matters once the builder can actually stand where it needs to build.
+    """
+    site = bot.oreSite
+    if site is not None and pathKnownBlocked(bot, site):
+        return site, False
+    if getattr(bot, "relayPathBlocked", False):
+        origin = getattr(bot, "relayPathBlockedFrom", None)
+        if origin is not None:
+            return Position(origin[0], origin[1]), True
+    return None
+
+
+def _openAllyDoor(bot, ct: Controller, tile: Position) -> bool:
+    """Demolish an ally building sealing the lane. Free, no action cooldown."""
+    pos = ct.get_position()
+    if abs(pos.x - tile.x) + abs(pos.y - tile.y) == 1:
+        if not ct.can_destroy(tile):
+            return False
+        ct.destroy(tile)
+        bot.blockadeDoor = None
+        _clearBlockageState(bot)
+        return True
+    return moveToward(bot, ct, tile)
+
+
+def openBlockedRoute(bot, ct: Controller) -> bool:
+    """Open the door sealing our route instead of giving up on the node.
+
+    Two kinds of door, and the cheaper one is ours. An **ally** building comes down
+    with `destroy` — allied-only, free, no action cooldown. An **enemy** barrier gets
+    a gunner aimed at it: 3 shots, 6 Ti of ammo, ~3 turns, against a builder's 15
+    turns and 30 Ti, and the builder is free again after one turn instead of pinned
+    for fifteen. `_GUNNER_PRIORITY` already ranks BARRIER above belts, so `gunnerLoop`
+    shoots it with no new machinery, and the gunner then stays on the lane killing
+    re-walls: they pay 3 Ti to rebuild, we pay 6 Ti of ammo to reopen — losing on Ti,
+    but the lane stays open, which is worth more than the delta.
+
+    Triggers on a blocked **walk** to the ore claim or a blocked **relay** from its
+    origin. The relay case needs its own verdict because `pathKnownBlocked` only
+    describes `moveToward`; a relay sealed by our own gunner aborts silently and
+    would otherwise never reach here.
+
+    The door is sticky. `placeGun` walks to its pad via `moveToward`, which rewrites
+    the path verdict to describe the *pad* — so re-deriving the door each turn would
+    lose it mid-approach and let the economy walk the builder back at the ore.
+    Ping-pong is the failure mode this codebase keeps hitting, so the claim is held
+    until the door is gone, an ally gun covers it, or the builder stalls out.
+    """
+    from main import OPEN_BLOCKED_ROUTE, ORE_DEADLOCK_TURNS
+
+    if not OPEN_BLOCKED_ROUTE or bot.inRelay:
+        return False
+
+    from guns import allyGunCovering, placeGun
+
+    door = getattr(bot, "blockadeDoor", None)
+    if door is not None:
+        tile = Position(door[0], door[1])
+        stalled = (
+            ORE_DEADLOCK_TURNS
+            and getattr(bot, "stuck", 0) >= ORE_DEADLOCK_TURNS
+        )
+        if stalled or not _isDoor(bot, ct, tile):
+            bot.blockadeDoor = None
+        elif _allyDoorAt(bot, ct, tile):
+            return _openAllyDoor(bot, ct, tile)
+        elif allyGunCovering(ct, tile):
+            bot.blockadeDoor = None  # already answered
+        else:
+            return placeGun(bot, ct, tile)
+
+    blocked = _blockedRouteTarget(bot)
+    if blocked is None:
+        return False
+    target, relay_mode = blocked
+    found = findBlockingDoor(bot, ct, target, relay=relay_mode)
+    if found is None:
+        return False  # terrain, core or harvester — caller blacklists the node
+    bot.blockadeDoor = (found.x, found.y)
+    if _allyDoorAt(bot, ct, found):
+        return _openAllyDoor(bot, ct, found)
+    if allyGunCovering(ct, found):
+        bot.blockadeDoor = None
+        return False
+    return placeGun(bot, ct, found)
+
+
 def breakOreDeadlock(bot, ct: Controller) -> bool:
     """Drop the ore claim when a builder has sat motionless too long.
 
@@ -1262,7 +1518,12 @@ def breakOreDeadlock(bot, ct: Controller) -> bool:
         return False
     if bot.inRelay:
         return False
-    if getattr(bot, "stuck", 0) < ORE_DEADLOCK_TURNS:
+    # Proven unreachable beats the motionless heuristic: waiting out the full
+    # ORE_DEADLOCK_TURNS is pointless once A* has shown there is no route at all.
+    # Known case: the walled-off centre ore on atoll, where a builder blacklisted a
+    # node, picked another behind the same wall, and cycled for the rest of the game.
+    proven_blocked = bot.oreSite is not None and pathKnownBlocked(bot, bot.oreSite)
+    if not proven_blocked and getattr(bot, "stuck", 0) < ORE_DEADLOCK_TURNS:
         return False
 
     if bot.oreSite is not None:

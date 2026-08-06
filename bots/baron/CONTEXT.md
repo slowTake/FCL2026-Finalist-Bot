@@ -60,6 +60,38 @@ Guardian idle work, below every defence step and `clearBarriers`, above `patrolH
 
 Two interactions make it safe. A visible enemy drops the relay claim (`abortRelay` + clear `oreSite`) before the defence chain, because `_reactEnemyTurret` and `defGun` both bail out early on `inRelay` — a guardian holding a relay would otherwise be locked out of fighting; placed belts stay on the map and the watermark rebuilds on re-pick. And `_guardianLeashOk` widens the leash by `GUARDIAN_ECON_SLACK` (default 1) **only** while `inRelay` or `oreSite` is set, since ore on the leash edge is worked from a neighbouring tile one step out; without it the leash step marches the guardian home every other turn and the relay never finishes.
 
+## PathKnownBlocked
+
+Reachability signal (`logistics._notePathVerdict` / `pathKnownBlocked`). `moveToward` returned a bare `False` for three unrelated situations — move cooldown, a legal step `can_move` refused, and *no route exists at all* — so nothing upstream could distinguish "wait a turn" from "that ore is walled off". Each planning turn now records the verdict on `bot.lastPathFailed` / `lastPathFailedTarget`.
+
+The verdict is paired with a target because one turn may call `moveToward` for several different goals as the role chain falls through; a bare flag would describe whichever ran last. It is only written on turns that actually planned — under move cooldown the unit has learned nothing, so the previous verdict stands. A cache hit records success. Only `path is None` counts as blocked: a short path is a planner quirk, not proof.
+
+**Conservative by construction.** `walkPassable` treats tiles that are neither in vision nor in `local_map` as passable, so A* routes optimistically through fog and only fails once the known map *proves* the region sealed. It errs toward "reachable" — better to walk out and discover a wall than wrongly abandon ore. Note also `PATH_MAX_ITERS = 800` is under a 30x30 map's 900 tiles, so a very long but real route could exhaust the budget and read as blocked.
+
+Consumed by `BreakOreDeadlock`, which no longer waits out `ORE_DEADLOCK_TURNS` when the claim is provably unreachable. Known case: the walled-off centre ore on `atoll`, where a builder blacklisted a node, picked another behind the same wall, and cycled for the rest of the game.
+
+Consumed also by `OpenBlockedRoute`, which turns the verdict into an action.
+
+## OpenBlockedRoute
+
+Removing a blockage instead of giving up on the node (`logistics.openBlockedRoute` + `findBlockingDoor`, knob `OPEN_BLOCKED_ROUTE` in `main.py`). Sits in `runDefault` / `_runDefaultHome` **above** `breakOreDeadlock`, which clears `oreSite` — the door search needs the claim to know which route was blocked.
+
+`pathKnownBlocked` says no route exists; it cannot say what to remove. `findBlockingDoor` answers that by replanning with **enemy barriers treated as passable**: if a route appears, the first barrier along it is the tile holding the lane shut. `None` means the blockage is not a barrier — terrain, or ally buildings, which `walkPassable` also rejects — and the caller falls through to blacklisting the node.
+
+The answer is a **gunner aimed at the barrier**, not builder fire. 3 shots / 6 Ti / ~3 turns against a builder's 15 turns and 30 Ti, and the builder is free after one turn rather than pinned for fifteen. No new machinery is needed: `_GUNNER_PRIORITY` already ranks `BARRIER` above belts, so `gunnerLoop` shoots it. The gunner then stays on the lane and kills re-walls automatically — they pay 3 Ti to rebuild, we pay 6 Ti of ammo to reopen, a losing Ti trade that buys a permanently open economy lane.
+
+**The door is sticky** (`bot.blockadeDoor`). `placeGun` walks to its pad via `moveToward`, which rewrites the path verdict to describe the *pad* — so re-deriving the door from `pathKnownBlocked` every turn would lose it mid-approach and let the economy walk the builder back at the ore. The claim is held until the barrier dies, an ally gun covers it (`allyGunCovering`), or the builder stalls for `ORE_DEADLOCK_TURNS`.
+
+**Two kinds of door, and the cheaper one is ours.** An **ally** building (`_allyDoorAt`: barrier, launcher, sentinel, gunner) comes down with `destroy` — allied-only, free, no action cooldown. Never the **core**, and never a **harvester**: 20 Ti and actively producing, so if one seals the only corridor the node is blacklisted instead. Conveyors and splitters are walkable and so never block.
+
+**Two triggers.** A blocked *walk* to `oreSite` (`pathKnownBlocked`) or a blocked *relay* from `relayOrigin` (`bot.relayPathBlocked`, set by `pickRelayPath` when both `astarFromSeeds` and `findPathAroundObstruction` return `None`). The relay verdict is separate because `pathKnownBlocked` only describes `moveToward`; a relay sealed by our own gunner aborts silently and would never otherwise reach the door search. `findBlockingDoor(relay=True)` then plans with `relayPassable` rather than `walkPassable`, since a relay needs a *layable* corridor — stricter than a walkable one.
+
+**This never second-guesses the pathfinder.** Both planners already route *around* obstructions — `relayPassable` rejects `_RELAY_BLOCK_TYPES`, and `findPathAroundObstruction` is the explicit fallback — so by the time we get here A* has proven there is no way around, which only happens at a choke. That gate is the only thing keeping a builder from demolishing a deliberately-placed defensive turret; if turrets near the core start disappearing, it is leaking.
+
+After any successful door action `_clearBlockageState` drops the stale verdicts, path cache and `bot.stuck`. Without it `breakOreDeadlock` fires next turn on a verdict recorded *before* the lane opened and blacklists the node we just unblocked.
+
+*Gap:* **guardians do not run this.** Their domain is the leash, where `clearBarriers` already applies.
+
 ## BreakBeltDeadlock
 
 Anti-livelock for harassers (`offense.breakBeltDeadlock`, knob `HARASS_DEADLOCK_TURNS` in `main.py`; `≤0` disables) — the offence mirror of `BreakOreDeadlock`, called state-only at the top of `runHarasser` so the selectors below re-pick the same turn.
