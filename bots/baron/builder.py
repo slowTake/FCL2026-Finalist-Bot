@@ -44,12 +44,16 @@
 #    builder in vision must not keep a guardian off ore.
 # 6. clearBarriers — fire / move to nearest enemy barrier inside the leash only
 # 7. reconnectBelts — ally conveyor inside the leash aiming at a layable empty
-#        tile → build the patch belt, facing a surviving belt/core one step nearer
-#        the core if there is one. Ore-anchored repair cannot reach these: a
-#        guardian's _allowOreSite confines it to leash ore, so a break near the
-#        core belonging to a harvester further out is unclaimable. Above economy
-#        because a cut line yields zero while a new harvester is incremental.
-#        Greedy — one tile a turn, no routing around a blocked coreward tile.
+#        tile → build the patch belt. Facing must be *proven*: a neighbour one step
+#        nearer the core already holding a belt/core, or (2-tile gap) that neighbour
+#        layable with the tile beyond it reconnecting. Otherwise the break is skipped
+#        entirely — no crow-flies guess, which used to march a line of belts at the
+#        core one per turn and get torn out again by clearWrongBelt. Ore-anchored
+#        repair cannot reach these: a guardian's _allowOreSite confines it to leash
+#        ore, so a break near the core owned by a harvester further out is
+#        unclaimable. Above economy because a cut line yields zero while a new
+#        harvester is incremental. Skips tiles within Chebyshev 2 of another builder
+#        (a relay in progress owns its dangling head).
 # 8. economy — (GUARDIAN_ECONOMY in main.py). nearCoreEconomy=True, so ore is
 #        limited to the leash: buildHarvester on empty leash ore, then
 #        maintainHarvester, which also finishes/repairs a harvester's belt line
@@ -124,6 +128,13 @@
 #        gated off while a gun is affordable, so a funded harasser beside a belt
 #        correctly refuses to cut it (10 shots / 20 Ti for a 3 Ti conveyor) and then
 #        had no way to give the target up.
+# 3b. denyOre — barrier empty ore inside DENY_ORE_CHEBYSHEV of the enemy core:
+#        3 Ti denies a 20 Ti harvester and its whole line, and they pay 6-30 Ti to
+#        clear it. Two guards keep it off our side — _oreCloserToAlly (midline) and
+#        DENY_ORE_MIN_ALLY_CHEBYSHEV (floor from our own core, for small maps where an
+#        ore is marginally nearer them yet inside our working range). Skips occupied
+#        nodes and tiles under gunner fire. Not a lock-out: pickEmptyOre admits our own
+#        barriers and checkOre clears them to build.
 # 4. denyBelt — Mode A: barrier on the empty tile ahead of an enemy belt's facing
 #        (3 Ti, unthrottled). Mode B: cut an enemy belt from an adjacent tile and
 #        barrier it in place (sticky via bot.denyBeltTile; falls back to mounting the
@@ -172,6 +183,7 @@ from offense import (
     avoidFire,
     breakBeltDeadlock,
     denyBelt,
+    denyOre,
     offGun,
     seekCore,
     seekHarvester,
@@ -470,7 +482,7 @@ def runGuardian(bot, ct: Controller) -> None:
 
 
 def runHarasser(bot, ct: Controller) -> None:
-    """Harasser: snipe → offGun → avoidFire → denyBelt → seekHarvester → seekCore."""
+    """Harasser: snipe → offGun → avoidFire → denyOre → denyBelt → seek → seekCore."""
     _resolveCores(bot, ct)
     bot.nearCoreEconomy = False
     # State-only; the selectors below re-pick this turn. Costs no turn.
@@ -480,6 +492,10 @@ def runHarasser(bot, ct: Controller) -> None:
     if offGun(bot, ct):
         return
     if avoidFire(bot, ct):
+        return
+    # Above denyBelt: 3 Ti and no attrition to deny a whole future line beats 20 Ti of
+    # attacks to cut one belt. Below the gun steps, which kill production that exists.
+    if denyOre(bot, ct):
         return
     if denyBelt(bot, ct):
         return

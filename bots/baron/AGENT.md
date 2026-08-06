@@ -11,7 +11,7 @@ Quick index: where to edit and main entrypoints. Update when adding public funct
 | `defence.py` | Defensive orchestrators | `defGun`, `defSentinel`, `threateningTurret`, `clearBarriers`, `reconnectBelts`, `patrolHome` |
 | `logistics.py` | Default helpers | `buildHarvester`, `maintainHarvester`, `checkOre`, `relayToCore`, `defendHome`, `healAlly`, `recheckOreNodes`, `openBlockedRoute`, `pathKnownBlocked` |
 | `pathing.py` | A*, passable, obstruction fallback, encirclement breakout | `astar`, `astarFromSeeds`, `walkPassable`, `relayPassable`, `findPathAroundObstruction`, `breakEncirclement` |
-| `offense.py` | Harasser helpers | `snipeHarvester`, `offGun`, `avoidFire`, `seekHarvester`, `seekCore` |
+| `offense.py` | Harasser helpers | `snipeHarvester`, `offGun`, `avoidFire`, `denyOre`, `denyBelt`, `breakBeltDeadlock`, `seekHarvester`, `seekCore` |
 | `guns.py` | Placement + turret loops | `placeGun`, `placeDefSentinel`, `allyGunCovering`, `allySentinelCovering`, `gunnerLoop`, `placeSentinel`, `sentinelLoop`, `topUpAmmo` |
 | `respawn.py` | Core spawn schedule | `Respawn.run_core_spawn`, `SpawnSchedule` |
 | `hivemind.py` → `hivemind_v2` | Map fingerprint, delta ledger | `HiveMind.tick`, `unpack_cores`, `spawn_builder` |
@@ -48,7 +48,7 @@ Example — `defGun` → `placeGun` only (never sentinels); out-of-leash turrets
 
 Example — `runGuardian` → leash → `_reactEnemyTurret` → `defGun` → `defSentinel` → `avoidFire` → `defendHome` → `healAlly` → *[not `underAttack`]* `clearBarriers` → *[not `underAttack`]* `reconnectBelts` → *[not `underAttack`]* economy → `patrolHome`. No builder-attack anywhere in the chain except `clearBarriers`; turrets answer turrets.
 
-Example — `runHarasser` → `snipeHarvester` → `offGun` → `avoidFire` → `seekHarvester` → `seekCore`.
+Example — `runHarasser` → `snipeHarvester` → `offGun` → `avoidFire` → `denyOre` → `denyBelt` → `seekHarvester` → `seekCore`.
 
 ---
 

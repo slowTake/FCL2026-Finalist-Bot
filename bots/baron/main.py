@@ -92,6 +92,19 @@ OPEN_BLOCKED_ROUTE = True
 # not. Only starts are throttled; a cut already underway always runs to the barrier.
 DENY_CUT_COOLDOWN = 50
 
+# --- Harasser ore denial (≤0 / None disables) ---
+# Barrier empty ore in the enemy's expansion ring: 3 Ti makes the tile unbuildable and
+# prevents a 20 Ti harvester plus its whole belt line; they pay 6-30 Ti to clear it.
+# Two guards keep it off our own side. _oreCloserToAlly draws the midline, and the
+# floor below covers what the midline cannot: on a small map an ore can be marginally
+# nearer their core yet sit well inside our working range. Chosen from the map tables,
+# not guessed — across all 21 known maps at radius 6, floors 0-6 barely bite (64->61
+# candidate nodes) and leave atoll's contested centre deposit (9,8) exposed; 8 drops it
+# to 52 and correctly silences the feature on sprint (10x10) and sweden, where the two
+# cores are close enough that "near theirs" is "near ours". 10 over-corrects, killing 5.
+DENY_ORE_CHEBYSHEV = 6
+DENY_ORE_MIN_ALLY_CHEBYSHEV = 8
+
 # --- Encirclement breaker (≤0 disables) ---
 # Turns a builder may sit motionless with no legal move in any direction before
 # it destroys/fires at an adjacent building to open a door. Catches a harasser

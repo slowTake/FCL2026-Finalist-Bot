@@ -234,15 +234,38 @@ def _isBeltOrCore(bot, ct: Controller, tile: Position, core: Position) -> bool:
     return ent.get("type") in _BELT_TYPES
 
 
+_RELAY_OWNER_CHEBYSHEV = 2
+
+
+def _layableTile(ct: Controller, tile: Position) -> bool:
+    """Empty ground a belt could be built on, confirmed by vision."""
+    if not ct.is_in_vision(tile):
+        return False
+    if ct.get_tile_building_id(tile) is not None:
+        return False
+    return ct.get_tile_env(tile) == Environment.EMPTY
+
+
 def _allyBuilderNear(ct: Controller, tile: Position) -> bool:
-    """Visible ally builder (not self) on tile or cardinally adjacent to it."""
+    """Visible ally builder (not self) within `_RELAY_OWNER_CHEBYSHEV` of tile.
+
+    A relaying default owns a legitimately dangling head — its next belt simply is
+    not laid yet — and must not have it patched out from under it. Cardinal
+    adjacency was too tight: `relayToCore` steps the builder *onto* the belt it just
+    placed and falls back to `moveToward` when the next path tile is distant, so the
+    owner is regularly two or more tiles from its own head.
+
+    Scans units rather than tiles: O(visible units) instead of O(radius squared).
+    """
     me = ct.get_team()
     self_id = ct.get_id()
-    for check in (tile, *(tile.add(d) for d in CARDINALS)):
-        if not inBounds(ct, check) or not ct.is_in_vision(check):
+    for eid in ct.get_nearby_units():
+        if eid == self_id or ct.get_team(eid) != me:
             continue
-        bid = ct.get_tile_builder_bot_id(check)
-        if bid is not None and bid != self_id and ct.get_team(bid) == me:
+        if ct.get_entity_type(eid) != EntityType.BUILDER_BOT:
+            continue
+        p = ct.get_position(eid)
+        if max(abs(p.x - tile.x), abs(p.y - tile.y)) <= _RELAY_OWNER_CHEBYSHEV:
             return True
     return False
 
@@ -287,11 +310,7 @@ def _danglingBeltEnds(bot, ct: Controller) -> list[tuple[Position, Position]]:
             continue
         # Layable only. A belt aimed at a wall or a building is wrong-facing,
         # which is clearWrongBelt's problem, not a cut line.
-        if not ct.is_in_vision(target):
-            continue
-        if ct.get_tile_building_id(target) is not None:
-            continue
-        if ct.get_tile_env(target) != Environment.EMPTY:
+        if not _layableTile(ct, target):
             continue
         # A default mid-relay has a legitimately dangling head — leave it alone.
         if _allyBuilderNear(ct, target):
@@ -303,25 +322,54 @@ def _danglingBeltEnds(bot, ct: Controller) -> list[tuple[Position, Position]]:
     return [(belt, target) for _d, _m, belt, target in out]
 
 
-def _reconnectFacing(bot, ct: Controller, target: Position, core: Position) -> Direction:
-    """Facing for a patch belt: at a surviving belt/core one step closer, else coreward.
+def _reconnectFacing(
+    bot, ct: Controller, target: Position, core: Position
+) -> Direction | None:
+    """Provable next hop for a patch belt, or None when it cannot be proven.
 
-    The neighbour test is what makes a one-tile gap fill exactly. Without it the
-    patch faces a raw cardinal toward the core, which is right only when the gap is
-    axis-aligned — otherwise we have just built a new dangling end one step along.
+    Two lookaheads, both of which *see* the far side of the gap:
+
+    * **1 tile** — a cardinal neighbour closer to the core already holds a belt or
+      the core footprint. Face it; the gap closes exactly.
+    * **2 tiles** — that neighbour is empty but layable, and the tile beyond it in
+      the same direction reconnects. Face it anyway: we are filling the first of
+      two, and the second is patched on a later turn from the same evidence.
+
+    **There is deliberately no fallback.** `facingIntoCore` used to fill this role,
+    which is a crow-flies heading at the core anchor with no route behind it. The
+    belt it produced pointed at another empty tile, so it became a dangling end
+    itself next turn and the guardian marched a line of belts at the core one per
+    turn — and because those belts agree with no route, whatever `relayToCore` later
+    planned disagreed and `clearWrongBelt` tore them out again. Where the hop cannot
+    be proven, build nothing: `maintainHarvester` → `relayToCore` owns that repair
+    and has an actual path to work from.
     """
-    from logistics import facingIntoCore, travelFacing
+    from logistics import travelFacing
 
     here = _chebyshevToCore(target, core)
+
     for d in CARDINALS:
-        neighbor = target.add(d)
-        if not inBounds(ct, neighbor):
+        near = target.add(d)
+        if not inBounds(ct, near):
             continue
-        if _chebyshevToCore(neighbor, core) >= here:
+        if _chebyshevToCore(near, core) >= here:
             continue
-        if _isBeltOrCore(bot, ct, neighbor, core):
-            return travelFacing(target, neighbor)
-    return facingIntoCore(target, core)
+        if _isBeltOrCore(bot, ct, near, core):
+            return travelFacing(target, near)
+
+    for d in CARDINALS:
+        near = target.add(d)
+        far = near.add(d)
+        if not inBounds(ct, near) or not inBounds(ct, far):
+            continue
+        if _chebyshevToCore(far, core) >= here:
+            continue
+        if not _layableTile(ct, near):
+            continue
+        if _isBeltOrCore(bot, ct, far, core):
+            return travelFacing(target, near)
+
+    return None
 
 
 def reconnectBelts(bot, ct: Controller) -> bool:
@@ -350,16 +398,27 @@ def reconnectBelts(bot, ct: Controller) -> bool:
     if not candidates:
         return False
 
-    pos = ct.get_position()
+    # Resolve the facing before committing to anything, including the walk: a break
+    # whose next hop cannot be proven is not ours to fix, so it must not draw the
+    # guardian across the leash either.
+    actionable: list[tuple[Position, Direction]] = []
     for _belt, target in candidates:
+        facing = _reconnectFacing(bot, ct, target, core)
+        if facing is None:
+            continue
+        actionable.append((target, facing))
+    if not actionable:
+        return False
+
+    pos = ct.get_position()
+    for target, facing in actionable:
         if abs(pos.x - target.x) + abs(pos.y - target.y) != 1:
             continue
-        facing = _reconnectFacing(bot, ct, target, core)
         if placeRelayBelt(ct, target, facing) == "placed":
             return True
 
-    # Nothing adjacent to act on — walk to the most downstream break.
-    return moveToward(bot, ct, candidates[0][1])
+    # Nothing adjacent to act on — walk to the most downstream provable break.
+    return moveToward(bot, ct, actionable[0][0])
 
 
 def _patrolWaypoints(bot, ct: Controller) -> list[Position]:

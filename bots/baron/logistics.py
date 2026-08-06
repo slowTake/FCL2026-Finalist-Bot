@@ -405,8 +405,37 @@ def _stickyEmptyTarget(bot, ct: Controller) -> Position | None:
     return site
 
 
+def _allyBarrierOnOre(ct: Controller, tile: Position) -> bool:
+    """Our own barrier sitting on an ore tile — reclaimable, not a blocker.
+
+    `offense.denyOre` walls empty ore in the enemy's expansion ring, and those
+    barriers must not lock *us* out of the node forever. `checkOre` already destroys
+    an ally ore-block and builds the harvester; the node simply never got selected,
+    because `pickEmptyOre` skipped any ore carrying a building on both of its
+    collection paths, leaving only `recheckOreNodes` — a last-resort helper — able to
+    reach it.
+
+    Barrier-only on purpose. The broader `_shouldClearAllyOreBlock` set would make the
+    primary pick path willing to demolish ally turrets standing on ore, which is a
+    different decision and not one this change is asking for.
+    """
+    if not ct.is_in_vision(tile):
+        return False
+    bid = ct.get_tile_building_id(tile)
+    if bid is None:
+        return False
+    return (
+        ct.get_entity_type(bid) == EntityType.BARRIER
+        and ct.get_team(bid) == ct.get_team()
+    )
+
+
 def pickEmptyOre(bot, ct: Controller) -> Position | None:
-    """Pick empty ore: convenience or index-stagger; skip ally-on-tile pads."""
+    """Pick empty ore: convenience or index-stagger; skip ally-on-tile pads.
+
+    "Empty" admits ore carrying one of our own `denyOre` barriers — `checkOre` clears
+    it and builds on arrival, so denial is never a lock-out.
+    """
     from main import ORE_STAGGER
 
     core = bot.corePos
@@ -425,7 +454,9 @@ def pickEmptyOre(bot, ct: Controller) -> Position | None:
     for tile in ct.get_nearby_tiles():
         if ct.get_tile_env(tile) != Environment.ORE_TITANIUM:
             continue
-        if ct.get_tile_building_id(tile) is not None:
+        if ct.get_tile_building_id(tile) is not None and not _allyBarrierOnOre(
+            ct, tile
+        ):
             continue
         add(tile)
 
@@ -434,7 +465,11 @@ def pickEmptyOre(bot, ct: Controller) -> Position | None:
         ent = entry.get("entity")
         if ent and ent.get("type") == EntityType.HARVESTER:
             continue
-        if ct.is_in_vision(ore) and ct.get_tile_building_id(ore) is not None:
+        if (
+            ct.is_in_vision(ore)
+            and ct.get_tile_building_id(ore) is not None
+            and not _allyBarrierOnOre(ct, ore)
+        ):
             continue
         add(ore)
 

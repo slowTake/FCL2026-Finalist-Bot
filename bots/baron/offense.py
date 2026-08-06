@@ -561,6 +561,93 @@ def _cutAndBarrier(bot, ct: Controller) -> bool:
     return moveToward(bot, ct, tile)
 
 
+def _denyOreCandidates(bot, ct: Controller) -> list[Position]:
+    """Empty ore in the enemy's expansion ring that is safe for us to wall off.
+
+    Ranked nearest the enemy core first — their most valuable expansion — then
+    nearest us. Ore knowledge comes from `knownOreTiles`, which reads the ledger and
+    falls back to `features.ORE_LOCATIONS`, so a harasser can head for enemy-side ore
+    before anyone has scouted it.
+    """
+    from main import DENY_ORE_CHEBYSHEV, DENY_ORE_MIN_ALLY_CHEBYSHEV
+    from logistics import knownOreTiles, tileThreatenedByGunner
+
+    radius = DENY_ORE_CHEBYSHEV
+    if radius is None or radius <= 0:
+        return []
+    ally, enemy = bot.corePos, getattr(bot, "enemyCorePos", None)
+    if ally is None or enemy is None:
+        return []
+    floor = DENY_ORE_MIN_ALLY_CHEBYSHEV or 0
+
+    pos = ct.get_position()
+    scored: list[tuple[int, int, Position]] = []
+    for ore in knownOreTiles(bot):
+        d_enemy = _chebyshevToFootprint(ore, enemy)
+        if d_enemy > radius:
+            continue
+        # Two independent guards on our own side. The midline alone is not enough on
+        # a small map: an ore can be marginally nearer their core yet sit well inside
+        # our working range — atoll's contested centre deposit is exactly that shape.
+        if _chebyshevToFootprint(ore, ally) < floor:
+            continue
+        # Midline, inlined rather than via _oreCloserToAlly. That helper leads with
+        # `ct.get_tile_env(pad)`, which every other call site in the codebase guards
+        # behind is_in_vision — its existing callers only ever pass visible pads.
+        # knownOreTiles reads the persistent ledger, so ore seen long ago arrives here
+        # out of vision, and the env check is redundant anyway: it is ore by
+        # construction. Getting this wrong is silent, because Player.run swallows the
+        # exception and the harasser simply does nothing for the rest of the game.
+        if manhattan(ore, ally) <= manhattan(ore, enemy):
+            continue
+        # Occupied nodes are somebody else's problem: a live enemy harvester belongs
+        # to snipeHarvester, and anything else already denies the tile for us.
+        if ct.is_in_vision(ore):
+            if ct.get_tile_building_id(ore) is not None:
+                continue
+        else:
+            entry = bot.hivemind.local_map.get((ore.x, ore.y), {})
+            if entry.get("entity"):
+                continue
+        # A covered tile means the barrier is shot down and rebuilt forever, turning
+        # a one-off 3 Ti into a drip.
+        if tileThreatenedByGunner(ct, ore):
+            continue
+        scored.append((d_enemy, manhattan(pos, ore), ore))
+    scored.sort(key=lambda s: (s[0], s[1]))
+    return [ore for _de, _dm, ore in scored]
+
+
+def denyOre(bot, ct: Controller) -> bool:
+    """Barrier empty ore in the enemy's expansion ring.
+
+    The cheapest denial on the map: 3 Ti makes the tile unbuildable, preventing a
+    20 Ti harvester and the whole belt line that would have fed from it. Clearing it
+    costs them 15 builder-turns / 30 Ti, or 3 gunner shots / 6 Ti — every route costs
+    more than it cost us, and the node produces nothing while it stands.
+
+    Self-correcting rather than permanent: if we later want the node, `pickEmptyOre`
+    admits ore carrying an ally barrier and `checkOre` destroys it and builds the
+    harvester. Denying a node never locks us out of it.
+    """
+    candidates = _denyOreCandidates(bot, ct)
+    if not candidates:
+        return False
+
+    pos = ct.get_position()
+    if ct.get_action_cooldown() == 0:
+        for ore in candidates:
+            if abs(pos.x - ore.x) + abs(pos.y - ore.y) != 1:
+                continue
+            if ct.can_build_barrier(ore):
+                ct.build_barrier(ore)
+                return True
+
+    target = candidates[0]
+    bot.harassTarget = (target.x, target.y)
+    return moveToward(bot, ct, target)
+
+
 def denyBelt(bot, ct: Controller) -> bool:
     """Barrier ahead of enemy belt facing; under gun gate also cut-and-barrier.
 
