@@ -110,6 +110,16 @@ DENY_CUT_COOLDOWN = 50
 DENY_ORE_CHEBYSHEV = 6
 DENY_ORE_MIN_ALLY_CHEBYSHEV = 8
 
+# --- Frontier scouting (≤0 / None disables) ---
+# Last-resort exploration when the normal chains have no target. Needed because a
+# missed map fingerprint leaves map_id 0, so ORE_LOCATIONS is empty and enemyCorePos is
+# never set — and nothing in baron explores. On heart/sweden/vase the core sees no ore
+# in its own vision at turn 0, so defaults had no ore claim and no way to find one, and
+# the economy never started at all. Inert on maps we did fingerprint, because the static
+# tables supply targets before this step is reached. Value is the re-pick interval: the
+# ledger scan is ~900 cells against a 10ms budget, so raise it if turns get truncated.
+FRONTIER_REFRESH_TURNS = 20
+
 # --- Encirclement breaker (≤0 disables) ---
 # Turns a builder may sit motionless with no legal move in any direction before
 # it destroys/fires at an adjacent building to open a door. Catches a harasser
@@ -163,6 +173,8 @@ class Player:
         self.relayStuck = 0
         self.relayThreatBlocked: set[tuple[int, int]] = set()
         self.blockadeDoor: tuple[int, int] | None = None
+        self.frontierTarget: tuple[int, int] | None = None
+        self.frontierRound = -999
         self.relayPathBlocked = False
         self.relayPathBlockedFrom: tuple[int, int] | None = None
         self.lastPathFailed = False

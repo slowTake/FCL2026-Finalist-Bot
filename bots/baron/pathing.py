@@ -446,3 +446,80 @@ def findPathAroundObstruction(
         heuristic=h,
         max_iters=max_iters,
     )
+
+
+# Ore counted this far (Chebyshev) around a frontier candidate when scoring it.
+_FRONTIER_ORE_WINDOW = 3
+_FRONTIER_ORE_WEIGHT = 40.0
+_FRONTIER_OUTWARD_WEIGHT = 6.0
+
+
+def findFrontierTarget(
+    ct: Controller,
+    local_map: dict,
+    *,
+    origin: Position,
+    home: Position | None = None,
+    outward: bool = False,
+) -> Position | None:
+    """Best unexplored tile bordering known space, or None if the map is exhausted.
+
+    Frontier exploration: scan known cells for a cardinal neighbour that is in bounds
+    and **absent from `local_map`**. `_update_local_vision` writes a cell for every
+    tile in vision, so an absent key means "never seen by anyone on the team" — and
+    because the ledger is broadcast, this boundary is shared rather than per-unit.
+
+    Scoring, highest wins:
+      * `100 / (1 + distance)` — cheap wins first;
+      * known ore near the candidate, since ore clusters;
+      * with `outward`, distance from our own core.
+
+    The outward bias replaces the usual periodic "prefer far frontiers" anti-dithering
+    trick with a permanent prior we can always compute: the ally core is known even on
+    a map we failed to fingerprint, because it is packed from the core's own position.
+    Harassers want away-from-home, economy builders want nearby ore, so callers weight
+    it themselves.
+
+    Reads only `local_map` and map bounds — no `get_tile_env`, which is safe only for
+    tiles in vision and would raise on ledger tiles that are not. `Player.run` swallows
+    that exception, so the unit would simply stop for the rest of the game.
+    """
+    w, h = ct.get_map_width(), ct.get_map_height()
+    best: Position | None = None
+    best_score = float("-inf")
+    seen: set[tuple[int, int]] = set()
+
+    for (x, y), cell in local_map.items():
+        if cell.get("passable") is False:
+            continue
+        for dx, dy in _CARDINAL_DELTAS:
+            nx, ny = x + dx, y + dy
+            if not (0 <= nx < w and 0 <= ny < h):
+                continue
+            key = (nx, ny)
+            if key in local_map or key in seen:
+                continue
+            seen.add(key)
+
+            dist = abs(origin.x - nx) + abs(origin.y - ny)
+            score = 100.0 / (1.0 + dist)
+
+            ore = 0
+            for oy in range(ny - _FRONTIER_ORE_WINDOW, ny + _FRONTIER_ORE_WINDOW + 1):
+                for ox in range(
+                    nx - _FRONTIER_ORE_WINDOW, nx + _FRONTIER_ORE_WINDOW + 1
+                ):
+                    near = local_map.get((ox, oy))
+                    if near is not None and near.get("ore"):
+                        ore += 1
+            score += _FRONTIER_ORE_WEIGHT * ore
+
+            if outward and home is not None:
+                score += _FRONTIER_OUTWARD_WEIGHT * (
+                    abs(nx - home.x) + abs(ny - home.y)
+                )
+
+            if score > best_score:
+                best_score = score
+                best = Position(nx, ny)
+    return best
