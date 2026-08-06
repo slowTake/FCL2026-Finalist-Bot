@@ -13,11 +13,12 @@ Quick index: where to edit and main entrypoints. Update when adding public funct
 | `pathing.py` | A*, passable, obstruction fallback, encirclement breakout, frontier scouting | `astar`, `astarFromSeeds`, `walkPassable`, `relayPassable`, `findPathAroundObstruction`, `breakEncirclement`, `findFrontierTarget` |
 | `offense.py` | Harasser helpers | `snipeHarvester`, `offGun`, `avoidFire`, `denyOre`, `denyBelt`, `breakBeltDeadlock`, `seekHarvester`, `seekCore` |
 | `guns.py` | Placement + turret loops | `placeGun`, `placeDefSentinel`, `allyGunCovering`, `allySentinelCovering`, `gunnerLoop`, `placeSentinel`, `sentinelLoop`, `topUpAmmo` |
+| `launcher.py` | Launcher placement + throw loop | `placeLauncher`, `launcherLoop`, `allyLauncherCount` |
 | `respawn.py` | Core spawn schedule | `Respawn.run_core_spawn`, `SpawnSchedule` |
 | `hivemind.py` → `hivemind_v2` | Map identification, delta ledger | `HiveMind.tick`, `mapCandidates`, `candidateConsistent`, `unpack_cores`, `spawn_builder` |
 | `vision_v2.py` | Ledger pack/unpack (required by v2) | `pack_ledger_slot` |
 
-**Policy knobs** (builders, ammo, wave, home-guard, ore stagger, ore deadlock, Ti tiers) → top block in `main.py` (`BUILDER_TARGET_BY_TI`, `MAX_BUILDERS`, `WAVE_ATTACK_*`, `BUILDER_HOME_TURNS`, `ORE_STAGGER`, `ORE_DEADLOCK_TURNS`, `GUN_PLACE_MIN_TI`, `AMMO_CONVERT_MIN_TI`).
+**Policy knobs** (builders, ammo, wave, home-guard, ore stagger, ore deadlock, launcher, Ti tiers) → top block in `main.py` (`BUILDER_TARGET_BY_TI`, `MAX_BUILDERS`, `WAVE_ATTACK_*`, `BUILDER_HOME_TURNS`, `ORE_STAGGER`, `ORE_DEADLOCK_TURNS`, `GUN_PLACE_MIN_TI`, `AMMO_CONVERT_MIN_TI`, `MAX_LAUNCHERS`, `LAUNCHER_CHEBYSHEV`, `LAUNCHER_MIN_TI`, `LAUNCH_ALLIES`, `ALLY_LAUNCH_START`).
 
 Role **task lists** → top comments in `builder.py`.
 

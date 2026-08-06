@@ -477,25 +477,101 @@ class Player:
         run_gunner(ct)
 
 ## LAUNCHER: main logic
+#
+# One rule for everyone: throw builders toward the *enemy* core.
+#   - Enemy builder in reach  -> flung back home, off our economy (defence).
+#   - Our own builder in reach -> flung forward, a free head start for
+#     harassers (offence).
+# Allies are only picked up once they are already on the outbound side of the
+# launcher (closer to the enemy core than the launcher is) and past
+# ALLY_LAUNCH_START, so miners orbiting our core are left alone.
+LAUNCH_RANGE_SQ = 26  # launcher reach, sqrt(26) ~ 5.1 tiles
+LAUNCH_ALLIES = True
+ALLY_LAUNCH_START = 50  # matches HARRASS_START_TURN in harrass.py
+
+
+def _dist_sq(a: Position, b: Position) -> int:
+    dx = a.x - b.x
+    dy = a.y - b.y
+    return dx * dx + dy * dy
+
+
+def _launch_goal(ct: Controller) -> Position:
+    """Aim point for every launch: enemy core, else its mirror, else map centre."""
+    width = ct.get_map_width()
+    height = ct.get_map_height()
+    ally, enemy = unpack_cores(ct.read_store(SLOT_PACKED_CORES))
+    if enemy[0] != CoreState.UNKNOWN:
+        return Position(enemy[1], enemy[2])
+    if ally[0] != CoreState.UNKNOWN:
+        mx = min(max(width - 1 - ally[1], 0), width - 1)
+        my = min(max(height - 1 - ally[2], 0), height - 1)
+        return Position(mx, my)
+    return Position(width // 2, height // 2)
+
+
+def _best_launch_target(
+    ct: Controller, bot_pos: Position, goal: Position
+) -> Position | None:
+    """Legal landing tile that gets bot_pos closest to goal, or None."""
+    best: Position | None = None
+    best_d = _dist_sq(bot_pos, goal)  # only accept strict progress
+    for target in ct.get_nearby_tiles(dist_sq=LAUNCH_RANGE_SQ):
+        if target == bot_pos:
+            continue
+        d = _dist_sq(target, goal)
+        if d >= best_d:
+            continue
+        if not ct.is_tile_passable(target):
+            continue
+        if not ct.can_launch(bot_pos, target):
+            continue
+        best, best_d = target, d
+    return best
+
+
 def run_launcher(ct: Controller) -> None:
-    if ct.get_action_cooldown() != 0 or ct.get_current_round() > 50: # limiter to stop logic
+    if ct.get_action_cooldown() != 0:
         return
 
     launcher_pos = ct.get_position()
+    goal = _launch_goal(ct)
+    my_team = ct.get_team()
 
-    for d in Direction:
-        if d == Direction.CENTRE:
+    enemy_bots: list[Position] = []
+    ally_bots: list[Position] = []
+    for tile in ct.get_nearby_tiles(dist_sq=LAUNCH_RANGE_SQ):
+        if tile == launcher_pos:
             continue
-
-        builder_pos = launcher_pos.add(d)
-        if ct.get_tile_builder_bot_id(builder_pos) is None:
+        bot_id = ct.get_tile_builder_bot_id(tile)
+        if bot_id is None:
             continue
+        if ct.get_team(bot_id) == my_team:
+            ally_bots.append(tile)
+        else:
+            enemy_bots.append(tile)
 
-        for target in ct.get_nearby_tiles(dist_sq=26): # sqrt26 is the max range
-            if target == builder_pos or target == launcher_pos:
-                continue
-            if not ct.is_tile_passable(target):
-                continue
-            if ct.can_launch(builder_pos, target):
-                ct.launch(builder_pos, target)
-                return
+    # Defence first: nearest enemy builder goes home.
+    enemy_bots.sort(key=lambda p: _dist_sq(p, launcher_pos))
+    for bot_pos in enemy_bots:
+        target = _best_launch_target(ct, bot_pos, goal)
+        if target is not None:
+            ct.launch(bot_pos, target)
+            print(f"[{ct.get_current_round()}] Launcher {launcher_pos}: "
+                  f"yeeted enemy {bot_pos} -> {target}")
+            return
+
+    if not LAUNCH_ALLIES or ct.get_current_round() < ALLY_LAUNCH_START:
+        return
+
+    # Offence: help the most advanced outbound ally along.
+    launcher_goal_d = _dist_sq(launcher_pos, goal)
+    ally_bots = [p for p in ally_bots if _dist_sq(p, goal) <= launcher_goal_d]
+    ally_bots.sort(key=lambda p: _dist_sq(p, goal))
+    for bot_pos in ally_bots:
+        target = _best_launch_target(ct, bot_pos, goal)
+        if target is not None:
+            ct.launch(bot_pos, target)
+            print(f"[{ct.get_current_round()}] Launcher {launcher_pos}: "
+                  f"boosted ally {bot_pos} -> {target}")
+            return

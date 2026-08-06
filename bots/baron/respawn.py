@@ -80,14 +80,19 @@ def _aliveBuilders(hivemind, ct: Controller) -> int:
     replacement never fired: after a death both the lifetime count and the trail were
     unchanged, so the crew shrank permanently.
 
-    `get_unit_count()` is exact. We never build launchers, so living units are the core
-    plus builders plus turrets, and turrets are immobile — no trail — so subtracting
-    them from the ledger is sound.
+    `get_unit_count()` is exact, so living units are the core plus builders plus
+    buildings we placed that count as units — gunners, sentinels and launchers. All
+    three are immobile, so unlike builders they leave no trail of stale ledger cells
+    and subtracting a ledger count of them is sound. Launchers are counted for the
+    same reason the other two are: miss them and every launcher standing inflates
+    the living-builder figure by one and silently suppresses a replacement spawn.
     """
     from guns import allyTurretCounts
+    from launcher import allyLauncherCount
 
     gunners, sentinels = allyTurretCounts(ct, hivemind.local_map)
-    alive = ct.get_unit_count() - 1 - gunners - sentinels
+    launchers = allyLauncherCount(ct, hivemind.local_map)
+    alive = ct.get_unit_count() - 1 - gunners - sentinels - launchers
     return max(0, min(alive, ct.read_store(4)))
 
 

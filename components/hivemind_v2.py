@@ -10,6 +10,67 @@ class CoreState(IntEnum):
     KNOWN = 2
 
 
+# Turns between a builder's attempts to identify the map while the team still has no
+# map_id. Lives here rather than in a bot's main.py because this module is shared and
+# must not import from any one bot. <=0 disables retrying (turn-0 attempt only).
+MAP_RESOLVE_RETRY_TURNS = 25
+
+
+def mapCandidates(w: int, h: int, team, cx: int, cy: int):
+    """Maps consistent with dimensions, team and our own core position.
+
+    Matches every part of the KNOWN_MAPS key *except* the trailing wall count. That
+    count was a scalar hash: a value disagreeing with the engine missed the map
+    entirely, and maps sharing one collapsed into a single dict entry — hive,
+    hive_no_see and hive_see have identical dimensions, cores and walls, so two of the
+    three are unreachable and playing them silently returned the third's ore table.
+
+    Dimensions plus team plus our core are already unique for 58 of 62 known starts, so
+    this alone usually resolves the map; the rest are separated by terrain.
+    """
+    seen = set()
+    out = []
+    for key, val in KNOWN_MAPS.items():
+        if (key[0], key[1], key[2], key[3], key[4]) != (w, h, team, cx, cy):
+            continue
+        if val[0] in seen:
+            continue
+        seen.add(val[0])
+        out.append(val)
+    return out
+
+
+def candidateConsistent(map_id: int, local_map: dict) -> bool:
+    """True if nothing we have observed contradicts this candidate's tables.
+
+    Only cells with **no `entity`** carry terrain truth. `_update_local_vision` has two
+    branches: the entity branch records the entity and derives `passable` from it,
+    never reading `get_tile_env`; the no-entity branch reads the tile and sets
+    `passable = not is_wall` plus `ore`, deleting any stale entity. So a no-entity cell
+    determines both wall-ness and ore-ness exactly, and an entity cell says nothing
+    about the ground under it.
+
+    Only safe on a `local_map` built purely from own vision, which is why the retry
+    runs on builders: the core's delta ingestion writes `passable` from *reported
+    entities*, and a later `etype is None` delta deletes the entity while leaving that
+    `passable` behind — terrain-shaped evidence that was never terrain.
+    """
+    walls = WALL_LOCATIONS.get(map_id)
+    ores = ORE_LOCATIONS.get(map_id)
+    if walls is None or ores is None:
+        return False
+    wall_set = set(walls)
+    ore_set = set(ores)
+    for pos, cell in local_map.items():
+        if "entity" in cell or "passable" not in cell:
+            continue
+        if (cell.get("passable") is False) != (pos in wall_set):
+            return False
+        if bool(cell.get("ore")) != (pos in ore_set):
+            return False
+    return True
+
+
 def pack_cores(ally_state, ally_x, ally_y, enemy_state, enemy_x, enemy_y) -> int:
     ally_bits = (ally_state << 14) | (ally_x << 7) | ally_y
     enemy_bits = (enemy_state << 14) | (enemy_x << 7) | enemy_y
@@ -32,43 +93,60 @@ class HiveMind:
         self.birth_round: int | None = None
         self.map_id = 0
         self.map_name = "UNKNOWN"
-        self.enemy_core_pos = None  # set on fingerprint from KNOWN_MAPS
+        self.enemy_core_pos = None  # set once the map resolves
         self._map_detected = False
+        self._map_impossible = False  # observations contradict every candidate
+        self._last_resolve_try = -(10**9)
         self._walls_loaded = False
         self.last_communicated_ledger = {}  # (x,y) -> (etype, is_enemy, d)
+
+    def _resolve_map(self, ct: Controller, core_x: int, core_y: int) -> bool:
+        """Narrow the candidate set against observed terrain; adopt if unique.
+
+        Three outcomes:
+          * exactly one survivor  -> adopt and publish slots 14 and 15;
+          * none                  -> the tables do not describe this map. Latch
+            `_map_impossible`: evidence only accumulates, so a contradiction is
+            permanent. Better to be honestly unknown, where the frontier scout takes
+            over, than to silently use another map's ore table;
+          * several               -> leave it; a builder retries as its vision grows.
+        """
+        cands = [
+            c
+            for c in mapCandidates(
+                ct.get_map_width(), ct.get_map_height(), ct.get_team(), core_x, core_y
+            )
+            if candidateConsistent(c[0], self.local_map)
+        ]
+        if len(cands) != 1:
+            self._map_impossible = not cands
+            return False
+
+        self.map_id, self.map_name, enemy_x, enemy_y = cands[0]
+        self.enemy_core_pos = Position(enemy_x, enemy_y)
+        ct.write_store(14, self.map_id)
+        ct.write_store(
+            15,
+            pack_cores(
+                CoreState.KNOWN, core_x, core_y,
+                CoreState.ASSUMED, enemy_x, enemy_y,
+            ),
+        )
+        return True
 
     def _detect_and_store_map(self, ct: Controller) -> None:
         if self._map_detected: return
 
-        w = ct.get_map_width()
-        h = ct.get_map_height()
-        team = ct.get_team()
         pos = ct.get_position()
-
-        wall_count = 0
-        for tile in ct.get_nearby_tiles():
-            if ct.get_tile_env(tile) == Environment.WALL:
-                wall_count += 1
-
-        fingerprint = (w, h, team, pos.x, pos.y, wall_count)
-        enemy_state = CoreState.UNKNOWN
-        enemy_x = 0
-        enemy_y = 0
-
-        if fingerprint in KNOWN_MAPS:
-            self.map_id, self.map_name, enemy_x, enemy_y = KNOWN_MAPS[fingerprint]
-            enemy_state = CoreState.ASSUMED
-            self.enemy_core_pos = Position(enemy_x, enemy_y)
-        
-        print(f"HIVEMIND FINGERPRINT: {fingerprint} -> Map ID: {self.map_id} ({self.map_name})")
-
-        ct.write_store(14, self.map_id)
-
-        packed = pack_cores(
-            CoreState.KNOWN, pos.x, pos.y,
-            enemy_state, enemy_x, enemy_y
-        )
-        ct.write_store(15, packed)
+        self._last_resolve_try = self.global_turn
+        if not self._resolve_map(ct, pos.x, pos.y):
+            # Unresolved, but our own core is never in doubt — publish it regardless so
+            # every unit has it, and so a symmetry estimate stays computable.
+            ct.write_store(14, 0)
+            ct.write_store(
+                15,
+                pack_cores(CoreState.KNOWN, pos.x, pos.y, CoreState.UNKNOWN, 0, 0),
+            )
         self._map_detected = True
 
     def _update_local_vision(self, ct: Controller):
@@ -231,7 +309,23 @@ class HiveMind:
         # 4. Read static map knowledge if we haven't
         if self.map_id == 0 and self.global_turn > 0:
             self.map_id = ct.read_store(14)
-            
+
+        # 4b. Still unidentified: a builder retries as its own vision grows.
+        # Only builders — their `local_map` is purely first-hand, while the core's is
+        # polluted by ingested deltas that leave entity-derived `passable` behind, and
+        # the core's terrain view never grows anyway (deltas carry entities, not tiles).
+        if (
+            not is_core
+            and self.map_id == 0
+            and not self._map_impossible
+            and MAP_RESOLVE_RETRY_TURNS > 0
+            and self.global_turn - self._last_resolve_try >= MAP_RESOLVE_RETRY_TURNS
+        ):
+            self._last_resolve_try = self.global_turn
+            ally, _enemy = unpack_cores(ct.read_store(15))
+            if ally[0] != CoreState.UNKNOWN:
+                self._resolve_map(ct, ally[1], ally[2])
+
         if self.map_id != 0 and not self._walls_loaded:
             if self.map_id in WALL_LOCATIONS:
                 for wx, wy in WALL_LOCATIONS[self.map_id]:

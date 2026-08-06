@@ -57,6 +57,24 @@ DEF_SENTINEL = True
 TURRET_THREAT_CHEBYSHEV = 6  # enemy turret this close to core counts as a threat
 TURRET_MEMORY_TURNS = 20  # how stale a ledger sighting may be and still count
 
+# --- Launcher (MAX_LAUNCHERS ≤0 / None disables) ---
+# 20 Ti of transport that doubles as defence: it throws builder bots of *either*
+# team, and one rule — always toward the enemy core — covers both. Their builder
+# in reach gets flung back off our ore and out of our apron (a gunner needs 4
+# shots / 8 Ti to kill one, and the replacement walks right back); ours gets a
+# ~5-tile head start on the way out. Built by a guardian on the enemy-facing side
+# of the core, Chebyshev 2..LAUNCHER_CHEBYSHEV so its r²=26 reach covers the
+# approach lanes while the pad stays inside the guardian leash (4) and clear of
+# the spawn apron (Chebyshev ≤1). Logic in launcher.py.
+MAX_LAUNCHERS: int | None = 1
+LAUNCHER_CHEBYSHEV = 3  # pad ring around core; < 2 disables (apron stays clear)
+LAUNCHER_MIN_TI = 150  # need bank ≥ this to place; 20 Ti in the opening is a harvester
+# Ally throws: off before ALLY_LAUNCH_START, and only for builders already on the
+# outbound side of the launcher. A turret cannot read my_index, so "harasser" is
+# inferred from position — see _outboundAllies in launcher.py.
+LAUNCH_ALLIES = True
+ALLY_LAUNCH_START = 50
+
 # --- Guardian idle economy (False disables) ---
 # While no enemy unit is in vision, guardians build harvesters on ore inside the
 # leash and finish/repair belt relays back to core instead of only patrolling.
@@ -147,6 +165,7 @@ SLOT_PACKED_CORES = 15
 DEBUG = False
 
 from guns import gunnerLoop, sentinelLoop, top_up_ammo
+from launcher import launcherLoop
 from hivemind import CoreState, HiveMind, unpack_cores
 from respawn import Respawn, SpawnSchedule
 from builder import runBuilderRoles
@@ -206,6 +225,8 @@ class Player:
                 gunnerLoop(ct)
             elif etype == EntityType.SENTINEL:
                 sentinelLoop(ct)
+            elif etype == EntityType.LAUNCHER:
+                launcherLoop(ct)
         except Exception:
             return
 

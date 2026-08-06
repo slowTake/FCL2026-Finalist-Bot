@@ -43,6 +43,10 @@
 #    completes (relayEverComplete, slot 0) — before there is any economy an enemy
 #    builder in vision must not keep a guardian off ore.
 # 6. clearBarriers — fire / move to nearest enemy barrier inside the leash only
+# 6b. placeLauncher — (MAX_LAUNCHERS in main.py) one launcher on the enemy-facing
+#        side of the core, Chebyshev 2..LAUNCHER_CHEBYSHEV, bank ≥ LAUNCHER_MIN_TI.
+#        Throws enemy builders back toward their core and our outbound harassers
+#        forward (launcher.py). One-shot: once one stands the step is inert.
 # 7. reconnectBelts — ally conveyor inside the leash aiming at a layable empty
 #        tile → build the patch belt. Facing must be *proven*: a neighbour one step
 #        nearer the core already holding a belt/core, or (2-tile gap) that neighbour
@@ -191,6 +195,7 @@ from defence import (
     patrolHome,
     reconnectBelts,
 )
+from launcher import placeLauncher
 from pathing import breakEncirclement
 from offense import (
     avoidFire,
@@ -473,8 +478,8 @@ def _guardianEconomy(bot, ct: Controller) -> bool:
 
 def runGuardian(bot, ct: Controller) -> None:
     """Guardian: leash → react → defGun → defSentinel → avoidFire → defendHome
-    → healAlly → clearBarriers → reconnectBelts → economy (last three only while
-    nothing hostile is in vision) → patrol."""
+    → healAlly → clearBarriers → placeLauncher → reconnectBelts → economy (last
+    four only while nothing hostile is in vision) → patrol."""
     _resolveCores(bot, ct)
     bot.nearCoreEconomy = False
     if bot.corePos is None:
@@ -523,6 +528,13 @@ def runGuardian(bot, ct: Controller) -> None:
     # 30 Ti to remove a 3 Ti barrier, so it must never run while anything hostile
     # is in vision. Same gate as the economy below it.
     if not underAttack and clearBarriers(bot, ct):
+        return
+    # Above the belt/economy chores: the launcher is 20 Ti of permanent home
+    # defence (their builders thrown back off our ore) and it only ever gets
+    # built during a lull — a harvester or a belt patch can wait a turn, and
+    # MAX_LAUNCHERS means this returns False for the rest of the game once one
+    # stands. Below clearBarriers, which unblocks the ground it would stand on.
+    if not underAttack and placeLauncher(bot, ct):
         return
     # Above the economy: a cut belt zeroes a whole line's throughput, while a new
     # harvester is only incremental. Repair beats build.
