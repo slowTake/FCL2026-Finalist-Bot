@@ -85,6 +85,13 @@ HARASS_DEADLOCK_TURNS = 8
 # blacklisted instead. Known case: the walled-off centre ore on atoll.
 OPEN_BLOCKED_ROUTE = True
 
+# --- Harasser belt-cut throttle (≤0 disables) ---
+# Rounds a harasser waits between *starting* belt cuts. A cut is 20 HP at 2 dmg per
+# attack: 10 shots, 20 Ti, 10 turns — worth it when it completes (they pay 9-33 Ti to
+# reopen and the downstream line delivers nothing meanwhile), pure waste when it does
+# not. Only starts are throttled; a cut already underway always runs to the barrier.
+DENY_CUT_COOLDOWN = 50
+
 # --- Encirclement breaker (≤0 disables) ---
 # Turns a builder may sit motionless with no legal move in any direction before
 # it destroys/fires at an adjacent building to open a door. Catches a harasser
@@ -153,6 +160,7 @@ class Player:
         self.lastOreRecheckRound = -999
         self.harassTarget: tuple[int, int] | None = None
         self.denyBeltTile: tuple[int, int] | None = None
+        self.lastCutRound = -999
         self.scoutedOres: set[tuple[int, int]] = set()
         self.patrolIdx = 0
         self.harassOrbitIdx = 0

@@ -440,6 +440,54 @@ def _stepOff(ct: Controller) -> bool:
     return False
 
 
+def _cutInProgress(bot, ct: Controller) -> bool:
+    """True while a belt cut is already underway and must not be interrupted.
+
+    A cut is 20 HP at 2 dmg an attack — 10 shots, 20 Ti, 10 turns. Only the
+    *marginal* cost matters once it has started, so the bank gate and the cooldown
+    that decide whether to *begin* must not decide whether to *continue*. Dropping
+    a cut half-finished spends the titanium and achieves nothing.
+
+    In progress means the sticky target is:
+      * not in vision — selected, still walking in; do not strand it part-way;
+      * a damaged enemy belt — mid-cut;
+      * an empty tile — the belt is already dead and the barrier is the next
+        action, so gating here would abandon at the moment of payoff.
+
+    A **full-HP** enemy belt is deliberately not in progress. That is the heal-race
+    bail-out for free: their builder restores 4 HP/turn for 1 Ti against our 2 dmg
+    for 2 Ti, so once they have healed it back to full we are losing 4:1 and should
+    walk away rather than grind.
+    """
+    sticky = getattr(bot, "denyBeltTile", None)
+    if sticky is None:
+        return False
+    tile = Position(sticky[0], sticky[1])
+    if not ct.is_in_vision(tile):
+        return True
+    if ct.is_tile_empty(tile):
+        return True
+    if not _enemyBeltAt(ct, tile):
+        return False
+    bid = ct.get_tile_building_id(tile)
+    if bid is None:
+        return False
+    try:
+        return ct.get_hp(bid) < ct.get_max_hp(bid)
+    except Exception:
+        return False
+
+
+def _cutCooldownElapsed(bot, ct: Controller) -> bool:
+    """True if this harasser may *start* a new cut (≤0 disables the throttle)."""
+    from main import DENY_CUT_COOLDOWN
+
+    if DENY_CUT_COOLDOWN is None or DENY_CUT_COOLDOWN <= 0:
+        return True
+    last = getattr(bot, "lastCutRound", -(10**9))
+    return ct.get_current_round() - last >= DENY_CUT_COOLDOWN
+
+
 def _cutAndBarrier(bot, ct: Controller) -> bool:
     """Cut an enemy belt from an adjacent tile, then barrier it (guns gated).
 
@@ -462,6 +510,9 @@ def _cutAndBarrier(bot, ct: Controller) -> bool:
         if tile is None:
             return False
         bot.denyBeltTile = (tile.x, tile.y)
+        # Single stamp point: the cooldown spaces *starts*, so it is written where a
+        # fresh target is claimed rather than chased across every exit path.
+        bot.lastCutRound = ct.get_current_round()
 
     pos = ct.get_position()
     adjacent = abs(pos.x - tile.x) + abs(pos.y - tile.y) == 1
@@ -511,12 +562,24 @@ def _cutAndBarrier(bot, ct: Controller) -> bool:
 
 
 def denyBelt(bot, ct: Controller) -> bool:
-    """Barrier ahead of enemy belt facing; under gun gate also cut-and-barrier."""
+    """Barrier ahead of enemy belt facing; under gun gate also cut-and-barrier.
+
+    Mode A (forward barrier) is unthrottled: 3 Ti, no attrition, no engagement.
+    Mode B (cut the belt) is the expensive one — 20 Ti and 10 turns — so it is
+    rationed on the way in and committed to once begun. The bank gate is a sound
+    *start* condition (a gun is better value than a cut when we can afford one) and
+    a wrong *continue* condition: each attack pushes the bank toward the threshold
+    while one harvester delivery pushes it back over, so it used to flip mid-cut and
+    abandon the belt with the titanium already spent.
+    """
     # Mode A: adjacent build first
     if _tryForwardBarrier(bot, ct, adjacent_only=True):
         return True
-    # Mode B: only while gun placement is gated
-    if not _canAffordGunPlace(ct):
+    # Mode B: finish what we started; otherwise start only while a gun is
+    # unaffordable and this harasser's cut cooldown has elapsed.
+    if _cutInProgress(bot, ct) or (
+        not _canAffordGunPlace(ct) and _cutCooldownElapsed(bot, ct)
+    ):
         if _cutAndBarrier(bot, ct):
             return True
     # Mode A: walk toward a forward pad
