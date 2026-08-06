@@ -228,8 +228,10 @@ def _enemyCoreFromLedger(bot, ct: Controller) -> Position | None:
     the rest of the game. It also fails open in two guards: `_oreCloserToAlly` and
     `_scoutOreTargets` both stop protecting our own ore when the enemy core is unknown.
 
-    The ledger already carries it: enemy cores broadcast at priority 0 and
-    `_update_local_vision` writes all four footprint tiles. This just reads it back.
+    Reads only *this builder's* sightings: the delta ledger runs builder → core only,
+    so another unit seeing the enemy core does not help this one. Superseded in practice
+    by map identification, which publishes the enemy core to slot 15 for everyone — this
+    remains the fallback for a map the tables cannot identify at all.
     Returns the footprint anchor (min x, min y) so it matches the packed convention.
     """
     me = ct.get_team()

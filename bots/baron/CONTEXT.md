@@ -72,11 +72,27 @@ Near-core defensive **gunner** placement only (`defence.defGun` → `guns.placeG
 
 Answer to turrets parked outside the leash (`defence.defSentinel` → `guns.placeDefSentinel`, knobs `DEF_SENTINEL`, `TURRET_THREAT_CHEBYSHEV`, `TURRET_MEMORY_TURNS` in `main.py`). The geometry is the whole problem: an enemy sentinel's attack radius is sqrt(32) ≈ 5.7, so it shells the core from Chebyshev 5–6, outside the guardian leash of 4 and beyond a gunner's 3.6 reach. **Our own sentinel has the same 5.7**, so a pad *inside* the leash covers the gap and the guardian never leaves home — no leash arithmetic, no sticky sortie state, no travel phase.
 
-Detection reads the HiveMind `local_map` rather than `get_nearby_units`, because builder vision is sqrt(20) ≈ 4.5 and a guardian on its patrol ring usually cannot see the thing at all; the core (sqrt(36)) or a passing builder spots it and the ledger carries it (own vision is folded in by `tick`). Sightings older than `TURRET_MEMORY_TURNS` are ignored. Candidates are enemy gunner/sentinel/launcher within `TURRET_THREAT_CHEBYSHEV` of the core footprint, ranked sentinel → launcher → gunner, then by distance to core.
+Detection reads the HiveMind `local_map` rather than `get_nearby_units`, because builder vision is sqrt(20) ≈ 4.5 and a guardian on its patrol ring usually cannot see the thing at all. *Caveat:* the ledger is builder → core only, so a turret spotted by another builder reaches the **core**, not this guardian — in practice `local_map` here means the guardian's own accumulated sightings plus whatever the static map tables seeded. Sightings older than `TURRET_MEMORY_TURNS` are ignored. Candidates are enemy gunner/sentinel/launcher within `TURRET_THREAT_CHEBYSHEV` of the core footprint, ranked sentinel → launcher → gunner, then by distance to core.
 
 Order matters and is deliberate: **below `defGun`** (anything a gunner can reach is cheaper answered that way, so a gunner or builder pressing the core still comes first) and **above `defendHome`**, which heals the core — healing alone loses that trade at 4 HP/turn against 18 a shot, so killing the sentinel is the defence and the heal is only the holding action underneath it. `placeDefSentinel` drops pads outside the leash rather than merely deprioritising them, so it cannot walk a guardian out; pads are then sorted nearest-home first. Skipped when an ally gunner or sentinel already covers the target, which also keeps the second guardian from stacking turrets on one threat.
 
 *Note:* the threat gate is Chebyshev while sentinel range is Euclidean, so a turret on the diagonal at Chebyshev 6 (Euclidean 8.5) passes the gate without actually being able to hit the core. It may still be shelling outlying belts or harvesters. Tighten to an r²≤32 test against the footprint if that matters.
+
+## MapIdentification
+
+Which map we are on, and therefore where the enemy core is and where ore and walls sit (`hivemind.mapCandidates` / `candidateConsistent` / `_resolve_map`, knob `MAP_RESOLVE_RETRY_TURNS` in `components/hivemind_v2.py`).
+
+Identification used to hash `(w, h, team, coreX, coreY, wallCount)` into a `KNOWN_MAPS` key once at turn 0. That failed two ways: a wall count disagreeing with the engine missed entirely and left `map_id` 0 forever, and maps sharing a hash collapsed — `hive`, `hive_no_see` and `hive_see` have identical dimensions, cores **and walls**, so two were unreachable and playing them silently returned the third's ore table.
+
+**Candidates, then evidence.** `mapCandidates` matches every part of the key *except* the wall count; that alone is unique for 58 of 62 known starts. `candidateConsistent` then checks observed terrain against `WALL_LOCATIONS` / `ORE_LOCATIONS`, both directions. Every remaining ambiguity is settled within Chebyshev 2–3 of our own core, inside the core's vision radius of 6, so identification still completes at turn 0.
+
+Only cells with **no `entity`** carry terrain truth: `_update_local_vision`'s entity branch derives `passable` from the entity and never reads the tile, while the no-entity branch reads it and sets `passable = not is_wall` plus `ore`. An entity cell says nothing about the ground under it.
+
+Three outcomes. **One** survivor → adopt, write slots 14 and 15. **None** → the tables do not describe this map; latch `_map_impossible` and stay unknown, because evidence only accumulates so a contradiction is permanent. That is the point of the change: honest unknown, where `FrontierScout` takes over, beats silently using another map's ore. **Several** → retry later.
+
+**Retries run on builders, never the core.** The core's terrain view never grows — deltas carry entities only, so nothing transmits walls or ore — and its `local_map` is actively polluted: ingesting a delta writes `passable` from a *reported entity*, and a later `etype is None` delta deletes the entity while leaving that `passable` behind, which looks like terrain but is not. A builder's map is purely first-hand and grows as it explores.
+
+Propagation needs no new plumbing: every unit polls slot 14 while `map_id == 0`, the static wall/ore load is gated on `map_id != 0 and not _walls_loaded`, and `builder._resolveCores` reads slot 15 every turn — so a late resolution reaches the whole team automatically. The ally core is published as `CoreState.KNOWN` at turn 0 whether or not the map resolves.
 
 ## FrontierScout
 
@@ -84,7 +100,7 @@ Last-resort exploration (`pathing.findFrontierTarget` + `logistics.exploreFronti
 
 It exists because a missed map fingerprint left the bot with no way to recover and **nothing in baron explored**. `map_id` 0 makes `ORE_LOCATIONS` empty and `enemyCorePos` is never set, so `seekCore` / `denyOre` / `offGun`'s core branch are all inert — and on `heart`, `sweden` and `vase`, where the core sees *no* ore in its own vision at turn 0, `pickEmptyOre` had nothing and no other step moves a builder without an ore claim, so the economy never started at all.
 
-A frontier is a tile **absent from `local_map`** that is cardinally adjacent to a known passable cell. `_update_local_vision` writes a cell for every tile in vision, so absent means "never seen by anyone on the team" — and since the ledger is broadcast, the boundary is shared across the crew rather than per-unit. Scoring is `100 / (1 + distance)`, plus known ore within Chebyshev 3 of the candidate (ore clusters), plus — with `outward` — distance from our own core.
+A frontier is a tile **absent from `local_map`** that is cardinally adjacent to a known passable cell. `_update_local_vision` writes a cell for every tile in vision, so absent means "never seen by *this unit*". The boundary is **per-builder, not shared**: the delta ledger runs builder → core only (`_broadcast_ledger` is called in the builder branch, `_sync_ledger` under `if is_core:`), so the core ingests everyone's sightings and never publishes back, and builders never read each other's. Several harassers will therefore re-explore the same ground. Scoring is `100 / (1 + distance)`, plus known ore within Chebyshev 3 of the candidate (ore clusters), plus — with `outward` — distance from our own core.
 
 The outward bias replaces the usual periodic "prefer far frontiers" anti-dithering trick with a prior we can always compute: the **ally core is known even on an unfingerprinted map**, because it is packed as `CoreState.KNOWN` from the core's own position at turn 0. Harassers weight it up to push away from home; economy defaults leave it off and take nearby ore.
 
