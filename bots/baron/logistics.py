@@ -443,7 +443,8 @@ def oreThreatenedByGunner(ct: Controller, tile: Position) -> bool:
         if tile.distance_squared(gpos) > GUNNER_RANGE_SQ:
             continue
         facing = ct.get_direction(eid)
-        if gunnerHasLos(ct, gpos, facing, tile):
+        # Their gunner, their ray: their own buildings shield the tile, ours get chewed.
+        if gunnerHasLos(ct, gpos, facing, tile, shooterIsAlly=False):
             return True
         if ct.can_fire_from(gpos, facing, EntityType.GUNNER, tile):
             return True

@@ -105,6 +105,7 @@ from logistics import (
     maintainHarvester,
     moveToward,
     recheckOreNodes,
+    relayEverComplete,
 )
 from defence import clearBarriers, defGun, defSentinel, patrolHome
 from pathing import breakEncirclement
@@ -215,7 +216,7 @@ def _dodgeWhileRelaying(bot, ct: Controller) -> bool:
 def _runDefaultHome(bot, ct: Controller) -> None:
     """Default early phase: defend first, then near-core economy only."""
     bot.nearCoreEconomy = True
-    if _reactEnemyTurret(bot, ct):
+    if _reactEnemyTurret(bot, ct, skipEconomy=relayEverComplete(ct)):
         return
     if _dodgeWhileRelaying(bot, ct):
         return
@@ -242,7 +243,12 @@ def runDefault(bot, ct: Controller) -> None:
         return
 
     bot.nearCoreEconomy = False
-    if _reactEnemyTurret(bot, ct):
+    # skipEconomy consumes the turn when a visible turret leaves nothing to do —
+    # it guards maintainHarvester against re-entering a relay, which only matters
+    # once a harvester exists. Before the first relay it just starves the opening:
+    # on a small map a turret is in vision almost every turn, and this is the only
+    # economy builder in the first five spawns (idx 3 of 1..5).
+    if _reactEnemyTurret(bot, ct, skipEconomy=relayEverComplete(ct)):
         return
     if _dodgeWhileRelaying(bot, ct):
         return
@@ -329,7 +335,14 @@ def runGuardian(bot, ct: Controller) -> None:
     # Defence outranks economy: drop the relay claim so the inRelay guards in
     # _reactEnemyTurret / defGun don't lock the guardian out of fighting. Belts
     # already placed stay on the map and the watermark rebuilds on the re-pick.
-    underAttack = _enemyUnitInVision(ct)
+    # Turret-only until the first relay lands: `_enemyUnitInVision` also counts
+    # enemy *builders*, and on a small map one is in vision almost constantly, so
+    # this gate keeps `_guardianEconomy` off for the whole opening. With no
+    # economy yet there is nothing for the stricter reading to protect.
+    if relayEverComplete(ct):
+        underAttack = _enemyUnitInVision(ct)
+    else:
+        underAttack = enemyTurretInVision(ct)
     if underAttack and (bot.inRelay or bot.oreSite is not None):
         abortRelay(bot)
         bot.oreSite = None

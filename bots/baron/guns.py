@@ -164,8 +164,24 @@ def gunnerHasLos(
     site: Position,
     facing: Direction,
     target: Position,
+    *,
+    shooterIsAlly: bool = True,
 ) -> bool:
-    """True if gunner at site facing can reach target; belts/turrets clear, barriers block."""
+    """True if gunner at site facing can reach target; belts/turrets clear, barriers block.
+
+    The engine's own `can_fire_from` is asked first and settles the clear case.
+    Everything below it is an *override* of an engine refusal: the line is blocked
+    today, but we place/assess anyway on the bet that the blocker dies. That bet
+    only pays when the blocker belongs to the shooter's **opponent** — a shooter
+    never fires on its own buildings, so its own belt on the line never clears.
+
+    `shooterIsAlly` says whose gunner this is, because the same helper is used for
+    both teams' rays. Ours (placement, `allyGunCovering`): enemy entities are
+    chewable, our own block. Theirs (`oreThreatenedByGunner`, `_tileUnderGunnerFire`):
+    it inverts — our entities are what they chew, and their own buildings shield
+    the target. Getting this backwards reports ore as threatened when the enemy's
+    own belt is in fact shielding it, and we decline to build there.
+    """
     if site.distance_squared(target) < 1:
         return False
     if site.distance_squared(target) > GUNNER_RANGE_SQ:
@@ -184,9 +200,12 @@ def gunnerHasLos(
         if ct.is_in_vision(p):
             if ct.get_tile_env(p) == Environment.WALL:
                 return False
-            etype, _ = _entityOnTile(ct, p)
-            if etype is not None and etype not in _TRANSPARENT_LOS:
-                return False
+            etype, is_enemy = _entityOnTile(ct, p)
+            if etype is not None:
+                # Transparent only if the shooter will destroy it on the way.
+                chewable = is_enemy if shooterIsAlly else not is_enemy
+                if not chewable or etype not in _TRANSPARENT_LOS:
+                    return False
         if p.distance_squared(site) > GUNNER_RANGE_SQ:
             return False
         p = p.add(facing)
