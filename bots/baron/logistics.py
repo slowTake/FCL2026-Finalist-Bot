@@ -1043,6 +1043,44 @@ def _nearCore(bot, ct: Controller) -> bool:
     return _chebyshevToCore(ct.get_position(), bot.corePos) <= DEFEND_HOME_CHEBYSHEV
 
 
+def _safeCoreStandTile(bot, ct: Controller, core: Position) -> Position | None:
+    """Walkable tile cardinally adjacent to the core footprint, no gunner covering it.
+
+    Healing is done from *beside* the core, and the 2x2 footprint offers eight such
+    tiles — so when a gunner covers the approach there is usually another side that
+    works. Picking one is strictly better than walking at the footprint itself.
+
+    Returns None when every side is covered, which is a deliberate refusal: healing
+    restores 4 HP/turn, and standing in a gunner's line to do it feeds a 40 HP
+    builder to 10 dmg/turn. Losing a 30 Ti builder to heal 16 HP is not a defence.
+    """
+    from offense import _enemyGunners, _tileUnderGunnerFire
+
+    gunners = _enemyGunners(ct)
+    pos = ct.get_position()
+    footprint = _coreFootprint(core)
+    on_core = {(t.x, t.y) for t in footprint}
+    local_map = bot.hivemind.local_map
+    best: Position | None = None
+    best_key: tuple[int, int, int] | None = None
+    for tile in footprint:
+        for d in CARDINALS:
+            cand = tile.add(d)
+            if (cand.x, cand.y) in on_core:
+                continue
+            if not inBounds(ct, cand):
+                continue
+            if cand != pos and not walkPassable(ct, cand, local_map=local_map):
+                continue
+            if gunners and _tileUnderGunnerFire(ct, cand, gunners):
+                continue
+            key = (manhattan(pos, cand), cand.x, cand.y)
+            if best_key is None or key < best_key:
+                best_key = key
+                best = cand
+    return best
+
+
 def defendHome(bot, ct: Controller) -> bool:
     """Near-core only: keep a damaged ally core alive.
 
@@ -1091,8 +1129,12 @@ def defendHome(bot, ct: Controller) -> bool:
                 ):
                     ct.heal(check)
                     return True
-        # Move adjacent to core to heal next turns
-        return moveToward(bot, ct, tile)
+        # Approach a side no gunner covers, rather than the footprint itself.
+        # None means every side is covered — fall through instead of walking in.
+        stand = _safeCoreStandTile(bot, ct, bot.corePos)
+        if stand is None or stand == pos:
+            return False
+        return moveToward(bot, ct, stand)
     return False
 
 

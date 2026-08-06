@@ -23,32 +23,47 @@
 #        not just own vision) → our own sentinel on a pad inside the leash. Its
 #        5.7 reach covers what a gunner's 3.6 cannot, without leaving home.
 #        Above defendHome: healing loses to a sentinel (18/shot vs 4 HP/turn).
-# 4. defendHome — attack enemy in vision, else heal core if HP < 500
+# 4. defendHome — heal core if HP < 500. No attack branch: builder fire is
+#        1.0 Ti/dmg against a gunner's 0.20, and the approach walked a 40 HP
+#        builder into something dealing 10 dmg/turn. Turrets answer turrets.
 # 5. healAlly — core → gunner/sentinel → harvester
+#    Steps 6-8 are chores and share one gate, `not underAttack`: enemy turret OR
+#    builder in vision, relaxed to turret-only until the team's first relay
+#    completes (relayEverComplete, slot 0) — before there is any economy an enemy
+#    builder in vision must not keep a guardian off ore.
 # 6. clearBarriers — fire / move to nearest enemy barrier inside the leash only
-# 7. economy — only while no enemy turret/builder is in vision (GUARDIAN_ECONOMY
-#        in main.py). nearCoreEconomy=True, so ore is limited to the leash:
-#        buildHarvester on empty leash ore, then maintainHarvester, which also
-#        finishes/repairs a harvester's belt line back to core. A visible enemy
-#        unit drops the relay claim so defence isn't blocked by the inRelay
-#        guards; the leash widens by GUARDIAN_ECON_SLACK while a claim is held.
-# 8. patrolHome — cycle mid-side waypoints around core
+# 7. reconnectBelts — ally conveyor inside the leash aiming at a layable empty
+#        tile → build the patch belt, facing a surviving belt/core one step nearer
+#        the core if there is one. Ore-anchored repair cannot reach these: a
+#        guardian's _allowOreSite confines it to leash ore, so a break near the
+#        core belonging to a harvester further out is unclaimable. Above economy
+#        because a cut line yields zero while a new harvester is incremental.
+#        Greedy — one tile a turn, no routing around a blocked coreward tile.
+# 8. economy — (GUARDIAN_ECONOMY in main.py). nearCoreEconomy=True, so ore is
+#        limited to the leash: buildHarvester on empty leash ore, then
+#        maintainHarvester, which also finishes/repairs a harvester's belt line
+#        back to core. A visible enemy unit drops the relay claim so defence isn't
+#        blocked by the inRelay guards; the leash widens by GUARDIAN_ECON_SLACK
+#        while a claim is held.
+# 9. patrolHome — cycle mid-side waypoints around core
 #
 # ## default — priority order (orchestrator: runDefault below)
 #    idx % 5 == 3 (builders 3,8,13,…)
 #    Never recalled home — economy runs regardless of ally core HP.
 #    0. reactEnemyTurret — enemy gunner/sentinel/launcher in vision → placeGun /
-#        defGun / defendHome / healAlly; skip economy this turn. Skipped entirely
-#        while inRelay: a committed belt is always finished.
+#        defGun / defendHome / healAlly; skip economy this turn — but only once the
+#        team's first relay is done (skipEconomy=relayEverComplete, slot 0), else a
+#        turret in vision starves the opening. Skipped entirely while inRelay: a
+#        committed belt is always finished.
 #    0b. dodgeWhileRelaying — inRelay and standing in gunner LoS → avoidFire toward
-#        ally core. Relays are dropped per-tile in relayToCore, never wholesale.
+#        ally core. Threatened belt tiles are routed around in relayToCore.
 #    0c. breakOreDeadlock — motionless (bot.stuck) ≥ ORE_DEADLOCK_TURNS outside a
 #        relay → blacklist the ore claim and re-pick. State-only, no turn cost.
 #    Early phase (age < BUILDER_HOME_TURNS after birth_round): defend-first +
 #    nearCoreEconomy (Chebyshev 4 ore). ≤0 disables. Harassers/guardians never enter.
 #    Early (after react):
 #      1. defGun — near core; gunners only
-#      2. defendHome — near core; attack / heal core
+#      2. defendHome — near core; heal core if damaged (no attack branch)
 #      3. healAlly — core → gunner/sentinel → harvester
 #      4. buildHarvester — empty ore near core only
 #      5. maintainHarvester — near-core ore / finish in-flight relay
@@ -60,11 +75,13 @@
 #    2a. checkOre — harvester → relayToCore; empty → build (same gunner-aim gate);
 #        ally block → destroy (skip gunner/sentinel if that ore is threatened);
 #        enemy gunner/sentinel/belt/launcher/barrier → placeGunnerOnOre (stub)
-#    2b. relayToCore — abort only if the next belt tile is under a visible gunner's
-#        LoS/arc; else path → facing / clearWrongBelt → placeRelayBelt → watermark
+#    2b. relayToCore — next belt tile under a visible gunner's LoS/arc → blacklist
+#        it (bot.relayThreatBlocked, reset in clearRelay) and replan from origin;
+#        abort only if that finds nothing. Else path → facing / clearWrongBelt →
+#        placeRelayBelt → watermark
 # 3. defGun — near core only; enemy builder/gunner/sentinel/launcher in vision → placeGun
 #        (gunners only — never sentinels)
-# 4. defendHome — near core only; attack enemy in vision, else heal core if HP < 500
+# 4. defendHome — near core only; heal core if HP < 500 (no attack branch)
 # 5. healAlly — core → gunner/sentinel → harvester
 # 6. recheckOreNodes — clear sticky oreSite; prefer empty → ally-blocked → harvester
 # # idleHome — commented out (soft-idle trap)
@@ -107,7 +124,13 @@ from logistics import (
     recheckOreNodes,
     relayEverComplete,
 )
-from defence import clearBarriers, defGun, defSentinel, patrolHome
+from defence import (
+    clearBarriers,
+    defGun,
+    defSentinel,
+    patrolHome,
+    reconnectBelts,
+)
 from pathing import breakEncirclement
 from offense import (
     avoidFire,
@@ -368,6 +391,10 @@ def runGuardian(bot, ct: Controller) -> None:
     # 30 Ti to remove a 3 Ti barrier, so it must never run while anything hostile
     # is in vision. Same gate as the economy below it.
     if not underAttack and clearBarriers(bot, ct):
+        return
+    # Above the economy: a cut belt zeroes a whole line's throughput, while a new
+    # harvester is only incremental. Repair beats build.
+    if not underAttack and reconnectBelts(bot, ct):
         return
     if not underAttack and _guardianEconomy(bot, ct):
         return

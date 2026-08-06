@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fcode import Controller, EntityType, Position
+from fcode import Controller, Direction, EntityType, Environment, Position
 
 from guns import (
     allyGunCovering,
@@ -10,7 +10,7 @@ from guns import (
     placeDefSentinel,
     placeGun,
 )
-from pathing import inBounds, walkPassable
+from pathing import CARDINALS, inBounds, manhattan, walkPassable
 
 DEFEND_HOME_CHEBYSHEV = 4
 _PATROL_OFFSET = 2
@@ -209,6 +209,157 @@ def clearBarriers(bot, ct: Controller) -> bool:
     from logistics import moveToward
 
     return moveToward(bot, ct, best)
+
+
+_BELT_TYPES = (EntityType.CONVEYOR, EntityType.SPLITTER)
+
+
+def _isBeltOrCore(bot, ct: Controller, tile: Position, core: Position) -> bool:
+    """True if tile carries an ally belt or is part of the ally core footprint."""
+    for foot in _coreFootprint(core):
+        if tile.x == foot.x and tile.y == foot.y:
+            return True
+    me = ct.get_team()
+    if ct.is_in_vision(tile):
+        bid = ct.get_tile_building_id(tile)
+        if bid is None:
+            return False
+        return (
+            ct.get_entity_type(bid) in _BELT_TYPES and ct.get_team(bid) == me
+        )
+    cell = bot.hivemind.local_map.get((tile.x, tile.y))
+    ent = cell.get("entity") if cell else None
+    if not ent or ent.get("team") != me:
+        return False
+    return ent.get("type") in _BELT_TYPES
+
+
+def _allyBuilderNear(ct: Controller, tile: Position) -> bool:
+    """Visible ally builder (not self) on tile or cardinally adjacent to it."""
+    me = ct.get_team()
+    self_id = ct.get_id()
+    for check in (tile, *(tile.add(d) for d in CARDINALS)):
+        if not inBounds(ct, check) or not ct.is_in_vision(check):
+            continue
+        bid = ct.get_tile_builder_bot_id(check)
+        if bid is not None and bid != self_id and ct.get_team(bid) == me:
+            return True
+    return False
+
+
+def _danglingBeltEnds(bot, ct: Controller) -> list[tuple[Position, Position]]:
+    """Ally conveyors inside the leash whose output tile leads nowhere.
+
+    Returns `(belt, output)` pairs, nearest-core first — the most downstream break
+    reconnects the most line. Detection reads the HiveMind ledger, not own vision,
+    for the same reason `threateningTurret` does: a guardian on its patrol ring
+    cannot see the whole near-core belt run at sqrt(20).
+
+    Conveyors only. A splitter rotates its output among three directions, so
+    "the way it points" does not identify a break.
+    """
+    from logistics import tileThreatenedByGunner
+
+    core = bot.corePos
+    if core is None:
+        return []
+    me = ct.get_team()
+    pos = ct.get_position()
+    out: list[tuple[int, int, Position, Position]] = []
+    for (x, y), cell in bot.hivemind.local_map.items():
+        ent = cell.get("entity")
+        if not ent or ent.get("team") != me:
+            continue
+        if ent.get("type") != EntityType.CONVEYOR:
+            continue
+        facing = ent.get("direction")
+        if facing is None or facing == Direction.CENTRE:
+            continue
+        belt = Position(x, y)
+        d = _chebyshevToCore(belt, core)
+        if d > DEFEND_HOME_CHEBYSHEV:
+            continue
+        target = belt.add(facing)
+        if not inBounds(ct, target):
+            continue
+        # Already feeding a belt or the core — not a break.
+        if _isBeltOrCore(bot, ct, target, core):
+            continue
+        # Layable only. A belt aimed at a wall or a building is wrong-facing,
+        # which is clearWrongBelt's problem, not a cut line.
+        if not ct.is_in_vision(target):
+            continue
+        if ct.get_tile_building_id(target) is not None:
+            continue
+        if ct.get_tile_env(target) != Environment.EMPTY:
+            continue
+        # A default mid-relay has a legitimately dangling head — leave it alone.
+        if _allyBuilderNear(ct, target):
+            continue
+        if tileThreatenedByGunner(ct, target):
+            continue
+        out.append((d, manhattan(pos, target), belt, target))
+    out.sort(key=lambda t: (t[0], t[1]))
+    return [(belt, target) for _d, _m, belt, target in out]
+
+
+def _reconnectFacing(bot, ct: Controller, target: Position, core: Position) -> Direction:
+    """Facing for a patch belt: at a surviving belt/core one step closer, else coreward.
+
+    The neighbour test is what makes a one-tile gap fill exactly. Without it the
+    patch faces a raw cardinal toward the core, which is right only when the gap is
+    axis-aligned — otherwise we have just built a new dangling end one step along.
+    """
+    from logistics import facingIntoCore, travelFacing
+
+    here = _chebyshevToCore(target, core)
+    for d in CARDINALS:
+        neighbor = target.add(d)
+        if not inBounds(ct, neighbor):
+            continue
+        if _chebyshevToCore(neighbor, core) >= here:
+            continue
+        if _isBeltOrCore(bot, ct, neighbor, core):
+            return travelFacing(target, neighbor)
+    return facingIntoCore(target, core)
+
+
+def reconnectBelts(bot, ct: Controller) -> bool:
+    """Patch a cut belt line near the core back toward the core, one tile a turn.
+
+    Guardian-only idle work, gated with the economy on `not underAttack`. Exists
+    because the normal repair path is *ore-anchored*: `maintainHarvester` re-enters
+    `relayToCore` and the watermark rebuilds from the first gap, but a guardian's
+    `_allowOreSite` confines it to ore inside the leash. A break near the core that
+    belongs to a harvester outside the leash is therefore unreachable — the guardian
+    can never claim the ore that would carry it there. Anchoring on the belt instead
+    of the ore is the whole point.
+
+    Greedy and deliberately unplanned: no A*, so a blocked coreward tile cannot be
+    routed around. Candidates are tried in order and a failed placement falls through
+    to the next rather than retrying, so it cannot thrash. Multi-tile gaps are walked
+    one tile per turn and only while each step stays layable.
+    """
+    from logistics import moveToward, placeRelayBelt
+
+    core = bot.corePos
+    if core is None or bot.inRelay or getattr(bot, "recheckingOre", False):
+        return False
+
+    candidates = _danglingBeltEnds(bot, ct)
+    if not candidates:
+        return False
+
+    pos = ct.get_position()
+    for _belt, target in candidates:
+        if abs(pos.x - target.x) + abs(pos.y - target.y) != 1:
+            continue
+        facing = _reconnectFacing(bot, ct, target, core)
+        if placeRelayBelt(ct, target, facing) == "placed":
+            return True
+
+    # Nothing adjacent to act on — walk to the most downstream break.
+    return moveToward(bot, ct, candidates[0][1])
 
 
 def _patrolWaypoints(bot, ct: Controller) -> list[Position]:
