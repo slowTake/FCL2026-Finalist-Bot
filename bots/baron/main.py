@@ -113,6 +113,7 @@ class Player:
         self.relayPath: list[Position] | None = None
         self.relayBuiltTo = -1
         self.relayStuck = 0
+        self.relayThreatBlocked: set[tuple[int, int]] = set()
         self.cachedPath: list[Position] | None = None
         self.cachedPathTarget: Position | None = None
         self.lastPos: Position | None = None

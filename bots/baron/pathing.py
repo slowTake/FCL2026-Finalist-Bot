@@ -253,12 +253,21 @@ def relayPassable(
     pos: Position,
     *,
     ore_blocked: set[tuple[int, int]] | None = None,
+    threat_blocked: set[tuple[int, int]] | None = None,
     local_map: dict | None = None,
 ) -> bool:
-    """Tiles where a relay belt can be laid or joined (existing conveyor/splitter)."""
+    """Tiles where a relay belt can be laid or joined (existing conveyor/splitter).
+
+    `threat_blocked` carries tiles a relay already found under enemy gunner fire.
+    Kept separate from `ore_blocked` because the two mean different things and are
+    cleared on different schedules: ore blocking is derived fresh from the current
+    claim, threat blocking accumulates over one relay attempt and resets with it.
+    """
     if not inBounds(ct, pos):
         return False
     if ore_blocked is not None and (pos.x, pos.y) in ore_blocked:
+        return False
+    if threat_blocked is not None and (pos.x, pos.y) in threat_blocked:
         return False
     if not ct.is_in_vision(pos):
         if local_map is not None:
@@ -400,6 +409,7 @@ def findPathAroundObstruction(
     is_goal: GoalFn,
     heuristic_to: Position | None = None,
     ore_blocked: set[tuple[int, int]] | None = None,
+    threat_blocked: set[tuple[int, int]] | None = None,
     local_map: dict | None = None,
     max_iters: int = 800,
 ) -> list[Position] | None:
@@ -407,7 +417,11 @@ def findPathAroundObstruction(
 
     def ok(p: Position) -> bool:
         return relayPassable(
-            ct, p, ore_blocked=ore_blocked, local_map=local_map
+            ct,
+            p,
+            ore_blocked=ore_blocked,
+            threat_blocked=threat_blocked,
+            local_map=local_map,
         )
 
     seeds: list[Position] = []

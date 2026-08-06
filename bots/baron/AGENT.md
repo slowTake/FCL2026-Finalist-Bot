@@ -46,7 +46,7 @@ Example — `relayToCore`:
 
 Example — `defGun` → `placeGun` only (never sentinels); out-of-leash turrets → `defSentinel` → `placeDefSentinel`.
 
-Example — `runGuardian` → leash → `_reactEnemyTurret` → `defGun` → `defSentinel` → `defendHome` → `healAlly` → `clearBarriers` → economy → `patrolHome`.
+Example — `runGuardian` → leash → `_reactEnemyTurret` → `defGun` → `defSentinel` → `defendHome` → `healAlly` → *[not `underAttack`]* `clearBarriers` → *[not `underAttack`]* economy → `patrolHome`. No builder-attack anywhere in the chain except `clearBarriers`; turrets answer turrets.
 
 Example — `runHarasser` → `snipeHarvester` → `offGun` → `avoidFire` → `seekHarvester` → `seekCore`.
 
@@ -58,7 +58,7 @@ Example — `runHarasser` → `snipeHarvester` → `offGun` → `avoidFire` → 
 2. **Guardian**: `idx % 5 in (0, 1)` (builders 1,5,6,10,…) → `builder.runGuardian`; helpers in `defence.py`. Leashed home defence; ignores wave. Guardians are the *only* home defence — no core-HP recall pulls other roles back.
 3. **Default role tasks**: orchestrator `runDefault` in `builder.py` (`idx % 5 == 3`); helpers in `logistics.py` / `defence.py` / `guns.py`. Empty ore via `pickEmptyOre` (`ORE_STAGGER` off = convenience; on = index slots; honours `skippedOres`). A default motionless for `ORE_DEADLOCK_TURNS` outside a relay drops and blacklists its ore claim (`breakOreDeadlock`) — the anti-pile-up guard. Enemy turret in vision → contest before economy, **unless `inRelay`**: a committed belt is always finished, and the builder dodges (`avoidFire` toward ally core) rather than fighting. For `BUILDER_HOME_TURNS` after `birth_round`, default uses defend-first + near-core economy (`≤0` disables). Harassers and guardians never enter this phase.
 4. **Harasser**: `idx % 5 in (2, 4)` (builders 2,4,7,9,…) → `builder.runHarasser`; helpers in `offense.py`. Wave: set `WAVE_ATTACK_TURN` / `WAVE_ATTACK_TI` (>0) in `main.py` to switch **non-guardian** builders to harasser once the gate hits. `seekCore` approaches then orbits the enemy core.
-5. **Relay / pathing**: geometry in `pathing.py`; belt facing and clear/place in `logistics.py` helpers. `relayToCore` aborts only when the next belt tile is under a visible gunner (`tileThreatenedByGunner`) — never merely because a turret is in vision.
+5. **Relay / pathing**: geometry in `pathing.py`; belt facing and clear/place in `logistics.py` helpers. A next belt tile under a visible gunner (`tileThreatenedByGunner`) is blacklisted into `bot.relayThreatBlocked` and the path replanned from `relayOrigin` — `relayToCore` aborts only if that replan finds nothing. Never aborts merely because a turret is in vision. The blacklist resets in `clearRelay`, so it is scoped to one relay attempt.
 6. **Caps**: only `main.py` policy block.
 7. **HiveMind v2**: never write store **4–15** from Player (slot 4 = builder registry). Player slot 0 = first relay done; slots 1–3 free. Ally/enemy cores via `unpack_cores` on slot 15. Extend shared code in [`components/hivemind_v2.py`](../../components/hivemind_v2.py).
 8. **Guns**: `defGun` places gunners only, at targets inside the leash; `defSentinel` answers turrets outside it with our own sentinel from a pad inside it (`DEF_SENTINEL`, `TURRET_THREAT_CHEBYSHEV`, `TURRET_MEMORY_TURNS`); harasser `offGun` may place gunners and sentinels (≤1 gunner covering each enemy harvester; sentinel pads prefer nearer-to-core). Neither places on ore.

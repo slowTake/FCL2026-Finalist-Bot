@@ -8,11 +8,15 @@ For **where code lives**, see `AGENT.md` Key. For **behavior phases**, see task 
 
 ## Guardian
 
-Home defence role (`builder.runGuardian`, helpers in `defence.py`): leash (Chebyshev 4) → `_reactEnemyTurret` (`skipEconomy=False`, `homeOnly=True`) → `defGun` → `defSentinel` → `defendHome` → `healAlly` → `clearBarriers` → **idle economy** → `patrolHome`. `_reactEnemyTurret`'s terminal "consume the turn anyway" exists only to stop `maintainHarvester` re-entering a relay, so guardians opt out (`skipEconomy=False`) — otherwise a turret they cannot act on (bank under `GUN_PLACE_MIN_TI`, target outside `_nearCore`, nothing adjacent, nothing damaged) freezes them out of `clearBarriers` / `patrolHome` for as long as it stays visible. Assignment: `idx % 5 in (0, 1)`. Ignores wave. Home defence is entirely the guardians' job — there is no core-HP recall pulling other roles home.
+Home defence role (`builder.runGuardian`, helpers in `defence.py`): leash (Chebyshev 4) → `_reactEnemyTurret` (`skipEconomy=False`, `homeOnly=True`) → `defGun` → `defSentinel` → `defendHome` → `healAlly` → *[not `underAttack`]* `clearBarriers` → *[not `underAttack`]* **idle economy** → `patrolHome`. `_reactEnemyTurret`'s terminal "consume the turn anyway" exists only to stop `maintainHarvester` re-entering a relay, so guardians opt out (`skipEconomy=False`) — otherwise a turret they cannot act on (bank under `GUN_PLACE_MIN_TI`, target outside `_nearCore`, nothing adjacent, nothing damaged) freezes them out of `clearBarriers` / `patrolHome` for as long as it stays visible. Assignment: `idx % 5 in (0, 1)`. Ignores wave. Home defence is entirely the guardians' job — there is no core-HP recall pulling other roles home.
+
+`underAttack` gates the two chores at the bottom. It reads `_enemyUnitInVision` (turret **or** builder) normally, but falls back to `enemyTurretInVision` (turret only) until the team's first relay completes (`logistics.relayEverComplete`, HiveMind slot 0). Before there is any economy, an enemy builder merely in vision must not keep a guardian off ore; after that, the stricter reading protects what exists. The same variable also decides whether a visible enemy drops the guardian's relay claim.
+
+**No builder-attack.** Guardians never poke a turret with builder fire: 1.0 Ti/dmg against a gunner's 0.20, and the `moveToward` approach walked a 40 HP builder into something dealing 10 dmg/turn at sqrt(13). Turrets answer turrets — `defGun` inside the leash, `defSentinel` outside. The only builder fire left in the chain is `clearBarriers`.
 
 ## Default
 
-Economy and home duties orchestrated by `builder.runDefault`; runs regardless of ally core HP. First: if any enemy gunner/sentinel is in vision **and the builder is not mid-relay**, contest (`contestTurret` / `defGun` / `defendHome` / `healAlly`) — skip economy that turn. A builder that is `inRelay` never breaks off to fight: it dodges instead (`_dodgeWhileRelaying` → `avoidFire` toward the ally core when standing in a gunner's LoS), and the relay itself is dropped only per-tile inside `relayToCore`. For `BUILDER_HOME_TURNS` after `birth_round` (default path only): defend-first + near-core economy. After that: `buildHarvester` → `maintainHarvester` → `defGun` → `defendHome` → `healAlly` → `recheckOreNodes`. Knob `≤0` disables the early phase. Harassers and guardians never run this phase.
+Economy and home duties orchestrated by `builder.runDefault`; runs regardless of ally core HP. First: if any enemy gunner/sentinel is in vision **and the builder is not mid-relay**, contest (`contestTurret` / `defGun` / `defendHome` / `healAlly`) — skip economy that turn. A builder that is `inRelay` never breaks off to fight: it dodges instead (`_dodgeWhileRelaying` → `avoidFire` toward the ally core when standing in a gunner's LoS), and a threatened belt tile is routed around inside `relayToCore` rather than dropping the relay. For `BUILDER_HOME_TURNS` after `birth_round` (default path only): defend-first + near-core economy. After that: `buildHarvester` → `maintainHarvester` → `defGun` → `defendHome` → `healAlly` → `recheckOreNodes`. Knob `≤0` disables the early phase. Harassers and guardians never run this phase.
 
 ## Harasser
 
@@ -40,7 +44,7 @@ Answer to turrets parked outside the leash (`defence.defSentinel` → `guns.plac
 
 Detection reads the HiveMind `local_map` rather than `get_nearby_units`, because builder vision is sqrt(20) ≈ 4.5 and a guardian on its patrol ring usually cannot see the thing at all; the core (sqrt(36)) or a passing builder spots it and the ledger carries it (own vision is folded in by `tick`). Sightings older than `TURRET_MEMORY_TURNS` are ignored. Candidates are enemy gunner/sentinel/launcher within `TURRET_THREAT_CHEBYSHEV` of the core footprint, ranked sentinel → launcher → gunner, then by distance to core.
 
-Order matters and is deliberate: **below `defGun`** (anything a gunner can reach is cheaper answered that way, so a gunner or builder pressing the core still comes first) and **above `defendHome`**, whose no-enemy branch heals the core — healing loses that trade at 4 HP/turn against 18 a shot. `placeDefSentinel` drops pads outside the leash rather than merely deprioritising them, so it cannot walk a guardian out; pads are then sorted nearest-home first. Skipped when an ally gunner or sentinel already covers the target, which also keeps the second guardian from stacking turrets on one threat.
+Order matters and is deliberate: **below `defGun`** (anything a gunner can reach is cheaper answered that way, so a gunner or builder pressing the core still comes first) and **above `defendHome`**, which heals the core — healing alone loses that trade at 4 HP/turn against 18 a shot, so killing the sentinel is the defence and the heal is only the holding action underneath it. `placeDefSentinel` drops pads outside the leash rather than merely deprioritising them, so it cannot walk a guardian out; pads are then sorted nearest-home first. Skipped when an ally gunner or sentinel already covers the target, which also keeps the second guardian from stacking turrets on one threat.
 
 *Note:* the threat gate is Chebyshev while sentinel range is Euclidean, so a turret on the diagonal at Chebyshev 6 (Euclidean 8.5) passes the gate without actually being able to hit the core. It may still be shelling outlying belts or harvesters. Tighten to an r²≤32 test against the footprint if that matters.
 
@@ -64,11 +68,19 @@ Last-resort helper: clears sticky `oreSite` / path cache and picks a fresh empty
 
 ## DefendHome
 
-Near-core only (Chebyshev 4 of footprint). Skipped while `inRelay` or `recheckingOre`. Attacks enemy gunner/sentinel/builder in vision; otherwise heals core if HP &lt; 500.
+Keep a damaged ally core alive. Near-core only (Chebyshev 4 of footprint), skipped while `inRelay` or `recheckingOre`: heal an adjacent core footprint tile if core HP &lt; 500, else `moveToward` one. Called from `runGuardian`, `runDefault`, `_runDefaultHome` and `_reactEnemyTurret`.
+
+It used to lead with an attack branch — `_findDefendTarget` picked the nearest enemy turret (else builder), walked to it, and poked for 2 dmg at 2 Ti. Both that branch and the helper are gone. The Ti rate was bad on its own (1.0 Ti/dmg against a gunner's 0.20), but the approach was worse: a 40 HP builder closing on something dealing 10 dmg/turn at sqrt(13) dies in four turns and must survive the walk before landing a single hit — trading a 30 Ti builder for ~6 damage to a 10 Ti gunner. Defaults had it worst, since they have no leash and could chase across the map.
+
+Healing is no longer gated on empty vision either. The core is healed *because* something is shelling it; under the old gate any enemy builder wandering into view flipped the guardian into the attack branch and it abandoned the core to give chase. Against a sentinel parked outside the leash this is the holding action while `defSentinel` builds the answer — 4 HP/turn against 6 dmg/turn does not hold outright, but it stretches a 500 HP core from ~83 turns to ~250, and wins the Ti trade 3.3:1.
 
 ## ClearBarriers
 
 Guardian helper: nearest enemy barrier in vision **inside the leash** (Chebyshev 4 of the core footprint) → adjacent fire, else `moveToward`. Barriers beyond the leash are deliberately ignored: walking out to one puts the guardian outside the leash, so `runGuardian`'s leash step marches it home next turn and it ping-pongs forever without patrolling. Distant barriers are the harassers' job.
+
+**Gated on `not underAttack`** — this is a chore, not a response. A barrier is 30 HP against 2 dmg per attack: 15 turns and 30 Ti to remove something the enemy replaced for 3. It must never run while anything hostile is in vision, so it shares the gate with the idle economy below it. Kept despite the Ti ratio because the enemy cuts relay lines and plugs them with barriers, and nothing else answers that.
+
+*Note:* it does not answer that tactic where it usually happens. The leash restriction means a cut out along the belt run — well beyond Chebyshev 4 — is never seen. Enemy barriers on a relay path are handled by `relayToCore` routing around them (`_RELAY_BLOCK_TYPES` in `pathing.py` makes a barriered tile unlayable); nothing actively clears one, and when no detour exists the relay hits its "no viable path" abort.
 
 ## PatrolHome
 
@@ -80,7 +92,15 @@ Sticky ore site inspection: empty → build; harvester → `relayToCore`; ally i
 
 ## RelayToCore
 
-Inbound conveyor chain from ore/harvester to ally-core-adjacent tiles. Aborts **only** when the next belt tile is under a visible enemy gunner's LoS/arc (`tileThreatenedByGunner`, the same predicate `buildHarvester` uses to skip ore) — so titanium is never spent into a firing line, but an enemy turret merely being in vision no longer drops the belt. Other aborts are failure exits: no ally core, no viable path, path adjacent to the enemy core, or `relayStuck >= 3`. Orchestrator plus facing/clear/place helpers. Belts face next hop; corners face the new outbound direction. Wrong-facing ally belts destroyed; enemy belts cleared by builder fire.
+Inbound conveyor chain from ore/harvester to ally-core-adjacent tiles. Orchestrator plus facing/clear/place helpers. Belts face next hop; corners face the new outbound direction. Wrong-facing ally belts destroyed; enemy belts cleared by builder fire. An enemy turret merely being in vision never drops the belt. Aborts are failure exits: no ally core, no viable path, path adjacent to the enemy core, or `relayStuck >= 3`.
+
+**Threatened tiles are routed around, not aborted on.** When the next belt tile is under a visible enemy gunner's LoS/arc (`tileThreatenedByGunner`, the same predicate `buildHarvester` uses to skip ore) the tile goes into `bot.relayThreatBlocked` and `pickRelayPath` re-runs from `relayOrigin`. Titanium is still never spent into a firing line, but the relay survives. `abortRelay` is kept as the fallback for when the replan finds nothing — so the boxed-in case degrades to the old behavior.
+
+Replanning from the origin rather than splicing at the watermark is deliberate: belts already laid sit behind the threat and stay valid, and a path that retraces them costs nothing because `extendRelayWatermark` resumes at the first gap or wrong-facing tile. The replan consumes the turn; the first belt on the new route goes down next turn.
+
+`relayThreatBlocked` is plumbed through `relayPassable` / `findPathAroundObstruction` as `threat_blocked`, kept separate from `ore_blocked` because the lifecycles differ — ore blocking is derived fresh from the current claim, threat blocking accumulates over one relay attempt. It is **reset in `clearRelay`**, so it clears on completion *and* on abort: a tile is blocked because a gunner covered it *then*, and that gunner may be gone by the next relay. An empty set is passed as `None`, so the no-threat case costs exactly what it did before.
+
+Two known limits. Threat is discovered one tile at a time (the check only runs on the next tile to build), so belts are laid up to the edge of a firing line before we notice, and a wide arc costs several replan turns. And because the blacklist resets on abort, a relay genuinely walled off by a firing line will abort, re-pick the same ore, and rediscover the same tiles — the pre-existing cycle, now doing more work per lap. If replays show pacing, the fix is escalating to `skippedOres` (blacklist the *node*), not lengthening the blacklist's life; note neither existing counter catches it, since `clearRelay` resets `relayStuck` and `bot.stuck` only counts turns without movement.
 
 ## Task list
 

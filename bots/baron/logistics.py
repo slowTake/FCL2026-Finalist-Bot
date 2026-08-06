@@ -42,6 +42,9 @@ def clearRelay(bot) -> None:
     bot.relayPath = None
     bot.relayBuiltTo = -1
     bot.relayStuck = 0
+    # Threat blacklist is scoped to one relay attempt: a tile is blocked because a
+    # gunner covered it *then*, and that gunner may be gone by the next relay.
+    bot.relayThreatBlocked = set()
 
 
 def abortRelay(bot) -> None:
@@ -694,9 +697,15 @@ def pickRelayPath(
     def is_goal(p: Position) -> bool:
         return isCoreAdjacent(ct, p, core_pos)
 
+    threat_blocked = getattr(bot, "relayThreatBlocked", None) or None
+
     def ok(p: Position) -> bool:
         return relayPassable(
-            ct, p, ore_blocked=ore_blocked, local_map=local_map
+            ct,
+            p,
+            ore_blocked=ore_blocked,
+            threat_blocked=threat_blocked,
+            local_map=local_map,
         )
 
     seeds: list[Position] = []
@@ -724,6 +733,7 @@ def pickRelayPath(
             is_goal=is_goal,
             heuristic_to=core_pos,
             ore_blocked=ore_blocked,
+            threat_blocked=threat_blocked,
             local_map=local_map,
             max_iters=PATH_MAX_ITERS,
         )
@@ -789,9 +799,20 @@ def relayToCore(bot, ct: Controller) -> None:
     needed = neededBeltFacing(path, idx, core_pos)
     pos = ct.get_position()
 
-    # Don't spend titanium on a tile a visible enemy gunner is covering
+    # Don't spend titanium on a tile a visible enemy gunner is covering. Route
+    # around it rather than dropping the relay: blacklist the tile for the rest of
+    # this attempt and replan from the origin. Belts already laid sit behind the
+    # threat and stay valid — a path that retraces them costs nothing, because
+    # extendRelayWatermark resumes at the first gap or wrong-facing tile. Abort is
+    # kept as the fallback for when no clear route exists at all.
     if tileThreatenedByGunner(ct, tile):
-        abortRelay(bot)
+        bot.relayThreatBlocked.add((tile.x, tile.y))
+        new_path = pickRelayPath(bot, ct, bot.relayOrigin, core_pos)
+        if new_path is None or _isEnemyCoreAdjacent(ct, new_path[-1], enemy_core):
+            abortRelay(bot)
+            return
+        bot.relayPath = new_path
+        bot.relayBuiltTo = extendRelayWatermark(ct, new_path, core_pos, -1)
         return
 
     # Non-belt building blocking — replan
