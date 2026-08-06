@@ -134,7 +134,7 @@ MAX_AMMO_POOL: int | None = None
 SLOT_RELAY_COMPLETE = 0
 SLOT_PACKED_CORES = 15
 
-DEBUG = False
+DEBUG = True
 
 from guns import gunnerLoop, sentinelLoop, top_up_ammo
 from hivemind import CoreState, HiveMind, unpack_cores
@@ -227,9 +227,11 @@ class Player:
         pos = ct.get_position()
         if self.lastPos == pos:
             self.stuck += 1
-            if self.stuck == 15:
-                with open("/tmp/stuck_log.txt", "a") as f:
-                    f.write(f"STUCK {self.hivemind.map_name} {pos.x},{pos.y}\n")
+            if self.stuck > 10 and self.stuck % 10 == 0:
+                import sys
+                from builder import isGuardian, isHarasser
+                role = "Guardian" if isGuardian(self.hivemind.my_index) else ("Harasser" if isHarasser(self.hivemind.my_index) else "Default")
+                sys.stderr.write(f"DEBUG: {role} Builder {ct.get_id()} stuck for {self.stuck} turns at {pos}\n")
         else:
             self.stuck = 0
         self.lastPos = pos
