@@ -289,18 +289,34 @@ def moveToward(bot, ct: Controller, target: Position) -> bool:
 # ------------------------------------------------------------------
 
 
-def knownOreTiles(bot) -> list[Position]:
-    ores: list[Position] = []
+def knownOreTiles(bot, *, includeStatic: bool = False) -> list[Position]:
+    """Ore tiles from the ledger; optionally unioned with the static map table.
+
+    By default `features.ORE_LOCATIONS` is a *fallback*, consulted only when the ledger
+    holds no ore at all — which, since our core sees ore on turn 0, means effectively
+    never. That is right for economy callers, who should prefer observed ore.
+
+    `includeStatic` unions the two instead. Offence needs it: `denyOre` targets ore in
+    the enemy's expansion ring, but the ledger only ever holds ore *we have already
+    scouted* — our own side early on, which the midline guard then correctly rejects.
+    Without the union `denyOre` has no candidates until a harasser has walked to enemy
+    ore, which is the trip denyOre exists to motivate.
+    """
     local_map = bot.hivemind.local_map
+    seen: set[tuple[int, int]] = set()
+    ores: list[Position] = []
     for (x, y), cell in local_map.items():
         if cell.get("ore"):
+            seen.add((x, y))
             ores.append(Position(x, y))
-    if ores:
+    if ores and not includeStatic:
         return ores
     from features import ORE_LOCATIONS
 
     map_id = bot.hivemind.map_id
     for ox, oy in ORE_LOCATIONS.get(map_id, []):
+        if (ox, oy) in seen:
+            continue
         ores.append(Position(ox, oy))
     return ores
 
@@ -1621,3 +1637,61 @@ def run_economy(bot, ct: Controller) -> None:
     from builder import runDefault
 
     runDefault(bot, ct)
+
+
+def exploreFrontier(bot, ct: Controller, *, outward: bool = False) -> bool:
+    """Last-resort scouting: walk toward unexplored space.
+
+    Exists because a missed map fingerprint leaves the bot with nothing to aim at and
+    no way to recover. `map_id` 0 makes `ORE_LOCATIONS` empty, and on the maps where
+    the core sees no ore in its own vision (`heart`, `sweden`, `vase`) that leaves
+    `pickEmptyOre` with nothing — and no other step in `runDefault` moves a builder
+    that has no ore claim, so the economy never starts. Harassers have the mirror
+    problem: without `enemyCorePos`, `seekCore`, `denyOre` and `offGun`'s core branch
+    are all inert.
+
+    Sits last in both chains, so on a map we did fingerprint the static tables supply
+    targets and this never runs — no knob needed to gate it on `map_id`.
+
+    The target is sticky. Rescanning every turn would walk the whole ledger (~900
+    cells, four lookups each) for every unit against a 10 ms budget, and an overrun
+    truncates the turn silently. It is re-picked only when missing, reached, no longer
+    unknown, stalled, or older than `FRONTIER_REFRESH_TURNS`.
+    """
+    from main import FRONTIER_REFRESH_TURNS, ORE_DEADLOCK_TURNS
+    from pathing import findFrontierTarget
+
+    if FRONTIER_REFRESH_TURNS is None or FRONTIER_REFRESH_TURNS <= 0:
+        return False
+    if bot.inRelay:
+        return False
+
+    local_map = bot.hivemind.local_map
+    pos = ct.get_position()
+    round_n = ct.get_current_round()
+
+    target = getattr(bot, "frontierTarget", None)
+    if target is not None:
+        stale = round_n - getattr(bot, "frontierRound", -(10**9)) >= FRONTIER_REFRESH_TURNS
+        stalled = ORE_DEADLOCK_TURNS and getattr(bot, "stuck", 0) >= ORE_DEADLOCK_TURNS
+        # Reaching it is not the point — seeing it is. Once the tile is in the ledger
+        # it is no longer a frontier, so the scan must run again.
+        if stale or stalled or target in local_map or (pos.x, pos.y) == target:
+            target = None
+
+    if target is None:
+        found = findFrontierTarget(
+            ct,
+            local_map,
+            origin=pos,
+            home=bot.corePos,
+            outward=outward,
+        )
+        if found is None:
+            bot.frontierTarget = None
+            return False
+        target = (found.x, found.y)
+        bot.frontierTarget = target
+        bot.frontierRound = round_n
+
+    return moveToward(bot, ct, Position(target[0], target[1]))
