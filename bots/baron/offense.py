@@ -338,7 +338,62 @@ def _forwardBarrierPads(bot, ct: Controller) -> list[Position]:
             continue
         pads.append(pad)
     pads.sort(key=lambda p: manhattan(ct.get_position(), p))
-    return pads
+    return _dropSkipped(bot, pads)
+
+
+def _skippedTargets(bot) -> set[tuple[int, int]]:
+    s = getattr(bot, "skippedTargets", None)
+    if s is None:
+        bot.skippedTargets = set()
+        return bot.skippedTargets
+    return s
+
+
+def _dropSkipped(bot, tiles: list[Position]) -> list[Position]:
+    """Filter blacklisted tiles, falling back to the full pool if that empties it.
+
+    Same concession `pickEmptyOre` makes: a blacklist that leaves nothing to do is
+    worse than a bad target, so it degrades rather than idling the unit.
+    """
+    skipped = _skippedTargets(bot)
+    if not skipped:
+        return tiles
+    kept = [t for t in tiles if (t.x, t.y) not in skipped]
+    return kept if kept else tiles
+
+
+def breakBeltDeadlock(bot, ct: Controller) -> bool:
+    """Harasser anti-livelock: motionless too long → blacklist sticky targets.
+
+    The offence mirror of `breakOreDeadlock`, and needed for the same reason: sticky
+    state with no way to yield it. `denyBelt` runs Mode B only while gun placement is
+    unaffordable, so a funded harasser adjacent to a belt correctly concludes it
+    cannot profitably cut it — 10 shots and 20 Ti to destroy a 3 Ti conveyor — and
+    then sat there, firing Mode A only when a passing enemy builder happened to
+    create a fresh forward pad beside it.
+
+    State-only: clears the claims so the same turn's chain re-picks. Costs no turn.
+    """
+    del ct
+    from main import HARASS_DEADLOCK_TURNS
+
+    if HARASS_DEADLOCK_TURNS is None or HARASS_DEADLOCK_TURNS <= 0:
+        return False
+    if getattr(bot, "stuck", 0) < HARASS_DEADLOCK_TURNS:
+        return False
+
+    skipped = _skippedTargets(bot)
+    dropped = False
+    for attr in ("denyBeltTile", "harassTarget"):
+        target = getattr(bot, attr, None)
+        if target is not None:
+            skipped.add(target)
+            setattr(bot, attr, None)
+            dropped = True
+    bot.cachedPath = None
+    bot.cachedPathTarget = None
+    bot.stuck = 0  # re-arm, so we don't blacklist again next turn
+    return dropped
 
 
 def _tryForwardBarrier(bot, ct: Controller, *, adjacent_only: bool) -> bool:
@@ -403,7 +458,7 @@ def _cutAndBarrier(bot, ct: Controller) -> bool:
         else:
             tile = cand  # keep sticky while fogged / walking in
     if tile is None:
-        tile = _nth(_enemyBeltsByDist(ct), harasserRank(bot))
+        tile = _nth(_dropSkipped(bot, _enemyBeltsByDist(ct)), harasserRank(bot))
         if tile is None:
             return False
         bot.denyBeltTile = (tile.x, tile.y)
@@ -481,7 +536,7 @@ def _localEnemyHarvesters(bot, ct: Controller) -> list[Position]:
             continue
         found.append(Position(x, y))
     found.sort(key=lambda p: manhattan(ct.get_position(), p))
-    return found
+    return _dropSkipped(bot, found)
 
 
 def _scoutedOres(bot) -> set[tuple[int, int]]:

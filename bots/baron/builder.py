@@ -2,6 +2,10 @@
 #
 # ## Assignment (my_index > 0; idx % 5) — 2 guardians / 2 harassers / 1 default
 #    1 → guardian · 2 → harasser · 3 → default · 4 → harasser · 0 → guardian
+#    Capped: guardian slots past MAX_GUARDIANS (main.py) dispatch as non-guardians
+#    — guardianRank 1,2,3,4 = builders 1,5,6,10, so a cap of 4 first bites at
+#    builder 11 and the opening is untouched. A capped guardian is a default from
+#    birth, wave gate included; nothing else is retasked.
 #
 # ## all roles (runBuilderRoles, before dispatch)
 #    breakEncirclement — motionless (bot.stuck) ≥ ENCIRCLED_TURNS with no legal
@@ -96,11 +100,18 @@
 # ## harasser (orchestrator: runHarasser below; helpers in offense.py)
 #    idx % 5 in (2, 4) (builders 2,4,7,9,…)
 #    OR wave attack: WAVE_ATTACK_TURN / WAVE_ATTACK_TI in main.py (>0 = set)
-#    Guardians never enter this path.
+#    Uncapped guardians never enter this path; capped ones (guardianRank >
+#    MAX_GUARDIANS) are non-guardians and do, once a wave gate fires.
 # 1. snipeHarvester — visible uncovered enemy harvester → placeGun
 # 2. offGun — placeGun/placeSentinel: core → gunner → sentinel → harvester → launcher;
 #        ≤1 ally gunner covering each enemy harvester
 # 3. avoidFire — under enemy gunner LoS → step to safe tile toward goal
+#    0. breakBeltDeadlock — motionless (bot.stuck) ≥ HARASS_DEADLOCK_TURNS →
+#        blacklist sticky denyBeltTile / harassTarget into bot.skippedTargets and
+#        clear them. State-only, no turn cost. Needed because denyBelt's Mode B is
+#        gated off while a gun is affordable, so a funded harasser beside a belt
+#        correctly refuses to cut it (10 shots / 20 Ti for a 3 Ti conveyor) and then
+#        had no way to give the target up.
 # 4. denyBelt — barrier on the empty tile ahead of an enemy belt's facing; while
 #        gun placement is unaffordable, also cut an enemy belt from an adjacent
 #        tile and barrier it in place (sticky via bot.denyBeltTile; falls back to
@@ -141,6 +152,7 @@ from defence import (
 from pathing import breakEncirclement
 from offense import (
     avoidFire,
+    breakBeltDeadlock,
     denyBelt,
     offGun,
     seekCore,
@@ -164,6 +176,23 @@ def _resolveCores(bot, ct: Controller) -> None:
 def isGuardian(idx: int) -> bool:
     """True for builders 1,5,6,10,… (idx % 5 in {0, 1})."""
     return idx > 0 and idx % 5 in (0, 1)
+
+
+def guardianRank(idx: int) -> int:
+    """1-based position among guardian slots: 1, 5, 6, 10, 11, … → 1, 2, 3, 4, 5, …
+
+    Pure index arithmetic, so every unit agrees without reading anything shared.
+    """
+    return (idx // 5) * 2 + (1 if idx % 5 else 0)
+
+
+def guardianCapped(idx: int) -> bool:
+    """True for guardian slots past MAX_GUARDIANS — they dispatch as non-guardians."""
+    from main import MAX_GUARDIANS
+
+    if MAX_GUARDIANS is None or MAX_GUARDIANS <= 0:
+        return False
+    return guardianRank(idx) > MAX_GUARDIANS
 
 
 def isHarasser(idx: int) -> bool:
@@ -420,6 +449,8 @@ def runHarasser(bot, ct: Controller) -> None:
     """Harasser: snipe → offGun → avoidFire → denyBelt → seekHarvester → seekCore."""
     _resolveCores(bot, ct)
     bot.nearCoreEconomy = False
+    # State-only; the selectors below re-pick this turn. Costs no turn.
+    breakBeltDeadlock(bot, ct)
     if snipeHarvester(bot, ct):
         return
     if offGun(bot, ct):
@@ -440,7 +471,10 @@ def runBuilderRoles(bot, ct: Controller) -> None:
     if breakEncirclement(bot, ct, local_map=bot.hivemind.local_map):
         return
     idx = bot.hivemind.my_index
-    if isGuardian(idx):
+    # A capped guardian is simply not a guardian: it falls through to the normal
+    # non-guardian path below and is indistinguishable from a default from birth.
+    # Nothing downstream is retasked — only this unit's own dispatch changes.
+    if isGuardian(idx) and not guardianCapped(idx):
         runGuardian(bot, ct)
         return
     if waveAttackActive(ct) or isHarasser(idx):

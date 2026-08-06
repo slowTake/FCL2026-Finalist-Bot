@@ -4,7 +4,7 @@ For **where code lives**, see `AGENT.md` Key. For **behavior phases**, see task 
 
 ## Builder role
 
-**default**, **guardian**, or **harasser**. Assignment from `hivemind.my_index` (`> 0`, `idx % 5`): `1` or `0` → guardian (1, 5, 6, 10, …); `2` or `4` → harasser (2, 4, 7, 9, …); `3` → default (3, 8, 13, …). Per five spawns: 2 guardians / 2 harassers / 1 default. Wave gates switch non-guardians to harasser; guardians stay home.
+**default**, **guardian**, or **harasser**. Assignment from `hivemind.my_index` (`> 0`, `idx % 5`): `1` or `0` → guardian (1, 5, 6, 10, …); `2` or `4` → harasser (2, 4, 7, 9, …); `3` → default (3, 8, 13, …). Per five spawns: 2 guardians / 2 harassers / 1 default. Guardian slots past `MAX_GUARDIANS` (`main.py`, `≤0`/`None` disables) dispatch as **non**-guardians instead — `builder.guardianRank` maps slots 1, 5, 6, 10, 11, … to ranks 1, 2, 3, 4, 5, …, so a cap of 4 first applies to builder 11 and the opening is unchanged. Deriving the cap from `my_index` alone keeps role a pure function of the index: deterministic, permanent per unit, no coordination and no oscillation. A capped guardian is a default from birth and is wave-eligible like any other non-guardian. Wave gates switch non-guardians to harasser; guardians stay home.
 
 ## Guardian
 
@@ -59,6 +59,16 @@ Anti-livelock for economy defaults (`logistics.breakOreDeadlock`, knob `ORE_DEAD
 Guardian idle work, below every defence step and `clearBarriers`, above `patrolHome` (`builder._guardianEconomy`, knob `GUARDIAN_ECONOMY` in `main.py`). Runs only on turns with **no enemy turret or builder in vision** (`_enemyUnitInVision`). Sets `nearCoreEconomy = True`, so `_allowOreSite` confines every claim to the leash (Chebyshev 4 of the core footprint), then `buildHarvester` → `maintainHarvester`. Relay repair falls out of the second: `maintainHarvester` on a leash harvester re-enters `relayToCore`, whose watermark walks the existing belts and resumes at the first gap or wrong-facing tile, so a harvester whose line never reached the core gets finished. A complete line marks done and consumes no turn.
 
 Two interactions make it safe. A visible enemy drops the relay claim (`abortRelay` + clear `oreSite`) before the defence chain, because `_reactEnemyTurret` and `defGun` both bail out early on `inRelay` — a guardian holding a relay would otherwise be locked out of fighting; placed belts stay on the map and the watermark rebuilds on re-pick. And `_guardianLeashOk` widens the leash by `GUARDIAN_ECON_SLACK` (default 1) **only** while `inRelay` or `oreSite` is set, since ore on the leash edge is worked from a neighbouring tile one step out; without it the leash step marches the guardian home every other turn and the relay never finishes.
+
+## BreakBeltDeadlock
+
+Anti-livelock for harassers (`offense.breakBeltDeadlock`, knob `HARASS_DEADLOCK_TURNS` in `main.py`; `≤0` disables) — the offence mirror of `BreakOreDeadlock`, called state-only at the top of `runHarasser` so the selectors below re-pick the same turn.
+
+The failure it fixes: `denyBelt` runs Mode B (`_cutAndBarrier`) **only while gun placement is unaffordable** (`_canAffordGunPlace`). That gate is right — cutting a 20 HP conveyor costs 10 shots and 20 Ti to destroy 3 Ti of theirs — so a funded harasser standing beside a belt correctly concludes it cannot profitably touch it. It then had no way to give the target up: it sat there indefinitely, firing Mode A only when a passing enemy builder happened to open a fresh forward pad beside it. Neither existing guard caught it, because `breakEncirclement` requires all four moves to be illegal and there was no blacklist for harasser targets at all.
+
+When `bot.stuck` reaches the threshold, both sticky claims (`denyBeltTile`, `harassTarget`) are blacklisted into `bot.skippedTargets`, cleared, the path cache is dropped and the counter re-armed. `_forwardBarrierPads`, the `_cutAndBarrier` fallback pick and `_localEnemyHarvesters` all filter through `_dropSkipped`, which honours the blacklist but **falls back to the unfiltered pool if filtering would empty it** — the same concession `pickEmptyOre` makes, since a blacklist that leaves nothing to do is worse than a bad target.
+
+One set holds both belts and harvest targets, hence `skippedTargets` rather than `skippedBelts`. Entries never expire — acceptable while a harasser's lifetime is short and the fallback prevents total starvation, but it is the first thing to revisit if harassers start refusing everything late game.
 
 ## BreakEncirclement
 

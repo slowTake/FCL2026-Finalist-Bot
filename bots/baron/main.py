@@ -25,6 +25,15 @@ SPAWN_INTERVAL_BY_TI: list[tuple[int, int]] = [
     (1000, 35),
 ]
 
+# --- Guardian cap (≤0 / None disables) ---
+# Guardian slots are idx % 5 in (0, 1) — 2 per 5 spawns, forever — so they grow
+# without bound and pile up idling at home. Guardians past this rank dispatch as
+# non-guardians instead. Rank is derived from my_index alone (builder.guardianRank),
+# so role stays a pure function of the index: deterministic, permanent per unit, no
+# coordination, no oscillation. Ranks 1-4 are builders 1, 5, 6, 10 — a cap of 4
+# first bites at builder 11, so the opening is untouched.
+MAX_GUARDIANS: int | None = 4
+
 # --- Wave attack (≤0 / None = unset; positive = active gate) ---
 WAVE_ATTACK_TURN: int | None = -1  # e.g. 300 → all builders harass from that turn
 WAVE_ATTACK_TI: int | None = 2000  # e.g. 2000 → all harass once bank ≥ this
@@ -60,6 +69,13 @@ ORE_STAGGER = False
 # ore claim, blacklists the node and re-picks. Guards against builders piling up
 # on one node and never yielding it.
 ORE_DEADLOCK_TURNS = 8
+
+# Turns a harasser may sit motionless before it blacklists its sticky belt/harvest
+# target and re-picks. Mirrors ORE_DEADLOCK_TURNS for the offence side: denyBelt's
+# Mode B (cut the belt) is gated off whenever the bank can afford a gun, so a funded
+# harasser correctly decides it cannot profitably touch a belt — and then had no way
+# to give up on it. ≤0 disables.
+HARASS_DEADLOCK_TURNS = 8
 
 # --- Encirclement breaker (≤0 disables) ---
 # Turns a builder may sit motionless with no legal move in any direction before
@@ -120,6 +136,7 @@ class Player:
         self.stuck = 0
         self.recheckingOre = False
         self.skippedOres: set[tuple[int, int]] = set()
+        self.skippedTargets: set[tuple[int, int]] = set()
         self.lastOreRecheckRound = -999
         self.harassTarget: tuple[int, int] | None = None
         self.denyBeltTile: tuple[int, int] | None = None
