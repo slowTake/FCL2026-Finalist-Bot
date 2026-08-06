@@ -45,12 +45,7 @@ class HiveMind:
         team = ct.get_team()
         pos = ct.get_position()
 
-        wall_count = 0
-        for tile in ct.get_nearby_tiles():
-            if ct.get_tile_env(tile) == Environment.WALL:
-                wall_count += 1
-
-        fingerprint = (w, h, team, pos.x, pos.y, wall_count)
+        fingerprint = (w, h, team, pos.x, pos.y)
         enemy_state = CoreState.UNKNOWN
         enemy_x = 0
         enemy_y = 0
@@ -59,7 +54,10 @@ class HiveMind:
             self.map_id, self.map_name, enemy_x, enemy_y = KNOWN_MAPS[fingerprint]
             enemy_state = CoreState.ASSUMED
             self.enemy_core_pos = Position(enemy_x, enemy_y)
-
+        
+        import sys
+        sys.stderr.write(f"DEBUG: Detected map {self.map_name} for team {team} with fingerprint {fingerprint}\n")
+        
         ct.write_store(14, self.map_id)
 
         packed = pack_cores(
