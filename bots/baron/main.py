@@ -110,6 +110,9 @@ DENY_CUT_COOLDOWN = 50
 DENY_ORE_CHEBYSHEV = 6
 DENY_ORE_MIN_ALLY_CHEBYSHEV = 8
 
+FRONTIER_REFRESH_TURNS = 20
+ORE_DEADLOCK_TURNS = 12
+
 # --- Encirclement breaker (≤0 disables) ---
 # Turns a builder may sit motionless with no legal move in any direction before
 # it destroys/fires at an adjacent building to open a door. Catches a harasser
