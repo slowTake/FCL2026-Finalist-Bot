@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from fcode import Controller, Direction, GameConstants, Position
+from fcode import (
+    Controller,
+    Direction,
+    EntityType,
+    GameConstants,
+    Position,
+)
 
 from pathing import CARDINALS, inBounds
 
@@ -66,29 +72,27 @@ def _builderTarget(ct: Controller, schedule: SpawnSchedule) -> int:
 
 
 def _aliveBuilders(hivemind, ct: Controller) -> int:
-    """Living ally builders, derived from the exact unit count.
+    """Living ally builders, from the core's ledger.
 
     Slot 4 counts builders *ever spawned* and must stay monotonic — it is the
-    `my_index` allocator — so it cannot answer "how many are left".
+    `my_index` allocator — so it cannot answer "how many are left". The ledger can:
+    every builder broadcasts itself, and the core already garbage-collects ally
+    BUILDER_BOT entries unseen for `total_builders + 2` turns, so this reads
+    machinery that is maintained anyway.
 
-    Counting ally BUILDER_BOT cells in the ledger cannot either, which is what this
-    used to do. A builder broadcasts its *current* position each rotation and nothing
-    removes its previous cell; a vacated tile clears only once some unit sees it empty
-    and that clear wins one of 16 delta slots, at the lowest priority. So the ledger
-    holds a trail of stale cells and the count over-reports — and clamping it to the
-    lifetime total then pinned the answer to exactly that. Growth still worked, but
-    replacement never fired: after a death both the lifetime count and the trail were
-    unchanged, so the crew shrank permanently.
-
-    `get_unit_count()` is exact. We never build launchers, so living units are the core
-    plus builders plus turrets, and turrets are immobile — no trail — so subtracting
-    them from the ledger is sound.
+    Clamped to the lifetime count so a duplicate or stale entry can never inflate it.
+    Under-counting is still possible if a live builder misses a broadcast rotation;
+    that costs an extra spawn, which is the safer direction to be wrong in.
     """
-    from guns import allyTurretCounts
-
-    gunners, sentinels = allyTurretCounts(ct, hivemind.local_map)
-    alive = ct.get_unit_count() - 1 - gunners - sentinels
-    return max(0, min(alive, ct.read_store(4)))
+    me = ct.get_team()
+    alive = 0
+    for cell in hivemind.local_map.values():
+        ent = cell.get("entity")
+        if not ent:
+            continue
+        if ent.get("type") == EntityType.BUILDER_BOT and ent.get("team") == me:
+            alive += 1
+    return min(alive, ct.read_store(4))
 
 
 class Respawn:

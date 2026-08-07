@@ -110,16 +110,6 @@ DENY_CUT_COOLDOWN = 50
 DENY_ORE_CHEBYSHEV = 6
 DENY_ORE_MIN_ALLY_CHEBYSHEV = 8
 
-# --- Frontier scouting (≤0 / None disables) ---
-# Last-resort exploration when the normal chains have no target. Needed because a
-# missed map fingerprint leaves map_id 0, so ORE_LOCATIONS is empty and enemyCorePos is
-# never set — and nothing in baron explores. On heart/sweden/vase the core sees no ore
-# in its own vision at turn 0, so defaults had no ore claim and no way to find one, and
-# the economy never started at all. Inert on maps we did fingerprint, because the static
-# tables supply targets before this step is reached. Value is the re-pick interval: the
-# ledger scan is ~900 cells against a 10ms budget, so raise it if turns get truncated.
-FRONTIER_REFRESH_TURNS = 20
-
 # --- Encirclement breaker (≤0 disables) ---
 # Turns a builder may sit motionless with no legal move in any direction before
 # it destroys/fires at an adjacent building to open a door. Catches a harasser
@@ -144,7 +134,7 @@ MAX_AMMO_POOL: int | None = None
 SLOT_RELAY_COMPLETE = 0
 SLOT_PACKED_CORES = 15
 
-DEBUG = False
+DEBUG = True
 
 from guns import gunnerLoop, sentinelLoop, top_up_ammo
 from hivemind import CoreState, HiveMind, unpack_cores
@@ -173,8 +163,6 @@ class Player:
         self.relayStuck = 0
         self.relayThreatBlocked: set[tuple[int, int]] = set()
         self.blockadeDoor: tuple[int, int] | None = None
-        self.frontierTarget: tuple[int, int] | None = None
-        self.frontierRound = -999
         self.relayPathBlocked = False
         self.relayPathBlockedFrom: tuple[int, int] | None = None
         self.lastPathFailed = False
@@ -195,19 +183,16 @@ class Player:
         self.harassOrbitIdx = 0
 
     def run(self, ct: Controller) -> None:
-        try:
-            self.hivemind.tick(ct)
-            etype = ct.get_entity_type()
-            if etype == EntityType.CORE:
-                self._run_core(ct)
-            elif etype == EntityType.BUILDER_BOT:
-                self._run_builder(ct)
-            elif etype == EntityType.GUNNER:
-                gunnerLoop(ct)
-            elif etype == EntityType.SENTINEL:
-                sentinelLoop(ct)
-        except Exception:
-            return
+        self.hivemind.tick(ct)
+        etype = ct.get_entity_type()
+        if etype == EntityType.CORE:
+            self._run_core(ct)
+        elif etype == EntityType.BUILDER_BOT:
+            self._run_builder(ct)
+        elif etype == EntityType.GUNNER:
+            gunnerLoop(ct)
+        elif etype == EntityType.SENTINEL:
+            sentinelLoop(ct)
 
     def _run_core(self, ct: Controller) -> None:
         round_n = ct.get_current_round()

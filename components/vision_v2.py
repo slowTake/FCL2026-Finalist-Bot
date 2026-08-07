@@ -15,7 +15,7 @@ ENTITY_TO_INT = {
 INT_TO_ENTITY = {v: k for k, v in ENTITY_TO_INT.items()}
 
 
-def encode_target_type(etype: EntityType | None, is_enemy: bool, direction: Direction = Direction.NORTH) -> int:
+def encode_target_type(etype: EntityType | str | None, is_enemy: bool, direction: Direction = Direction.NORTH) -> int:
     """Encodes type, team, and direction into a 6-bit integer (1-63). 0 is reserved for Empty."""
     if etype is None: return 63 # Special code for Deleted
     if etype == EntityType.CORE: return 2 if is_enemy else 1
@@ -23,6 +23,11 @@ def encode_target_type(etype: EntityType | None, is_enemy: bool, direction: Dire
     if etype == EntityType.SENTINEL: return 6 if is_enemy else 5
     if etype == EntityType.BUILDER_BOT: return 8 if is_enemy else 7
     if etype == EntityType.HARVESTER: return 10 if is_enemy else 9
+    
+    if etype == EntityType.LAUNCHER: return 28 if is_enemy else 27
+    if etype == EntityType.BARRIER: return 30 if is_enemy else 29
+    if etype == "WALL": return 31
+    if etype == "ORE": return 32
     
     dir_offset = 0
     if direction == Direction.EAST: dir_offset = 1
@@ -54,6 +59,13 @@ def decode_target_type(val: int):
     if val == 8: return (EntityType.BUILDER_BOT, True, Direction.NORTH)
     if val == 9: return (EntityType.HARVESTER, False, Direction.NORTH)
     if val == 10: return (EntityType.HARVESTER, True, Direction.NORTH)
+    
+    if val == 27: return (EntityType.LAUNCHER, False, Direction.NORTH)
+    if val == 28: return (EntityType.LAUNCHER, True, Direction.NORTH)
+    if val == 29: return (EntityType.BARRIER, False, Direction.NORTH)
+    if val == 30: return (EntityType.BARRIER, True, Direction.NORTH)
+    if val == 31: return ("WALL", False, Direction.NORTH)
+    if val == 32: return ("ORE", False, Direction.NORTH)
     
     if 11 <= val <= 14:
         d = [Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST][val - 11]

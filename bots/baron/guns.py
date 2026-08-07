@@ -84,35 +84,6 @@ def facing8way(tile: Position, target: Position) -> Direction:
     return tile.direction_to(target)
 
 
-def allyTurretCounts(
-    ct: Controller, local_map: dict[Any, Any] | None
-) -> tuple[int, int]:
-    """(gunners, sentinels) we own, from the ledger.
-
-    Turrets are immobile, so unlike builders they leave no trail of stale cells and can
-    be counted by iterating entries. Used for the ammo target and, by `respawn`, to back
-    out the living builder count from `get_unit_count()`.
-
-    Caveat: the ledger GC only prunes `BUILDER_BOT`, so a destroyed turret's cell lingers
-    until some unit sees the tile empty. That over-counts turrets, which under-counts
-    builders — the safe direction for both callers.
-    """
-    gunners = 0
-    sentinels = 0
-    my_team = ct.get_team()
-    if local_map:
-        for cell in local_map.values():
-            ent = cell.get("entity")
-            if not ent or ent.get("team") != my_team:
-                continue
-            etype = ent.get("type")
-            if etype == EntityType.GUNNER:
-                gunners += 1
-            elif etype == EntityType.SENTINEL:
-                sentinels += 1
-    return gunners, sentinels
-
-
 def topUpAmmo(
     ct: Controller,
     *,
@@ -135,21 +106,25 @@ def topUpAmmo(
         if ct.get_global_resources() < AMMO_CONVERT_MIN_TI:
             return
 
-    gunners, sentinels = allyTurretCounts(ct, local_map)
+    gunners = 0
+    sentinels = 0
+    my_team = ct.get_team()
+    if local_map:
+        for cell in local_map.values():
+            ent = cell.get("entity")
+            if not ent or ent.get("team") != my_team:
+                continue
+            if ent.get("type") == EntityType.GUNNER:
+                gunners += 1
+            elif ent.get("type") == EntityType.SENTINEL:
+                sentinels += 1
 
     target = AMMO_BASE + AMMO_PER_GUNNER * gunners + AMMO_PER_SENTINEL * sentinels
     if MAX_AMMO_POOL is not None:
         target = min(target, MAX_AMMO_POOL)
     target = max(target, AMMO_MIN_POOL)
 
-    ammo = ct.get_global_ammo()
-    if ammo >= target:
-        return
-    need = min(AMMO_CONVERT_CHUNK, target - ammo)
-    if need <= 0:
-        return
-    if ct.can_convert_ammo(need):
-        ct.convert_ammo(need)
+    pass
 
 
 def top_up_ammo(

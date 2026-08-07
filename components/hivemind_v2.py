@@ -60,8 +60,6 @@ class HiveMind:
             enemy_state = CoreState.ASSUMED
             self.enemy_core_pos = Position(enemy_x, enemy_y)
         
-        print(f"HIVEMIND FINGERPRINT: {fingerprint} -> Map ID: {self.map_id} ({self.map_name})")
-
         ct.write_store(14, self.map_id)
 
         packed = pack_cores(
@@ -150,6 +148,13 @@ class HiveMind:
                         etype = ent.get("type") if ent else None
                         is_enemy = (ent.get("team") != my_team) if ent else False
                         d = ent.get("direction", Direction.NORTH) if ent else Direction.NORTH
+                        
+                        if not ent and not self._map_detected:
+                            tile_data = self.local_map.get(pos_tuple, {})
+                            if not tile_data.get("passable", True):
+                                etype = "WALL"
+                            elif tile_data.get("ore", False):
+                                etype = "ORE"
                         
                         # Priority 1: Enemy Core, Gunners, Sentinels
                         # Priority 2: Enemy Harvesters, Builders

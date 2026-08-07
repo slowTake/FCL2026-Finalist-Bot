@@ -111,13 +111,6 @@
 # 4. defendHome — near core only; heal core if HP < 500 (no attack branch)
 # 5. healAlly — core → gunner/sentinel → harvester
 # 6. recheckOreNodes — clear sticky oreSite; prefer empty → ally-blocked → harvester
-# 7. exploreFrontier(outward=False) — last resort, no ore anywhere to claim. Walks to
-#        the nearest tile absent from local_map that borders known space, preferring
-#        candidates with known ore nearby. Only reachable when the ore pool is truly
-#        empty, which on an unfingerprinted map (map_id 0 → ORE_LOCATIONS empty) is the
-#        normal state; on heart/sweden/vase the core sees no ore at turn 0 either, so
-#        without this the economy never started. Sticky target, re-picked every
-#        FRONTIER_REFRESH_TURNS — the ledger scan is too costly to run every turn.
 # # idleHome — commented out (soft-idle trap)
 #
 # ## harasser (orchestrator: runHarasser below; helpers in offense.py)
@@ -153,11 +146,6 @@
 #        HP stops counting as in-progress — that is the 4:1 heal-race bail-out.
 # 5. seekHarvester — local_map enemy harvesters / scout ore nodes (vision updates map)
 # 6. seekCore — moveToward enemy core; if stuck, orbit mid-side / ring waypoints
-# 7. exploreFrontier(outward=True) — last resort, enemy core unknown so everything
-#        above is inert. Same frontier scan, but biased *away* from our own core (which
-#        is known even on an unfingerprinted map). Finding the enemy core is what makes
-#        it pay off: _resolveCores now reads one out of the ledger via
-#        _enemyCoreFromLedger, where before only the turn-0 fingerprint ever set it.
 
 """Builder role orchestrators — dispatch into logistics / offence helpers."""
 
@@ -180,7 +168,6 @@ from logistics import (
     healAlly,
     maintainHarvester,
     moveToward,
-    exploreFrontier,
     recheckOreNodes,
     relayEverComplete,
 )
@@ -208,43 +195,23 @@ def _resolveCores(bot, ct: Controller) -> None:
     from main import SLOT_PACKED_CORES
 
     ally, enemy = unpack_cores(ct.read_store(SLOT_PACKED_CORES))
-    if bot.corePos is None and ally[0] != CoreState.UNKNOWN:
-        bot.corePos = Position(ally[1], ally[2])
+    if bot.corePos is None:
+        if ally[0] != CoreState.UNKNOWN:
+            bot.corePos = Position(ally[1], ally[2])
+        else:
+            bot.corePos = ct.get_position()
+            
     if enemy[0] != CoreState.UNKNOWN:
         bot.enemyCorePos = Position(enemy[1], enemy[2])
-    elif bot.enemyCorePos is None and bot.hivemind.enemy_core_pos is not None:
-        bot.enemyCorePos = bot.hivemind.enemy_core_pos
     elif bot.enemyCorePos is None:
-        bot.enemyCorePos = _enemyCoreFromLedger(bot, ct)
-
-
-def _enemyCoreFromLedger(bot, ct: Controller) -> Position | None:
-    """Enemy core position from anything the team has actually seen.
-
-    Both sources above are the turn-0 map fingerprint: slot 15 is packed once inside
-    `_detect_and_store_map`, and `hivemind.enemy_core_pos` is set in the same call. So
-    when the fingerprint misses, *seeing* the enemy core changed nothing and the whole
-    offensive chain — `seekCore`, `denyOre`, `offGun`'s core branch — stayed inert for
-    the rest of the game. It also fails open in two guards: `_oreCloserToAlly` and
-    `_scoutOreTargets` both stop protecting our own ore when the enemy core is unknown.
-
-    Reads only *this builder's* sightings: the delta ledger runs builder → core only,
-    so another unit seeing the enemy core does not help this one. Superseded in practice
-    by map identification, which publishes the enemy core to slot 15 for everyone — this
-    remains the fallback for a map the tables cannot identify at all.
-    Returns the footprint anchor (min x, min y) so it matches the packed convention.
-    """
-    me = ct.get_team()
-    tiles = [
-        (x, y)
-        for (x, y), cell in bot.hivemind.local_map.items()
-        if (ent := cell.get("entity")) is not None
-        and ent.get("type") == EntityType.CORE
-        and ent.get("team") != me
-    ]
-    if not tiles:
-        return None
-    return Position(min(t[0] for t in tiles), min(t[1] for t in tiles))
+        if bot.hivemind.enemy_core_pos is not None:
+            bot.enemyCorePos = bot.hivemind.enemy_core_pos
+        else:
+            w, h = ct.get_map_width(), ct.get_map_height()
+            cp = bot.corePos or ct.get_position()
+            ex = w - 1 - cp.x if cp.x > w // 2 else w - 2 - cp.x
+            ey = h - 1 - cp.y if cp.y > h // 2 else h - 2 - cp.y
+            bot.enemyCorePos = Position(max(0, ex), max(0, ey))
 
 
 def isGuardian(idx: int) -> bool:
@@ -367,11 +334,7 @@ def _runDefaultHome(bot, ct: Controller) -> None:
         return
     if maintainHarvester(bot, ct):
         return
-    if recheckOreNodes(bot, ct):
-        return
-    # Last resort: nothing to build or maintain. Only reachable when the ore pool is
-    # genuinely empty, which on an unfingerprinted map is the normal state.
-    exploreFrontier(bot, ct, outward=False)
+    recheckOreNodes(bot, ct)
 
 
 def runDefault(bot, ct: Controller) -> None:
@@ -406,11 +369,7 @@ def runDefault(bot, ct: Controller) -> None:
         return
     if healAlly(bot, ct):
         return
-    if recheckOreNodes(bot, ct):
-        return
-    # Last resort: nothing to build or maintain. Only reachable when the ore pool is
-    # genuinely empty, which on an unfingerprinted map is the normal state.
-    exploreFrontier(bot, ct, outward=False)
+    recheckOreNodes(bot, ct)
 
 
 _ENEMY_THREAT_TYPES = (
@@ -553,10 +512,7 @@ def runHarasser(bot, ct: Controller) -> None:
         return
     if seekHarvester(bot, ct):
         return
-    if seekCore(bot, ct):
-        return
-    # Last resort: no enemy core known, so nothing above has a target to aim at.
-    exploreFrontier(bot, ct, outward=True)
+    seekCore(bot, ct)
 
 
 def runBuilderRoles(bot, ct: Controller) -> None:
