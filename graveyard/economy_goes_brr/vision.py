@@ -1,1 +1,0 @@
-../../components/vision.py
