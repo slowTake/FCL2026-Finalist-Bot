@@ -1,22 +1,29 @@
 # Baron launcher — placement (guardian chore) and operation.
 #
 # ## What a launcher is worth
-#    20 Ti, 30 HP, no facing, reach r²=26 (~5.1 tiles), cooldown 1. It does no
-#    damage: it picks a builder bot off a tile in reach and throws it to another
-#    tile in reach. Both teams' builders are fair game, and that is the whole
-#    trick — one rule ("throw toward the enemy core") is defence against their
-#    builders and transport for ours.
+#    20 Ti, 30 HP, no facing, cooldown 1, no damage. It picks a builder bot off an
+#    **adjacent** tile (action r²=2) and throws it up to r²=26 (~5.1 tiles) away.
+#    Grabber with a long arm, not a tractor beam: the pickup ring is 8 tiles, so
+#    the throw range is reach *for the thrown bot*, never for the grab.
+#    Both teams' builders are fair game, and that is the whole trick — one rule
+#    ("throw toward the enemy core") is defence against their builders and
+#    transport for ours.
 #      enemy builder → flung back the way it came, off our ore and out of our
 #        apron. Cheaper than shooting it: a gunner needs 4 shots / 8 Ti to kill a
 #        40 HP builder and it walks back anyway; the throw costs nothing per use.
 #      ally builder → flung up to ~5 tiles toward the enemy core, i.e. a free
 #        head start for harassers leaving home.
+#    UNVERIFIED: that `can_launch` accepts an *enemy* builder at all. The spec
+#    says "adjacent builder bots" without qualifying team, but nothing in it or
+#    the API stubs states it outright, and no game has been run. If it turns out
+#    to be ally-only, the whole defensive half of this module is dead and only
+#    the harasser boost survives.
 #
 # ## launcherLoop (main.py dispatch)
-# 1. enemyThrow — nearest enemy builder in reach → landing tile that minimises
+# 1. enemyThrow — nearest adjacent enemy builder → landing tile that minimises
 #        distance to *their* core. Always outranks the ally throw: the cooldown
 #        is the scarce resource and defence is why the thing was built.
-# 2. allyThrow — (LAUNCH_ALLIES) most advanced ally builder in reach → same
+# 2. allyThrow — (LAUNCH_ALLIES) most advanced adjacent ally builder → same
 #        landing rule. Two gates keep miners on the ground: round ≥
 #        ALLY_LAUNCH_START, and the ally must already be on the outbound side of
 #        the launcher (no further from the enemy core than the launcher itself).
@@ -25,10 +32,14 @@
 #
 # ## placeLauncher (guardian chore, builder.py)
 #    One launcher (MAX_LAUNCHERS) on the enemy-facing side of the core, at
-#    Chebyshev 2..LAUNCHER_CHEBYSHEV so its radius covers the approach lanes
-#    while the pad stays inside the guardian leash (4). Chebyshev ≤1 is excluded
-#    so the core's spawn apron is never bricked over. Gated on LAUNCHER_MIN_TI
-#    because 20 Ti in the opening is a harvester's worth of tempo.
+#    Chebyshev 2..LAUNCHER_CHEBYSHEV, inside the guardian leash (4). Chebyshev ≤1
+#    is excluded so the core's spawn apron is never bricked over. Gated on
+#    LAUNCHER_MIN_TI because 20 Ti in the opening is a harvester's worth of tempo.
+#    Because pickup is adjacency-only, siting is a *chokepoint* problem, not a
+#    coverage one: a launcher defends the 8 tiles it touches, so on an open
+#    approach an enemy builder simply walks around it. "Enemy-facing side of the
+#    core" is the cheapest available proxy for the lane they arrive through and
+#    is not the same thing as picking the actual chokepoint.
 
 from __future__ import annotations
 
@@ -38,8 +49,12 @@ from fcode import Controller, Environment, GameConstants, Position
 
 from pathing import manhattan
 
-# Reach is the launcher's vision radius: r²=26, ~5.1 tiles.
-LAUNCH_RANGE_SQ = getattr(GameConstants, "LAUNCHER_VISION_RADIUS_SQ", 26)
+# Two different radii, and conflating them is the easy mistake here.
+# Pickup is the launcher's *action* radius: r²=2, i.e. the 8 adjacent tiles only.
+# The throw is r²=26 (~5.1 tiles), same as its vision. So a launcher is a
+# short-range grabber with a long arm, not a 5-tile tractor beam.
+PICKUP_RANGE_SQ = 2
+THROW_RANGE_SQ = getattr(GameConstants, "LAUNCHER_VISION_RADIUS_SQ", 26)
 
 
 def _distSq(a: Position, b: Position) -> int:
@@ -111,7 +126,7 @@ def _bestLandingTile(
     """
     best: Position | None = None
     best_d = _distSq(bot_pos, goal)
-    for target in ct.get_nearby_tiles(dist_sq=LAUNCH_RANGE_SQ):
+    for target in ct.get_nearby_tiles(dist_sq=THROW_RANGE_SQ):
         if target == bot_pos:
             continue
         d = _distSq(target, goal)
@@ -126,12 +141,17 @@ def _bestLandingTile(
 
 
 def _buildersInReach(ct: Controller) -> tuple[list[Position], list[Position]]:
-    """(enemy, ally) builder tiles within launch reach."""
+    """(enemy, ally) builder tiles we can pick up — the 8 adjacent tiles only.
+
+    Scanning the full throw radius here would be wrong twice over: `can_launch`
+    rejects every non-adjacent bot anyway, and at ~80 tiles per turn against a
+    10 ms budget the wasted `get_tile_builder_bot_id` calls are not free.
+    """
     pos = ct.get_position()
     me = ct.get_team()
     enemies: list[Position] = []
     allies: list[Position] = []
-    for tile in ct.get_nearby_tiles(dist_sq=LAUNCH_RANGE_SQ):
+    for tile in ct.get_nearby_tiles(dist_sq=PICKUP_RANGE_SQ):
         if tile == pos:
             continue
         bot_id = ct.get_tile_builder_bot_id(tile)
@@ -209,6 +229,12 @@ def _launcherPads(ct: Controller, core_pos: Position, goal: Position) -> list[Po
     spawn apron (`respawn._apronSites`) and must stay clear, and the outer bound
     keeps the pad inside the guardian leash so placing it never walks a guardian
     off station. Ore is skipped — a launcher on a node denies our own harvester.
+
+    Ranking is by distance to the enemy core and nothing else. With pickup at
+    adjacency that is a weak proxy: what actually matters is whether traffic is
+    forced through one of the 8 tiles the launcher touches, which needs terrain
+    the pad scan does not look at. Good enough to site one launcher; the thing to
+    revisit first if replays show it never grabbing anything.
     """
     from logistics import _chebyshevToCore
     from main import LAUNCHER_CHEBYSHEV

@@ -60,12 +60,13 @@ TURRET_MEMORY_TURNS = 20  # how stale a ledger sighting may be and still count
 # --- Launcher (MAX_LAUNCHERS ≤0 / None disables) ---
 # 20 Ti of transport that doubles as defence: it throws builder bots of *either*
 # team, and one rule — always toward the enemy core — covers both. Their builder
-# in reach gets flung back off our ore and out of our apron (a gunner needs 4
-# shots / 8 Ti to kill one, and the replacement walks right back); ours gets a
-# ~5-tile head start on the way out. Built by a guardian on the enemy-facing side
-# of the core, Chebyshev 2..LAUNCHER_CHEBYSHEV so its r²=26 reach covers the
-# approach lanes while the pad stays inside the guardian leash (4) and clear of
-# the spawn apron (Chebyshev ≤1). Logic in launcher.py.
+# gets flung back off our ore and out of our apron (a gunner needs 4 shots / 8 Ti
+# to kill one, and the replacement walks right back); ours gets a ~5-tile head
+# start on the way out. Note the two radii differ: pickup is adjacency (action
+# r²=2, the 8 neighbours), only the *throw* is r²=26 — so this defends the tiles
+# it touches, not a 5-tile bubble. Built by a guardian on the enemy-facing side of
+# the core, Chebyshev 2..LAUNCHER_CHEBYSHEV: inside the guardian leash (4) and
+# clear of the spawn apron (Chebyshev ≤1). Logic in launcher.py.
 MAX_LAUNCHERS: int | None = 1
 LAUNCHER_CHEBYSHEV = 3  # pad ring around core; < 2 disables (apron stays clear)
 LAUNCHER_MIN_TI = 150  # need bank ≥ this to place; 20 Ti in the opening is a harvester
