@@ -55,7 +55,7 @@ def _profile_game_tles(replay_path: str, tle_sample: list[tuple[int, int, str, i
         builder = ReplayStateBuilder(replay_path)
         team = Team.A if our_side.upper() == "A" else Team.B
 
-        func_cumtimes: dict[str, tuple[str, float, int]] = defaultdict(lambda: ("", 0.0, 0))
+        func_peaktimes: dict[str, tuple[str, float, int]] = defaultdict(lambda: ("", 0.0, 0))
 
         for r_num, uid, _, _ in tle_sample[:3]:
             store = _rebuild_store(builder, r_num, team)
@@ -80,14 +80,15 @@ def _profile_game_tles(replay_path: str, tle_sample: list[tuple[int, int, str, i
                     loc = f"{Path(fn).name}:{line}"
                     fn_name = name
                     key = f"{fn_name} ({loc})"
-                    old_loc, old_cum, old_calls = func_cumtimes[key]
-                    func_cumtimes[key] = (loc, old_cum + (cumtime * 1000.0), old_calls + nc)
+                    cum_ms = cumtime * 1000.0
+                    old_loc, old_peak, old_calls = func_peaktimes[key]
+                    if cum_ms > old_peak:
+                        func_peaktimes[key] = (loc, cum_ms, nc)
 
         result = []
-        for key, (loc, cum_ms, calls) in func_cumtimes.items():
+        for key, (loc, peak_ms, calls) in func_peaktimes.items():
             name = key.split()[0]
-            avg_ms = cum_ms / calls if calls else 0.0
-            result.append((name, loc, avg_ms))
+            result.append((name, loc, peak_ms))
 
         result.sort(key=lambda x: x[2], reverse=True)
         return result[:5]
@@ -325,10 +326,10 @@ def generate_report(
             top_funcs = _profile_game_tles(r["replay_path"], r["tles"][:3], r["our_side"])
             if top_funcs:
                 lines.append(f"**Top Bottleneck Functions (excluding `run`):**")
-                lines.append(f"| Rank | Function | Location | Avg Exec Time |")
-                lines.append(f"|------|----------|----------|---------------|")
-                for rank, (name, loc, avg_ms) in enumerate(top_funcs[:5], 1):
-                    lines.append(f"| {rank} | `{name}` | `{loc}` | {avg_ms:.2f} ms |")
+                lines.append(f"| Rank | Function | Location | Peak Exec Time (Local ms) |")
+                lines.append(f"|------|----------|----------|---------------------------|")
+                for rank, (name, loc, peak_ms) in enumerate(top_funcs[:5], 1):
+                    lines.append(f"| {rank} | `{name}` | `{loc}` | {peak_ms:.2f} ms |")
                 lines.append(f"")
 
             # Debug commands
