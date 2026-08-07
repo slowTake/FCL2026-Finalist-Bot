@@ -207,16 +207,50 @@ def run_unit(state: WorldState, unit_id: int, team: Team, rebuild_store: bool = 
     print(f"  Team: {'A' if team == Team.A else 'B'}")
     print(f"{'='*60}")
 
-    # Import and run the bot
+    # Import and run the bot with debug flags and execution profiling
     try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
         bot_path = Path(__file__).resolve().parent.parent.parent / 'bots' / 'baron'
         sys.path.insert(0, str(bot_path))
+        import main
+        main.DEBUG = True  # Enable debug prints for offline inspection
         from main import Player
 
         player = Player()
-        print(f"\n  Running Player.run(ct)...\n")
+        print(f"\n  Running Player.run(ct) with DEBUG=True and profiling...\n")
+
+        import cProfile
+        import pstats
+        import io
+        import time
+
+        profiler = cProfile.Profile()
+        t0 = time.perf_counter_ns()
+        profiler.enable()
+
         player.run(ct)
-        print(f"\n  Execution completed successfully.")
+
+        profiler.disable()
+        t1 = time.perf_counter_ns()
+        exec_us = (t1 - t0) // 1000
+        exec_ms = exec_us / 1000.0
+
+        print(f"\n  Execution completed in {exec_us:,} µs ({exec_ms:.2f} ms).")
+        if exec_us >= 10000:
+            print(f"  ⚠️ WARNING: Execution time ({exec_us:,} µs) EXCEEDED 10.0 ms server time budget!")
+        elif exec_us >= 5000:
+            print(f"  ⚠️ NOTICE: Execution time ({exec_us:,} µs) is approaching the 10.0 ms budget limit.")
+
+        print(f"\n  ⏱️ BOTTLENECK PROFILING REPORT (Top cumulative time functions):")
+        s = io.StringIO()
+        ps = pstats.Stats(profiler, stream=s).sort_stats("cumulative")
+        ps.print_stats(15)
+        prof_output = s.getvalue()
+        
+        # Filter and display relevant profiler lines
+        for line in prof_output.splitlines():
+            if ("bots/baron" in line or "components" in line or "pathing" in line or "logistics" in line or "builder" in line or "offense" in line or "guns" in line):
+                print(f"    {line}")
     except Exception as exc:
         print(f"\n  EXCEPTION during Player.run(): {type(exc).__name__}: {exc}")
         import traceback

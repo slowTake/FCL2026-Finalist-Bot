@@ -7,7 +7,7 @@ The **Offline Replay Debugger** allows AI agents and developers to reconstruct, 
 ## 🎯 Primary Use Cases for AI Agents
 
 1. **Root Cause Analysis**: When a match triage report identifies a loss, TLE, or unexpected unit behavior, use this debugger to inspect the exact state at the turn of failure.
-2. **Decision Tracing**: Execute `Player.run(ct)` against a single turn or range of turns to see why a unit moved, built, attacked, or idled.
+2. **Automatic Debug Overrides & Profiling**: Automatically overrides `main.DEBUG = True` during offline execution, enabling all debug prints while benchmarking execution time in microseconds (µs) and generating a bottleneck profiling report to pinpoint slow functions causing TLEs.
 3. **Communication Store Audit**: View the state of team shared store registers (slots 0–15) or simulate ledger broadcasting using `--rebuild-store`.
 
 ---
