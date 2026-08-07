@@ -1,6 +1,8 @@
 import os
 import sys
+import subprocess
 from pathlib import Path
+import re
 
 sys.path.append("/home/nraatika/projects/florent/teaPot/scripts")
 import florent_replay_pb2
@@ -8,9 +10,6 @@ import florent_replay_pb2
 def main():
     maps_dir = Path("/home/nraatika/projects/florent/teaPot/maps")
     features_out = Path("/home/nraatika/projects/florent/teaPot/components/features.py")
-    
-    # The user asked for "active maps". Should I parse all maps or only active maps?
-    # I'll just parse all maps to be safe, because if the rotation changes, the bot still works.
     
     map_id_counter = 1
     map_id_to_name = {}
@@ -20,8 +19,6 @@ def main():
     
     for map_file in sorted(maps_dir.glob("*.map26")):
         name = map_file.stem
-        
-        # Skip unknown big map or anything weird
         if "unknown" in name:
             continue
             
@@ -29,61 +26,57 @@ def main():
         map_id_counter += 1
         map_id_to_name[map_id] = name
         
+        # Clear temp file
+        if os.path.exists("/tmp/fp.txt"):
+            os.remove("/tmp/fp.txt")
+            
+        res = subprocess.run(["fcode", "run", "/tmp/fp_bot", "/tmp/fp_bot", str(map_file), "--tle", "0"], 
+                             capture_output=True, text=True, cwd="/home/nraatika/projects/florent/teaPot")
+        
+        if not os.path.exists("/tmp/fp.txt"):
+            print(f"Warning: could not extract fingerprints for {name} from engine output")
+            continue
+            
+        with open("/tmp/fp.txt", "r") as f:
+            content = f.read()
+            
+        fps = re.findall(r"FP_OUT:(\d+),(\d+),(\w+),(\d+),(\d+),(\d+)", content)
+        
+        if len(fps) < 2:
+            print(f"Warning: could not extract fingerprints for {name} from engine output")
+            continue
+            
         with open(map_file, "rb") as f:
             data = f.read()
             m = florent_replay_pb2.Map()
             m.ParseFromString(data)
-            
-            w, h = m.width, m.height
-            grid = [[florent_replay_pb2.ENV_EMPTY for _ in range(m.width)] for _ in range(m.height)]
-            
             walls = []
             ores = []
-            
             for y, row in enumerate(m.rows):
                 for x, tile in enumerate(row.tiles):
-                    grid[y][x] = tile
                     if tile == florent_replay_pb2.ENV_WALL:
                         walls.append((x, y))
                     elif tile in (florent_replay_pb2.ENV_ORE_TITANIUM, florent_replay_pb2.ENV_ORE_AXIONITE):
                         ores.append((x, y))
-                        
             wall_locations[map_id] = walls
             ore_locations[map_id] = ores
             
-            team_a_start = None
-            team_b_start = None
-            for c in m.cores:
-                if c.team == florent_replay_pb2.TEAM_A:
-                    team_a_start = (c.position.x, c.position.y)
-                elif c.team == florent_replay_pb2.TEAM_B:
-                    team_b_start = (c.position.x, c.position.y)
-                    
-            def get_wall_count(cx, cy):
-                count = 0
-                for dy in range(-6, 7):
-                    for dx in range(-6, 7):
-                        if dx*dx + dy*dy <= 36:
-                            px = cx + dx
-                            py = cy + dy
-                            if 0 <= px < w and 0 <= py < h:
-                                if grid[py][px] == florent_replay_pb2.ENV_WALL:
-                                    count += 1
-                return count
-
-            if team_a_start and team_b_start:
-                wa = get_wall_count(team_a_start[0], team_a_start[1])
-                wb = get_wall_count(team_b_start[0], team_b_start[1])
+        fp_a = None
+        fp_b = None
+        for fp in fps:
+            w, h, team_name, x, y, wall_count = fp
+            key = f"({w}, {h}, Team.{team_name}, {x}, {y}, {wall_count})"
+            if team_name == "A":
+                fp_a = (key, int(x), int(y))
+            elif team_name == "B":
+                fp_b = (key, int(x), int(y))
                 
-                # Team A
-                key_a = f"({w}, {h}, Team.A, {team_a_start[0]}, {team_a_start[1]}, {wa})"
-                val_a = f"({map_id}, '{name}', {team_b_start[0]}, {team_b_start[1]})"
-                known_maps[key_a] = val_a
-                
-                # Team B
-                key_b = f"({w}, {h}, Team.B, {team_b_start[0]}, {team_b_start[1]}, {wb})"
-                val_b = f"({map_id}, '{name}', {team_a_start[0]}, {team_a_start[1]})"
-                known_maps[key_b] = val_b
+        if fp_a and fp_b:
+            val_a = f"({map_id}, '{name}', {fp_b[1]}, {fp_b[2]})"
+            known_maps[fp_a[0]] = val_a
+            
+            val_b = f"({map_id}, '{name}', {fp_a[1]}, {fp_a[2]})"
+            known_maps[fp_b[0]] = val_b
 
     with open(features_out, "w") as f:
         f.write("from fcode import Team\n\n")
@@ -108,7 +101,7 @@ def main():
             f.write(f"    {mid}: {o_locs},\n")
         f.write("}\n")
         
-    print(f"Successfully generated features.py at {features_out} with {len(map_id_to_name)} maps.")
+    print(f"Successfully regenerated features.py at {features_out} using engine fingerprints!")
 
 if __name__ == "__main__":
     main()

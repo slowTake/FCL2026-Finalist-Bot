@@ -285,6 +285,8 @@ def offGun(bot, ct: Controller) -> bool:
 
 
 def _enemyBeltAt(ct: Controller, tile: Position) -> bool:
+    if not ct.is_in_vision(tile):
+        return False
     bid = ct.get_tile_building_id(tile)
     if bid is None:
         return False
@@ -582,10 +584,7 @@ def _denyOreCandidates(bot, ct: Controller) -> list[Position]:
 
     pos = ct.get_position()
     scored: list[tuple[int, int, Position]] = []
-    # includeStatic: the ledger only holds ore we have already scouted — our own side
-    # early on — so without the map table there are no candidates until a harasser has
-    # made the very trip this function exists to motivate.
-    for ore in knownOreTiles(bot, includeStatic=True):
+    for ore in knownOreTiles(bot):
         d_enemy = _chebyshevToFootprint(ore, enemy)
         if d_enemy > radius:
             continue
@@ -714,35 +713,16 @@ def _enemyHarvesterOnTile(ct: Controller, tile: Position) -> bool:
 
 
 def _scoutOreTargets(bot, ct: Controller) -> list[Position]:
-    """Ore tiles to inspect: hostile entity on ore, or ore without ally harvester.
-
-    Skips ore on our own half. Scoring is `(priority, distance)` and our near-core nodes
-    are priority 1 *and* nearest, so they used to sort first — the harasser walked to our
-    own ore, marked it scouted, walked to the next, and never left base. Our defaults
-    already work those nodes; there is no offensive value in touring them. With the role
-    split at one harasser per five builders, that tour was the only harasser activity
-    visible.
-
-    The midline test is inlined rather than using `_oreCloserToAlly`, which leads with
-    `ct.get_tile_env(pad)` — safe only for tiles in vision, and ledger ore frequently is
-    not. That exact mistake silently froze harassers before, because `Player.run` swallows
-    the exception and the unit simply stops for the rest of the game.
-    """
+    """Ore tiles to inspect: hostile entity on ore, or ore without ally harvester."""
     me = ct.get_team()
     pos = ct.get_position()
     seen = _scoutedOres(bot)
-    ally = bot.corePos
-    enemy = getattr(bot, "enemyCorePos", None)
     scored: list[tuple[int, int, Position]] = []
     for (x, y), cell in bot.hivemind.local_map.items():
         if not cell.get("ore"):
             continue
         if (x, y) in seen:
             continue
-        if ally is not None and enemy is not None:
-            tile = Position(x, y)
-            if manhattan(tile, ally) <= manhattan(tile, enemy):
-                continue
         ent = cell.get("entity")
         # Skip friendly harvesters we're not clearing
         if ent and ent.get("type") == EntityType.HARVESTER and ent.get("team") == me:

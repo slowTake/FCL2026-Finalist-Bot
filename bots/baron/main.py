@@ -144,7 +144,7 @@ MAX_AMMO_POOL: int | None = None
 SLOT_RELAY_COMPLETE = 0
 SLOT_PACKED_CORES = 15
 
-DEBUG = False
+DEBUG = True
 
 from guns import gunnerLoop, sentinelLoop, top_up_ammo
 from hivemind import CoreState, HiveMind, unpack_cores
@@ -173,8 +173,6 @@ class Player:
         self.relayStuck = 0
         self.relayThreatBlocked: set[tuple[int, int]] = set()
         self.blockadeDoor: tuple[int, int] | None = None
-        self.frontierTarget: tuple[int, int] | None = None
-        self.frontierRound = -999
         self.relayPathBlocked = False
         self.relayPathBlockedFrom: tuple[int, int] | None = None
         self.lastPathFailed = False
@@ -195,19 +193,16 @@ class Player:
         self.harassOrbitIdx = 0
 
     def run(self, ct: Controller) -> None:
-        try:
-            self.hivemind.tick(ct)
-            etype = ct.get_entity_type()
-            if etype == EntityType.CORE:
-                self._run_core(ct)
-            elif etype == EntityType.BUILDER_BOT:
-                self._run_builder(ct)
-            elif etype == EntityType.GUNNER:
-                gunnerLoop(ct)
-            elif etype == EntityType.SENTINEL:
-                sentinelLoop(ct)
-        except Exception:
-            return
+        self.hivemind.tick(ct)
+        etype = ct.get_entity_type()
+        if etype == EntityType.CORE:
+            self._run_core(ct)
+        elif etype == EntityType.BUILDER_BOT:
+            self._run_builder(ct)
+        elif etype == EntityType.GUNNER:
+            gunnerLoop(ct)
+        elif etype == EntityType.SENTINEL:
+            sentinelLoop(ct)
 
     def _run_core(self, ct: Controller) -> None:
         round_n = ct.get_current_round()

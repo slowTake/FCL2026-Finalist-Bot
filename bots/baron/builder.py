@@ -216,6 +216,12 @@ def _resolveCores(bot, ct: Controller) -> None:
         bot.enemyCorePos = bot.hivemind.enemy_core_pos
     elif bot.enemyCorePos is None:
         bot.enemyCorePos = _enemyCoreFromLedger(bot, ct)
+        if bot.enemyCorePos is None:
+            w, h = ct.get_map_width(), ct.get_map_height()
+            cp = bot.corePos or ct.get_position()
+            ex = w - 1 - cp.x if cp.x > w // 2 else w - 2 - cp.x
+            ey = h - 1 - cp.y if cp.y > h // 2 else h - 2 - cp.y
+            bot.enemyCorePos = Position(max(0, ex), max(0, ey))
 
 
 def _enemyCoreFromLedger(bot, ct: Controller) -> Position | None:
