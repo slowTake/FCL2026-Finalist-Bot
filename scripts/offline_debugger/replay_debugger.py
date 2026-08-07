@@ -209,7 +209,7 @@ def run_unit(state: WorldState, unit_id: int, team: Team, rebuild_store: bool = 
 
     # Import and run the bot
     try:
-        bot_path = Path(__file__).resolve().parent.parent / 'bots' / 'baron'
+        bot_path = Path(__file__).resolve().parent.parent.parent / 'bots' / 'baron'
         sys.path.insert(0, str(bot_path))
         from main import Player
 
@@ -242,7 +242,8 @@ def _rebuild_store(replay_builder: ReplayStateBuilder, target_round: int, team: 
     # Buffer for delayed writes (writes take effect next round)
     pending_writes: dict[int, int] = {}
 
-    bot_path = Path(__file__).resolve().parent.parent / 'bots' / 'baron'
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    bot_path = Path(__file__).resolve().parent.parent.parent / 'bots' / 'baron'
     sys.path.insert(0, str(bot_path))
     from main import Player
 
