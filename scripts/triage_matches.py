@@ -256,9 +256,9 @@ def generate_report(
             lines.append(f"Debug commands:")
             lines.append(f"```bash")
             lines.append(f"# Show bot output at TLE round")
-            lines.append(f".venv/bin/python scripts/replay_debugger.py {r['replay_path']} -r {first_tle[0]} -u {first_tle[1]} -t {r['our_side'].upper()} --show-output")
+            lines.append(f".venv/bin/python scripts/offline_debugger/replay_debugger.py {r['replay_path']} -r {first_tle[0]} -u {first_tle[1]} -t {r['our_side'].upper()} --show-output")
             lines.append(f"# Re-run unit logic (no CPU limit)")
-            lines.append(f".venv/bin/python scripts/replay_debugger.py {r['replay_path']} -r {first_tle[0]} -u {first_tle[1]} -t {r['our_side'].upper()}")
+            lines.append(f".venv/bin/python scripts/offline_debugger/replay_debugger.py {r['replay_path']} -r {first_tle[0]} -u {first_tle[1]} -t {r['our_side'].upper()}")
             lines.append(f"```")
             lines.append(f"")
 
