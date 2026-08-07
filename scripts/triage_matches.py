@@ -20,9 +20,79 @@ import json
 import subprocess
 import urllib.request
 import argparse
+import cProfile
+import pstats
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict
+
+EXCLUDED_ORCHESTRATORS = {
+    "run",
+    "_run_builder",
+    "runBuilderRoles",
+    "_run_core",
+    "gunnerLoop",
+    "sentinelLoop",
+}
+
+
+def _profile_game_tles(replay_path: str, tle_sample: list[tuple[int, int, str, int]], our_side: str) -> list[tuple[str, str, float]]:
+    """Profile TLE turns using MockController and cProfile to extract top 5 bottleneck functions."""
+    try:
+        dbg_dir = Path(__file__).resolve().parent / "offline_debugger"
+        bot_dir = Path(__file__).resolve().parent.parent / "bots" / "baron"
+        sys.path.insert(0, str(dbg_dir))
+        sys.path.insert(0, str(bot_dir))
+
+        from replay_state import ReplayStateBuilder
+        from mock_controller import MockController
+        from replay_debugger import _rebuild_store
+        from fcode import Team
+        import main
+        main.DEBUG = True
+        from main import Player
+
+        builder = ReplayStateBuilder(replay_path)
+        team = Team.A if our_side.upper() == "A" else Team.B
+
+        func_cumtimes: dict[str, tuple[str, float, int]] = defaultdict(lambda: ("", 0.0, 0))
+
+        for r_num, uid, _, _ in tle_sample[:3]:
+            store = _rebuild_store(builder, r_num, team)
+            state = builder.build_state(r_num)
+            ct = MockController(state, uid, team)
+            ct.store = store
+
+            player = Player()
+            profiler = cProfile.Profile()
+            profiler.enable()
+            try:
+                player.run(ct)
+            except Exception:
+                pass
+            profiler.disable()
+
+            ps = pstats.Stats(profiler)
+            for (fn, line, name), (cc, nc, tt, cumtime, callers) in ps.stats.items():
+                if name in EXCLUDED_ORCHESTRATORS:
+                    continue
+                if any(k in fn for k in ["bots/baron", "components"]):
+                    loc = f"{Path(fn).name}:{line}"
+                    fn_name = name
+                    key = f"{fn_name} ({loc})"
+                    old_loc, old_cum, old_calls = func_cumtimes[key]
+                    func_cumtimes[key] = (loc, old_cum + (cumtime * 1000.0), old_calls + nc)
+
+        result = []
+        for key, (loc, cum_ms, calls) in func_cumtimes.items():
+            name = key.split()[0]
+            avg_ms = cum_ms / calls if calls else 0.0
+            result.append((name, loc, avg_ms))
+
+        result.sort(key=lambda x: x[2], reverse=True)
+        return result[:5]
+    except Exception:
+        return []
 
 # Protobuf import
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -251,13 +321,25 @@ def generate_report(
                 lines.append(f"| ... | ... | *{len(r['tles']) - 10} more TLEs* | ... |")
             lines.append(f"")
 
+            # Top 5 Bottleneck Functions (excluding orchestrators)
+            top_funcs = _profile_game_tles(r["replay_path"], r["tles"][:3], r["our_side"])
+            if top_funcs:
+                lines.append(f"**Top Bottleneck Functions (excluding `run`):**")
+                lines.append(f"| Rank | Function | Location | Avg Exec Time |")
+                lines.append(f"|------|----------|----------|---------------|")
+                for rank, (name, loc, avg_ms) in enumerate(top_funcs[:5], 1):
+                    lines.append(f"| {rank} | `{name}` | `{loc}` | {avg_ms:.2f} ms |")
+                lines.append(f"")
+
             # Debug commands
             first_tle = r["tles"][0]
             lines.append(f"Debug commands:")
             lines.append(f"```bash")
+            lines.append(f"# Show TLE bottleneck summary across all rounds")
+            lines.append(f".venv/bin/python scripts/offline_debugger/summarize_tles.py {r['replay_path']} -t {r['our_side'].upper()}")
             lines.append(f"# Show bot output at TLE round")
             lines.append(f".venv/bin/python scripts/offline_debugger/replay_debugger.py {r['replay_path']} -r {first_tle[0]} -u {first_tle[1]} -t {r['our_side'].upper()} --show-output")
-            lines.append(f"# Re-run unit logic (no CPU limit)")
+            lines.append(f"# Re-run unit logic with execution profiler")
             lines.append(f".venv/bin/python scripts/offline_debugger/replay_debugger.py {r['replay_path']} -r {first_tle[0]} -u {first_tle[1]} -t {r['our_side'].upper()}")
             lines.append(f"```")
             lines.append(f"")
@@ -350,10 +432,10 @@ def main():
     args = parser.parse_args()
 
     project_root = Path(__file__).resolve().parent.parent
-    obs_dir = project_root / "observations"
+    obs_dir = Path(__file__).resolve().parent.parent / "observations"
     obs_dir.mkdir(parents=True, exist_ok=True)
 
-    triage_dir = project_root / "ranked" / "triage"
+    triage_dir = Path(__file__).resolve().parent.parent / "ranked" / "triage"
     triage_dir.mkdir(parents=True, exist_ok=True)
 
     default_filename = f"triage_report_{args.hours}h.md"
