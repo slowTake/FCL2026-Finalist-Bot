@@ -503,7 +503,8 @@ def _aimCoreTile(site: Position, core_pos: Position) -> Position:
 
 
 def _sentinelHitsTile(
-    ct: Controller, site: Position, facing: Direction, tile: Position
+    ct: Controller, site: Position, facing: Direction, tile: Position,
+    local_map: dict | None = None,
 ) -> bool:
     if site.distance_squared(tile) < 1:
         return False
@@ -514,7 +515,11 @@ def _sentinelHitsTile(
             return True
     except Exception:
         pass
-    # Geometric: walk facing ray until tile or range exhausted
+    # Geometric: walk facing ray until tile or range exhausted. `can_fire_from`
+    # answers for tiles we can see; out of vision it returns False (or raises) and
+    # we fall through to here, so the ray must check walls itself — otherwise an
+    # unseen pad claims a shot straight through terrain. Ledger only: a tile absent
+    # from local_map is unseeded floor on a fingerprinted map, so treat it as clear.
     w, h = ct.get_map_width(), ct.get_map_height()
     p = site.add(facing)
     for _ in range(8):
@@ -524,12 +529,17 @@ def _sentinelHitsTile(
             return True
         if p.distance_squared(site) > SENTINEL_RANGE_SQ:
             return False
+        if local_map is not None:
+            cell = local_map.get((p.x, p.y))
+            if cell is not None and cell.get("passable") is False:
+                return False
         p = p.add(facing)
     return False
 
 
 def _bestSentinelFacing(
-    ct: Controller, site: Position, core_pos: Position
+    ct: Controller, site: Position, core_pos: Position,
+    local_map: dict | None = None,
 ) -> Direction | None:
     """Facing from site that can hit some core footprint tile. No NORTH fallback."""
     footprint = _coreFootprint(core_pos)
@@ -541,15 +551,48 @@ def _bestSentinelFacing(
 
     for facing in ordered:
         for tile in footprint:
-            if _sentinelHitsTile(ct, site, facing, tile):
+            if _sentinelHitsTile(ct, site, facing, tile, local_map):
                 return facing
     return None
 
 
+def _padBuildable(ct: Controller, site: Position, local_map: dict | None) -> bool:
+    """Empty, non-wall, non-ore — from vision when we have it, else the ledger.
+
+    Vision is authoritative, so use the engine whenever the tile is visible. Out of
+    vision we fall back to `local_map`, which `hivemind` has already seeded with the
+    map's `WALL_LOCATIONS` and `ORE_LOCATIONS`. A tile absent from the ledger is
+    therefore neither wall nor ore on a fingerprinted map — unseeded floor — so it is
+    admitted. Being optimistic here is safe: `can_build_sentinel` is the real gate at
+    build time, and the cost of a wrong guess is one wasted step, whereas rejecting
+    unseen tiles is what kept the pad ring down to whatever the builder could see.
+    """
+    if ct.is_in_vision(site):
+        env = ct.get_tile_env(site)
+        if env == Environment.WALL or env == Environment.ORE_TITANIUM:
+            return False
+        return ct.is_tile_empty(site)
+    cell = local_map.get((site.x, site.y)) if local_map is not None else None
+    if cell is None:
+        return True
+    if cell.get("passable") is False or cell.get("ore"):
+        return False
+    return not cell.get("entity")
+
+
 def _sentinelPadsNearTarget(
-    ct: Controller, target: Position
+    ct: Controller, target: Position,
+    local_map: dict | None = None, max_cheb: int | None = None,
 ) -> list[tuple[Position, Direction]]:
-    """In-range empty pads with a facing that hits the core footprint (target=origin)."""
+    """In-range empty pads with a facing that hits the core footprint (target=origin).
+
+    Candidacy is derived from the *known* core position plus the ledger, not from what
+    this builder happens to see. Vision-gating the ring meant a builder arriving at the
+    core evaluated ~4% of it — and, because vision (sqrt(20)) is shorter than sentinel
+    reach (sqrt(32)), the pads it did see were the farthest ones, so sentinels landed at
+    the outer edge of the band. `max_cheb` caps the standoff the way `_defSentinelPads`
+    does for the defensive path: out-of-band pads are dropped, not merely deprioritised.
+    """
     pads: list[tuple[Position, Direction]] = []
     w, h = ct.get_map_width(), ct.get_map_height()
     footprint = _coreFootprint(target)
@@ -563,14 +606,11 @@ def _sentinelPadsNearTarget(
                 continue
             if min(site.distance_squared(t) for t in footprint) > SENTINEL_RANGE_SQ:
                 continue
-            if not ct.is_in_vision(site):
+            if max_cheb is not None and chebyshevToCore(site, target) > max_cheb:
                 continue
-            env = ct.get_tile_env(site)
-            if env == Environment.WALL or env == Environment.ORE_TITANIUM:
+            if not _padBuildable(ct, site, local_map):
                 continue
-            if not ct.is_tile_empty(site):
-                continue
-            facing = _bestSentinelFacing(ct, site, target)
+            facing = _bestSentinelFacing(ct, site, target, local_map)
             if facing is None:
                 continue
             pads.append((site, facing))
@@ -579,21 +619,34 @@ def _sentinelPadsNearTarget(
 
 def placeSentinel(bot, ct: Controller, target: Position) -> bool:
     """Range-only sentinel pad toward target (not used by defGun)."""
+    from main import SENTINEL_PLACE_MAX_CHEB
+
     if not _canAffordGunPlace(ct):
         return False
-    pads = _sentinelPadsNearTarget(ct, target)
+    cap = SENTINEL_PLACE_MAX_CHEB
+    if cap is not None and cap <= 0:
+        cap = None
+    pads = _sentinelPadsNearTarget(
+        ct, target, bot.hivemind.local_map, cap
+    )
     if not pads:
         return False
     pos = ct.get_position()
     footprint = _coreFootprint(target)
-    pads.sort(
-        key=lambda sf: (
-            min(sf[0].distance_squared(t) for t in footprint),
-            manhattan(pos, sf[0]),
-        )
-    )
+
+    def _toCore(site: Position) -> int:
+        return min(site.distance_squared(t) for t in footprint)
+
+    pads.sort(key=lambda sf: (_toCore(sf[0]), manhattan(pos, sf[0])))
+    # Only take the opportunistic build on a pad as close as the best one we know of.
+    # Adjacency used to be the whole gate, so a builder walking in committed to the
+    # first pad it brushed past — always an outer one, since those enter the ring
+    # first. Anything worse than `best_d` is left alone and we keep walking instead.
+    best_d = _toCore(pads[0][0])
     if ct.get_action_cooldown() == 0:
         for site, facing in pads:
+            if _toCore(site) > best_d:
+                break
             if abs(pos.x - site.x) + abs(pos.y - site.y) != 1:
                 continue
             if ct.can_build_sentinel(site, facing):

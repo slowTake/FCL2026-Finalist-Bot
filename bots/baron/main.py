@@ -129,6 +129,14 @@ ENCIRCLED_TURNS = 8
 # --- Gun placement (≤0 disables) ---
 GUN_PLACE_MIN_TI = 100  # need bank ≥ this to place gunner/sentinel
 
+# Max Chebyshev from the enemy core footprint for an *offensive* sentinel pad — the
+# counterpart to DEFEND_HOME_CHEBYSHEV on the defensive path. Sentinel reach is
+# sqrt(32) ≈ 5.7, but the edge of that band is the worst place to stand: longest ray
+# to be broken, least pressure, and it is exactly where an approaching builder first
+# finds a pad. The enemy core's own action radius is sqrt(8) ≈ 2.83, so 3 is the first
+# ring outside retaliation. ≤0 / None disables the cap (falls back to full reach).
+SENTINEL_PLACE_MAX_CHEB: int | None = 3
+
 # --- Ammo policy (guns.top_up_ammo reads these) ---
 AMMO_BASE = 12
 AMMO_PER_GUNNER = 3
