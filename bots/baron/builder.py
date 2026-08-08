@@ -130,8 +130,12 @@
 #    always do, independent of the wave gate; even-excess capped slots fall to
 #    default instead (see runDefault).
 # 1. snipeHarvester — visible uncovered enemy harvester → placeGun
-# 2. offGun — placeGun/placeSentinel: core → gunner → sentinel → harvester → launcher;
+# 2. offGun — placeGun/placeSentinel: core (only once bank ≥ CORE_PUSH_MIN_TI; harvesters
+#        are the cheaper kill until then) → gunner → sentinel → harvester → launcher;
 #        ≤1 ally gunner covering each enemy harvester
+# 2b. wallCore — enemy core known → wallEnemyCore: barrier one empty tile of its
+#        perimeter, one action per call. Ungated by CORE_PUSH_MIN_TI (3 Ti, unthrottled,
+#        opportunistic — worth taking any time a harasser is in position).
 # 3. avoidFire — under enemy gunner LoS → step to safe tile toward goal
 #    0. breakBeltDeadlock — motionless (bot.stuck) ≥ HARASS_DEADLOCK_TURNS →
 #        blacklist sticky denyBeltTile / harassTarget into bot.skippedTargets and
@@ -206,6 +210,7 @@ from offense import (
     seekCore,
     seekHarvester,
     snipeHarvester,
+    wallCore,
 )
 
 
@@ -563,7 +568,7 @@ def runGuardian(bot, ct: Controller) -> None:
 
 
 def runHarasser(bot, ct: Controller) -> None:
-    """Harasser: snipe → offGun → avoidFire → denyOre → denyBelt → seek → seekCore."""
+    """Harasser: snipe → offGun → wallCore → avoidFire → denyOre → denyBelt → seek → seekCore."""
     _resolveCores(bot, ct)
     bot.nearCoreEconomy = False
     # State-only; the selectors below re-pick this turn. Costs no turn.
@@ -571,6 +576,8 @@ def runHarasser(bot, ct: Controller) -> None:
     if snipeHarvester(bot, ct):
         return
     if offGun(bot, ct):
+        return
+    if wallCore(bot, ct):
         return
     if avoidFire(bot, ct):
         return
@@ -612,60 +619,3 @@ def runBuilderRoles(bot, ct: Controller) -> None:
 # Back-compat
 def run_builder_roles(bot, ct: Controller) -> None:
     runBuilderRoles(bot, ct)
-
-# will wall off the entire perimeter of the core, will need repeated calls to complete
-# each non-wall tile will need a separete call to finish the job, if done in a loop then it'll repair any gaps that the enemy makes
-def wall_enemy_core(ct: Controller, core: Position) -> None: 
-    targets = [
-        Position(core.x, core.y - 1),
-        Position(core.x + 1, core.y - 1),
-        Position(core.x, core.y + 2),
-        Position(core.x + 1, core.y + 2),
-        Position(core.x - 1, core.y),
-        Position(core.x - 1, core.y + 1),
-        Position(core.x + 2, core.y),
-        Position(core.x + 2, core.y + 1),
-    ]
-
-    for tile in targets:
-        if not ct.is_in_vision(tile):
-            continue
-        bid = ct.get_tile_building_id(tile)
-        if bid is not None:
-            etype = ct.get_entity_type(bid)
-            if etype == EntityType.BARRIER:
-                continue
-            if etype in (EntityType.CONVEYOR, EntityType.SPLITTER):
-                if ct.can_destroy(tile) and ct.get_action_cooldown() == 0:
-                    ct.destroy(tile)
-                continue
-            continue
-
-        if ct.get_action_cooldown() != 0:
-            continue
-        cost = ct.get_barrier_cost()
-        if cost > ct.get_global_resources():
-            continue
-        if ct.can_build_barrier(tile):
-            ct.build_barrier(tile)
-
-
-# version that just builds wall at a specified target
-# gets rid of anything in the way and then will build
-def wall_at_target(ct: Controller, target: Position) -> None:
-    bid = ct.get_tile_building_id(target)
-    if bid is not None:
-        etype = ct.get_entity_type(bid)
-        if etype == EntityType.BARRIER:
-            return
-        if etype in (EntityType.CONVEYOR, EntityType.SPLITTER):
-            if ct.can_destroy(target) and ct.get_action_cooldown() == 0:
-                ct.destroy(target)     
-    
-    if ct.get_action_cooldown() != 0:
-        return
-    cost = ct.get_barrier_cost()
-    if cost > ct.get_global_resources():
-        return
-    if ct.can_build_barrier(target):
-        ct.build_barrier(target)

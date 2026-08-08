@@ -129,6 +129,13 @@ ENCIRCLED_TURNS = 8
 # --- Gun placement (≤0 disables) ---
 GUN_PLACE_MIN_TI = 60 # need bank ≥ this to place gunner/sentinel
 
+# --- Core push gate (≤0 / None disables) ---
+# Harvesters are the easier, cheaper kill — denying one starves a whole belt line for
+# 3-20 Ti. Shooting the enemy core itself only pays off once the bank shows a real
+# economic lead; below this the harasser should keep working harvesters/ore instead of
+# tickling the core for free damage it can't press home.
+CORE_PUSH_MIN_TI = 150  # need bank ≥ this before offGun targets the enemy core
+
 # --- Ammo policy (guns.top_up_ammo reads these) ---
 AMMO_BASE = 12
 AMMO_PER_GUNNER = 3

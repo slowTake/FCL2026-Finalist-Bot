@@ -14,6 +14,7 @@ from guns import (
 )
 from logistics import moveToward
 from pathing import CARDINALS, inBounds, manhattan, walkPassable
+from walls import wallEnemyCore
 
 _AVOID_RADIUS = 4
 _ORBIT_OFFSET = 3
@@ -316,10 +317,24 @@ def snipeHarvester(bot, ct: Controller) -> bool:
     return placeGun(bot, ct, target)
 
 
+def _corePushReady(ct: Controller) -> bool:
+    """True once the bank justifies shooting at the enemy core (CORE_PUSH_MIN_TI).
+
+    Stacks on top of `_canAffordGunPlace`'s generic GUN_PLACE_MIN_TI floor already
+    enforced inside `placeGun`/`placeSentinel` — the core specifically needs the
+    higher bar; every other target only needs the generic one.
+    """
+    from main import CORE_PUSH_MIN_TI
+
+    if CORE_PUSH_MIN_TI is None or CORE_PUSH_MIN_TI <= 0:
+        return True
+    return ct.get_global_resources() >= CORE_PUSH_MIN_TI
+
+
 def offGun(bot, ct: Controller) -> bool:
-    """Place gunner/sentinel toward core or visible threats (priority order)."""
+    """Place gunner/sentinel toward core (once CORE_PUSH_MIN_TI) or visible threats."""
     enemy_core = bot.enemyCorePos
-    if enemy_core is not None:
+    if enemy_core is not None and _corePushReady(ct):
         if placeGun(bot, ct, enemy_core):
             return True
         if placeSentinel(bot, ct, enemy_core):
@@ -339,6 +354,19 @@ def offGun(bot, ct: Controller) -> bool:
         if placeGun(bot, ct, target):
             return True
     return False
+
+
+def wallCore(bot, ct: Controller) -> bool:
+    """Opportunistically barrier an empty tile beside the enemy core, if known.
+
+    Ungated by CORE_PUSH_MIN_TI — a barrier is 3 Ti and unthrottled, so unlike
+    offGun's core branch it's worth taking any time a harasser is in position,
+    independent of bank.
+    """
+    core = bot.enemyCorePos
+    if core is None:
+        return False
+    return wallEnemyCore(ct, core)
 
 
 def _enemyBeltAt(ct: Controller, tile: Position) -> bool:
