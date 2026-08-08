@@ -26,6 +26,14 @@ _ORE_BLOCK_CLEAR = (
     EntityType.BARRIER,
 )
 
+# Enemy types that actually block an ore tile, for pickEmptyOre's ledger-memory
+# check — the same set checkOre can't get past (_ORE_BLOCK_CLEAR) plus CORE.
+# BUILDER_BOT is deliberately excluded: it's a mobile unit, not a blocker
+# (get_tile_building_id is None for one), so a single fly-by sighting must not
+# disqualify the node. HARVESTER is handled separately (team-agnostic — any
+# harvester, ally or enemy, means the node is already claimed).
+_ORE_ENEMY_BLOCKERS = _ORE_BLOCK_CLEAR + (EntityType.CORE,)
+
 
 def _coreFootprint(core_pos: Position) -> list[Position]:
     return [
@@ -480,6 +488,7 @@ def pickEmptyOre(bot, ct: Controller) -> Position | None:
 
     core = bot.corePos
     self_pos = ct.get_position()
+    me = ct.get_team()
 
     seen: set[tuple[int, int]] = set()
     raw: list[Position] = []
@@ -503,8 +512,21 @@ def pickEmptyOre(bot, ct: Controller) -> Position | None:
     for ore in knownOreTiles(bot):
         entry = bot.hivemind.local_map.get((ore.x, ore.y), {})
         ent = entry.get("entity")
-        if ent and ent.get("type") == EntityType.HARVESTER:
-            continue
+        if ent:
+            if ent.get("type") == EntityType.HARVESTER:
+                continue
+            # Anything else the ledger remembers as an enemy-owned blocker — most
+            # commonly their own denyOre barrier — disqualifies the tile until
+            # it's back in vision to re-check. Previously only a remembered
+            # HARVESTER was rejected here, so a remembered enemy barrier stayed
+            # "eligible" indefinitely while out of vision: pickEmptyOre could send
+            # a builder to chase ore it had already been walled off from, while
+            # _pickRecheckOre's stricter ledger read (rejects any remembered
+            # entity) never would have. A remembered ally barrier still passes —
+            # that's the "empty" this function's docstring promises: checkOre
+            # clears our own denyOre-style barriers and builds on arrival.
+            if ent.get("team") != me and ent.get("type") in _ORE_ENEMY_BLOCKERS:
+                continue
         if (
             ct.is_in_vision(ore)
             and ct.get_tile_building_id(ore) is not None

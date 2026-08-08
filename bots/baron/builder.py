@@ -10,11 +10,15 @@
 #    one. See guardianOverflowIsHarasser.
 #
 # ## all roles (runBuilderRoles, before dispatch)
-#    breakEncirclement — motionless (bot.stuck) ≥ ENCIRCLED_TURNS with no legal
+#    breakEncirclement — motionless (bot.motionless) ≥ ENCIRCLED_TURNS with no legal
 #        move in any direction → destroy the cheapest adjacent ally building
 #        (barrier → belt → harvester → turret) and step through, else try firing
 #        at an adjacent enemy building. Known case: a harasser fencing itself in
-#        with its own denyBelt barriers.
+#        with its own denyBelt barriers. Own counter, never reset by anything but
+#        real movement — unlike bot.stuck (also used by breakOreDeadlock etc.),
+#        which _reactEnemyTurret's freeze branch zeroes every turn it consumes, so
+#        an encircled builder sitting next to a visible-but-unactionable turret
+#        would otherwise never reach ENCIRCLED_TURNS at all.
 #
 # ## guardian (orchestrator: runGuardian below; helpers in defence.py)
 #    idx % 5 in (1, 0) (builders 1,5,6,10,11,…)
@@ -387,7 +391,20 @@ def _reactEnemyTurret(
         return True
     if healAlly(bot, ct):
         return True
-    return skipEconomy
+    if skipEconomy:
+        # Nothing actionable, but the turret stays in vision — this consumes the
+        # turn every turn it's visible, with no cap; a turret parked nearby but
+        # unaffordable to answer (GUN_PLACE_MIN_TI) can freeze a default builder
+        # here for 100+ turns. bot.stuck keeps climbing the whole time regardless
+        # of why the position didn't change (Player._run_builder tracks position
+        # only, not cause), so by the time the turret finally leaves and
+        # breakOreDeadlock gets a turn again, it blames and blacklists whatever
+        # ore the builder happens to be standing on — a false deadlock caused by
+        # this freeze, not by the ore being unreachable. Reset here so the count
+        # only reflects turns actually spent failing at economy once react lets go.
+        bot.stuck = 0
+        return True
+    return False
 
 
 def _dodgeWhileRelaying(bot, ct: Controller) -> bool:
@@ -619,7 +636,8 @@ def runHarasser(bot, ct: Controller) -> None:
 def runBuilderRoles(bot, ct: Controller) -> None:
     """Dispatch: guardian → harasser/wave → default."""
     # Ahead of every role: boxed in on all four sides, nothing below can move.
-    # Runs before breakOreDeadlock, which shares the stuck counter and resets it.
+    # Reads bot.motionless, its own counter — not bot.stuck, which breakOreDeadlock
+    # etc. read and which gets reset by several downstream steps.
     if breakEncirclement(bot, ct, local_map=bot.hivemind.local_map):
         return
     idx = bot.hivemind.my_index

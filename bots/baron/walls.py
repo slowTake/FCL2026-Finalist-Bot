@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from fcode import Controller, EntityType, Position
 
+from pathing import inBounds
+
 
 # will wall off the entire perimeter of the core, will need repeated calls to complete
 # each non-wall tile will need a separete call to finish the job, if done in a loop then it'll repair any gaps that the enemy makes
@@ -26,6 +28,8 @@ def wallEnemyCore(ct: Controller, core: Position) -> bool:
     ]
 
     for tile in targets:
+        if not inBounds(ct, tile):
+            continue  # a core near the map edge pushes some of the 8 offsets off it
         if not ct.is_in_vision(tile):
             continue
         bid = ct.get_tile_building_id(tile)
@@ -54,6 +58,8 @@ def wallEnemyCore(ct: Controller, core: Position) -> bool:
 # version that just builds wall at a specified target
 # gets rid of anything in the way and then will build
 def wallAtTarget(ct: Controller, target: Position) -> None:
+    if not inBounds(ct, target):
+        return
     bid = ct.get_tile_building_id(target)
     if bid is not None:
         etype = ct.get_entity_type(bid)

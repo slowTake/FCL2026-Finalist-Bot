@@ -352,7 +352,12 @@ def _doorCandidates(
 def breakEncirclement(bot, ct: Controller, *, local_map: dict | None = None) -> bool:
     """Motionless and boxed in on all four sides → knock a door open.
 
-    `bot.stuck` counts turns without a position change. A builder that fenced
+    `bot.motionless` counts turns without a position change, exact-standstill
+    only — unlike `bot.stuck`, nothing resets it early (not `_reactEnemyTurret`'s
+    freeze branch, not `breakOreDeadlock`, not the oscillation detector), because
+    an oscillating unit by definition has a legal move and isn't encircled, and a
+    counter other steps can zero out from under this one would let a genuinely
+    walled-in unit sit past ENCIRCLED_TURNS indefinitely. A builder that fenced
     itself in — the harasser's `denyBelt` barriers are the known case — has no
     legal move at all, so every role's movement falls through silently and it
     sits there for the rest of the game. Ally buildings come down with
@@ -366,7 +371,7 @@ def breakEncirclement(bot, ct: Controller, *, local_map: dict | None = None) -> 
 
     if ENCIRCLED_TURNS is None or ENCIRCLED_TURNS <= 0:
         return False
-    if getattr(bot, "stuck", 0) < ENCIRCLED_TURNS:
+    if getattr(bot, "motionless", 0) < ENCIRCLED_TURNS:
         return False
     # Under move cooldown every can_move is False — that reads as walled in when
     # the unit is merely waiting. Only judge on a turn where moving is possible.
@@ -384,7 +389,14 @@ def breakEncirclement(bot, ct: Controller, *, local_map: dict | None = None) -> 
         ct.destroy(tile)
         bot.cachedPath = None
         bot.cachedPathTarget = None
-        bot.stuck = 0  # re-arm; don't fire again until it stalls afresh
+        # Resets bot.stuck (breakOreDeadlock/openBlockedRoute/exploreFrontier's
+        # counter), not the bot.motionless gate above — a stall those steps would
+        # otherwise blame on the ore/relay claim was actually this encirclement,
+        # now cleared, so they shouldn't inherit the count. Does NOT throttle this
+        # function itself anymore: bot.motionless keeps climbing regardless, so if
+        # boxed in again next turn with no legal move, this fires again immediately
+        # rather than waiting out another ENCIRCLED_TURNS.
+        bot.stuck = 0
         if ct.get_move_cooldown() == 0 and ct.can_move(d):
             ct.move(d)
         return True
@@ -396,7 +408,7 @@ def breakEncirclement(bot, ct: Controller, *, local_map: dict | None = None) -> 
             ct.fire(tile)
             bot.cachedPath = None
             bot.cachedPathTarget = None
-            bot.stuck = 0
+            bot.stuck = 0  # see comment above
             return True
 
     return False

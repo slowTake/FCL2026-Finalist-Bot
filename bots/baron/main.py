@@ -216,6 +216,15 @@ class Player:
         self.cachedPathTarget: Position | None = None
         self.lastPos: Position | None = None
         self.stuck = 0
+        # Exact-standstill only, never reset by anything but real movement — unlike
+        # `stuck` (also trips on oscillation, and gets reset by several consumers,
+        # e.g. _reactEnemyTurret's freeze branch, breakOreDeadlock). breakEncirclement
+        # needs the pure "did this unit truly not move" reading: an oscillating unit
+        # has a legal move (that's what oscillation is), so it is not encircled by
+        # definition, and a counter other steps can reset out from under it would
+        # let a genuinely walled-in unit sit past ENCIRCLED_TURNS indefinitely
+        # whenever something else keeps zeroing the shared counter first.
+        self.motionless = 0
         self.posHistory: deque[tuple[int, int]] = deque(maxlen=OSCILLATION_WINDOW)
         self.pathSearchesThisTurn = 0
         self.recheckingOre = False
@@ -283,6 +292,7 @@ class Player:
             self.stuck += 1
         else:
             self.stuck = 0
+        self.motionless = self.motionless + 1 if self.lastPos == pos else 0
         self.lastPos = pos
 
         if self.corePos is None:
