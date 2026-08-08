@@ -539,6 +539,31 @@ def _guardianEconomy(bot, ct: Controller) -> bool:
     return maintainHarvester(bot, ct)
 
 
+_RELAY_ABORT_EXEMPT_TILES = 1
+
+
+def _relayNearlyComplete(bot) -> bool:
+    """True if the in-progress relay has at most one belt tile left to place.
+
+    Guards the turret-in-vision abort below from discarding a relay that's a
+    single tile from done: `enemyTurretInVision`/`_enemyUnitInVision` only check
+    whether a turret is anywhere in this unit's vision, with no LoS/range/facing
+    relevance check at all (unlike `relayToCore`'s own `tileThreatenedByGunner`
+    handling, which reroutes around a specifically-threatened tile instead of
+    aborting outright — and even that has no sentinel equivalent, so a sentinel
+    merely passing through vision, nowhere near actually threatening anything,
+    was enough to drop nearly-finished work). Narrow by design: this only
+    exempts the last stretch of an already-committed relay, it does not change
+    the abort behaviour for an ore claim with no belts placed yet, or a relay
+    that still has real work left.
+    """
+    path = bot.relayPath
+    if not bot.inRelay or path is None:
+        return False
+    remaining = len(path) - (bot.relayBuiltTo + 1)
+    return 0 <= remaining <= _RELAY_ABORT_EXEMPT_TILES
+
+
 def runGuardian(bot, ct: Controller) -> None:
     """Guardian: leash → react → defGun → defSentinel → avoidFire → defendHome
     → healAlly → clearBarriers → reconnectBelts → economy (last three only while
@@ -560,8 +585,9 @@ def runGuardian(bot, ct: Controller) -> None:
     else:
         underAttack = enemyTurretInVision(ct)
     if underAttack and (bot.inRelay or bot.oreSite is not None):
-        abortRelay(bot)
-        bot.oreSite = None
+        if not _relayNearlyComplete(bot):
+            abortRelay(bot)
+            bot.oreSite = None
 
     if not _guardianLeashOk(bot, ct):
         moveTowardLeash(bot, ct, bot.corePos)

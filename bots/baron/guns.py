@@ -567,16 +567,28 @@ def _aimCoreTile(site: Position, core_pos: Position) -> Position:
 def _sentinelHitsTile(
     ct: Controller, site: Position, facing: Direction, tile: Position
 ) -> bool:
+    """True if a sentinel at site/facing can hit tile — engine call, ground truth.
+
+    Only falls back to blind geometry when `can_fire_from` itself couldn't be
+    asked (an exception). A clean `False` from the engine is a real answer —
+    most commonly a barrier or other obstruction on the ray, including our own
+    (denyOre, wallCore) — and must not be second-guessed by geometry that has no
+    notion of obstruction at all. Getting this backwards is exactly how a
+    sentinel gets placed pointed through our own wall: the placement check says
+    "reachable" while the live `sentinelLoop` — which only ever uses the real
+    `ct.can_fire`, no geometric fallback — correctly and permanently refuses to
+    fire, so the sentinel silently does nothing for the rest of the game with no
+    error and no way to detect or recover.
+    """
     if site.distance_squared(tile) < 1:
         return False
     if site.distance_squared(tile) > SENTINEL_RANGE_SQ:
         return False
     try:
-        if ct.can_fire_from(site, facing, EntityType.SENTINEL, tile):
-            return True
+        return ct.can_fire_from(site, facing, EntityType.SENTINEL, tile)
     except Exception:
         pass
-    # Geometric: walk facing ray until tile or range exhausted
+    # Engine call unavailable — geometric approximation, unaware of obstructions.
     w, h = ct.get_map_width(), ct.get_map_height()
     p = site.add(facing)
     for _ in range(8):
@@ -820,7 +832,17 @@ def place_sentinel_aggressive(bot, ct: Controller, **kwargs: Any) -> bool:
 
 
 def sentinelLoop(ct: Controller) -> None:
-    """Fire best in-range hostile (no LoS); priority core > harvester > …"""
+    """Fire best in-range hostile (no LoS); priority core > harvester > …
+
+    Uses `_hostileTiles` (full 2x2 footprint for a core, single tile otherwise) —
+    `ct.get_position(eid)` alone only ever returns a core's one anchor tile, so a
+    sentinel built (via `_bestSentinelFacing`, which searches all 4 footprint
+    tiles) to hit one of the other three could `can_fire` False on the anchor
+    forever and never fire on the core at all, despite having a genuinely valid
+    shot on a different footprint tile. The gunner side already avoids this via
+    the same helper (`_hostileOnFacing`, `_bestRotateTarget`); this was the one
+    live-fire loop that still checked only the single position.
+    """
     if ct.get_action_cooldown() != 0:
         return
     me = ct.get_team()
@@ -833,15 +855,15 @@ def sentinelLoop(ct: Controller) -> None:
         etype = ct.get_entity_type(eid)
         if etype not in _SENTINEL_PRIORITY:
             continue
-        epos = ct.get_position(eid)
-        if pos.distance_squared(epos) > SENTINEL_RANGE_SQ:
-            continue
-        if not ct.can_fire(epos):
-            continue
-        key = (_SENTINEL_PRIORITY[etype], manhattan(pos, epos))
-        if best_key is None or key < best_key:
-            best_key = key
-            best = epos
+        for epos in _hostileTiles(ct, eid, etype):
+            if pos.distance_squared(epos) > SENTINEL_RANGE_SQ:
+                continue
+            if not ct.can_fire(epos):
+                continue
+            key = (_SENTINEL_PRIORITY[etype], manhattan(pos, epos))
+            if best_key is None or key < best_key:
+                best_key = key
+                best = epos
     if best is not None and ct.can_fire(best):
         ct.fire(best)
 
