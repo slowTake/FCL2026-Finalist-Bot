@@ -3,9 +3,11 @@
 # ## Assignment (my_index > 0; idx % 5) — 2 guardians / 1 harasser / 2 defaults
 #    1 → guardian · 2 → harasser · 3 → default · 4 → default · 0 → guardian
 #    Capped: guardian slots past MAX_GUARDIANS (main.py) dispatch as non-guardians
-#    — guardianRank 1,2,3,4 = builders 1,5,6,10, so a cap of 4 first bites at
-#    builder 11 and the opening is untouched. A capped guardian is a default from
-#    birth, wave gate included; nothing else is retasked.
+#    — guardianRank 1,2,3,4 = builders 1,5,6,10, so a cap of 2 first bites at
+#    builder 6. Past the cap, slots alternate by excess rank
+#    (guardianRank - MAX_GUARDIANS): odd excess → harasser, even → default —
+#    so overflow guardians split between the two roles instead of all becoming
+#    one. See guardianOverflowIsHarasser.
 #
 # ## all roles (runBuilderRoles, before dispatch)
 #    breakEncirclement — motionless (bot.stuck) ≥ ENCIRCLED_TURNS with no legal
@@ -123,8 +125,10 @@
 # ## harasser (orchestrator: runHarasser below; helpers in offense.py)
 #    idx % 5 == 2 (builders 2,7,12,…)
 #    OR wave attack: WAVE_ATTACK_TURN / WAVE_ATTACK_TI in main.py (>0 = set)
-#    Uncapped guardians never enter this path; capped ones (guardianRank >
-#    MAX_GUARDIANS) are non-guardians and do, once a wave gate fires.
+#    OR a capped guardian slot with odd excess rank (guardianOverflowIsHarasser)
+#    Uncapped guardians never enter this path. Capped ones with odd excess rank
+#    always do, independent of the wave gate; even-excess capped slots fall to
+#    default instead (see runDefault).
 # 1. snipeHarvester — visible uncovered enemy harvester → placeGun
 # 2. offGun — placeGun/placeSentinel: core → gunner → sentinel → harvester → launcher;
 #        ≤1 ally gunner covering each enemy harvester
@@ -180,6 +184,7 @@ from logistics import (
     healAlly,
     maintainHarvester,
     moveToward,
+    moveTowardLeash,
     exploreFrontier,
     recheckOreNodes,
     relayEverComplete,
@@ -273,6 +278,24 @@ def guardianCapped(idx: int) -> bool:
     if MAX_GUARDIANS is None or MAX_GUARDIANS <= 0:
         return False
     return guardianRank(idx) > MAX_GUARDIANS
+
+
+def guardianOverflowIsHarasser(idx: int) -> bool:
+    """Capped guardian slots alternate harasser / default past the cap.
+
+    excess = guardianRank(idx) - MAX_GUARDIANS (1-based: 1st slot over the cap,
+    2nd slot over the cap, …). Odd excess -> harasser, even excess -> default,
+    so consecutive overflow slots split evenly instead of every excess
+    guardian dumping into one role.
+    """
+    from main import MAX_GUARDIANS
+
+    if MAX_GUARDIANS is None or MAX_GUARDIANS <= 0:
+        return False  # guardianCapped is already False in this case too
+    excess = guardianRank(idx) - MAX_GUARDIANS
+    if excess <= 0:
+        return False  # not actually capped; guardianCapped(idx) is False
+    return excess % 2 == 1
 
 
 def isHarasser(idx: int) -> bool:
@@ -502,7 +525,7 @@ def runGuardian(bot, ct: Controller) -> None:
         bot.oreSite = None
 
     if not _guardianLeashOk(bot, ct):
-        moveToward(bot, ct, bot.corePos)
+        moveTowardLeash(bot, ct, bot.corePos)
         return
     # skipEconomy=False: a turret we can't act on must not block patrol.
     # homeOnly=True: defGun / defSentinel answer turrets without leaving home.
@@ -573,12 +596,14 @@ def runBuilderRoles(bot, ct: Controller) -> None:
         return
     idx = bot.hivemind.my_index
     # A capped guardian is simply not a guardian: it falls through to the normal
-    # non-guardian path below and is indistinguishable from a default from birth.
-    # Nothing downstream is retasked — only this unit's own dispatch changes.
+    # non-guardian path below. Which one depends on excess rank — odd slots over
+    # the cap dispatch as harasser, even slots as default (guardianOverflowIsHarasser)
+    # — so overflow guardians split between the two instead of all becoming one.
     if isGuardian(idx) and not guardianCapped(idx):
         runGuardian(bot, ct)
         return
-    if waveAttackActive(ct) or isHarasser(idx):
+    capped_guardian_as_harasser = isGuardian(idx) and guardianOverflowIsHarasser(idx)
+    if waveAttackActive(ct) or isHarasser(idx) or capped_guardian_as_harasser:
         runHarasser(bot, ct)
         return
     runDefault(bot, ct)

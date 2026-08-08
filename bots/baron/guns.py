@@ -20,6 +20,29 @@ GUNNER_RANGE_SQ = getattr(GameConstants, "GUNNER_ATTACK_RADIUS_SQUARED", 13)
 SENTINEL_RANGE_SQ = getattr(GameConstants, "SENTINEL_ATTACK_RADIUS_SQUARED", 32)
 GUNNER_ROTATE_MIN_TI = 50
 
+# Per-builder cooldown between sentinel placements (18 Ti a shot vs a gunner's
+# 4 HP-heal race, a bot re-planting every time its old sentinel dies or its
+# target shifts can otherwise spend on a sentinel almost every turn it's
+# unblocked). Tracked on bot.lastSentinelRound; gates placeSentinel (harasser,
+# offGun) and placeDefSentinel (guardian, defSentinel) alike.
+SENTINEL_PLACE_COOLDOWN_TURNS = 10
+
+# Both placeSentinel (harasser, offensive) and placeDefSentinel (guardian,
+# home defence) — too early, 18 Ti is better spent on economy/gunners than a
+# sentinel, offensive or defensive.
+SENTINEL_MIN_TURN = 50
+
+
+def _sentinelPlaceReady(bot, ct: Controller) -> bool:
+    last = getattr(bot, "lastSentinelRound", None)
+    if last is None:
+        return True
+    return ct.get_current_round() - last >= SENTINEL_PLACE_COOLDOWN_TURNS
+
+
+def _markSentinelPlaced(bot, ct: Controller) -> None:
+    bot.lastSentinelRound = ct.get_current_round()
+
 
 def _coreFootprint(core_pos: Position) -> list[Position]:
     return [
@@ -162,19 +185,33 @@ def top_up_ammo(
 
 
 def _entityOnTile(
-    ct: Controller, pos: Position
+    ct: Controller, pos: Position, *, cache: dict | None = None
 ) -> tuple[EntityType | None, bool]:
-    """Return (etype, is_enemy) for building or builder on tile."""
+    """Return (etype, is_enemy) for building or builder on tile.
+
+    `cache` memoizes per-tile results within one caller's scan (e.g. one
+    `_gunnerPadsNearTarget` call), since dense belt clutter around a harvester
+    means the same tiles get re-walked by many different facing rays.
+    """
+    key = (pos.x, pos.y)
+    if cache is not None and key in cache:
+        return cache[key]
     if not ct.is_in_vision(pos):
-        return None, False
-    me = ct.get_team()
-    bid = ct.get_tile_building_id(pos)
-    if bid is not None:
-        return ct.get_entity_type(bid), ct.get_team(bid) != me
-    bot_id = ct.get_tile_builder_bot_id(pos)
-    if bot_id is not None:
-        return EntityType.BUILDER_BOT, ct.get_team(bot_id) != me
-    return None, False
+        result = (None, False)
+    else:
+        me = ct.get_team()
+        bid = ct.get_tile_building_id(pos)
+        if bid is not None:
+            result = (ct.get_entity_type(bid), ct.get_team(bid) != me)
+        else:
+            bot_id = ct.get_tile_builder_bot_id(pos)
+            if bot_id is not None:
+                result = (EntityType.BUILDER_BOT, ct.get_team(bot_id) != me)
+            else:
+                result = (None, False)
+    if cache is not None:
+        cache[key] = result
+    return result
 
 
 def gunnerHasLos(
@@ -184,6 +221,7 @@ def gunnerHasLos(
     target: Position,
     *,
     shooterIsAlly: bool = True,
+    cache: dict | None = None,
 ) -> bool:
     """True if gunner at site facing can reach target; belts/turrets clear, barriers block.
 
@@ -209,6 +247,9 @@ def gunnerHasLos(
         return True
     # Custom ray: walk facing steps until target or opaque block
     w, h = ct.get_map_width(), ct.get_map_height()
+    env_cache = None
+    if cache is not None:
+        env_cache = cache.setdefault("_env", {})
     p = site.add(facing)
     for _ in range(8):
         if not (0 <= p.x < w and 0 <= p.y < h):
@@ -216,9 +257,16 @@ def gunnerHasLos(
         if p == target:
             return True
         if ct.is_in_vision(p):
-            if ct.get_tile_env(p) == Environment.WALL:
+            key = (p.x, p.y)
+            if env_cache is not None and key in env_cache:
+                env = env_cache[key]
+            else:
+                env = ct.get_tile_env(p)
+                if env_cache is not None:
+                    env_cache[key] = env
+            if env == Environment.WALL:
                 return False
-            etype, is_enemy = _entityOnTile(ct, p)
+            etype, is_enemy = _entityOnTile(ct, p, cache=cache)
             if etype is not None:
                 # Transparent only if the shooter will destroy it on the way.
                 chewable = is_enemy if shooterIsAlly else not is_enemy
@@ -294,7 +342,7 @@ def _allyGunnerBlockedPads(ct: Controller) -> set[tuple[int, int]]:
 
 
 def _bestGunnerFacing(
-    ct: Controller, site: Position, target: Position
+    ct: Controller, site: Position, target: Position, *, cache: dict | None = None
 ) -> Direction | None:
     """Facing that can actually hit target on an 8-dir ray — no in-range fallback."""
     preferred = facing8way(site, target)
@@ -302,9 +350,17 @@ def _bestGunnerFacing(
         preferred = Direction.NORTH
     ordered = (preferred,) + tuple(d for d in _FACE_DIRS if d != preferred)
     for facing in ordered:
-        if gunnerHasLos(ct, site, facing, target):
+        if gunnerHasLos(ct, site, facing, target, cache=cache):
             return facing
     return None
+
+
+# Stop scanning once this many viable pads are found — placeGun only ever
+# needs the nearest one, and exhausting the full 9x9 box (up to 81 candidates
+# x 8 facings x 8-step ray walk each) is wasted work once clutter around the
+# target (e.g. a harvester's belt line) forces most facings into the slow
+# manual ray-walk fallback in gunnerHasLos.
+_MAX_GUN_PADS = 10
 
 
 def _gunnerPadsNearTarget(
@@ -314,6 +370,10 @@ def _gunnerPadsNearTarget(
     pads: list[tuple[Position, Direction]] = []
     w, h = ct.get_map_width(), ct.get_map_height()
     blocked = _allyGunnerBlockedPads(ct)
+    # Shared per-tile memo (env / entity lookups) across every facing/ray this
+    # scan walks — dense belt clutter near the target revisits the same tiles
+    # from many different sites/facings within a single call.
+    cache: dict = {}
     # Chebyshev 4 covers r²<=13
     for dy in range(-4, 5):
         for dx in range(-4, 5):
@@ -332,10 +392,12 @@ def _gunnerPadsNearTarget(
                 continue
             if (site.x, site.y) in blocked:
                 continue
-            facing = _bestGunnerFacing(ct, site, target)
+            facing = _bestGunnerFacing(ct, site, target, cache=cache)
             if facing is None:
                 continue
             pads.append((site, facing))
+            if len(pads) >= _MAX_GUN_PADS:
+                return pads
     return pads
 
 
@@ -546,6 +608,29 @@ def _bestSentinelFacing(
     return None
 
 
+def _gunfireSafePads(
+    ct: Controller, pads: list[tuple[Position, Direction]]
+) -> list[tuple[Position, Direction]]:
+    """Drop any pad inside a visible enemy gunner's line of fire.
+
+    Sentinels are 18 Ti and slow to replace (SENTINEL_PLACE_COOLDOWN_TURNS) —
+    never spend one on a tile a gunner can already answer. Hard filter, not a
+    deprioritization: a covered tile is dropped outright, even if every other
+    candidate loses on every other measure.
+    """
+    from offense import _enemyGunners, _tileUnderGunnerFire
+
+    gunners = _enemyGunners(ct)
+    if not gunners:
+        return pads
+    cache: dict = {}
+    return [
+        (site, facing)
+        for site, facing in pads
+        if not _tileUnderGunnerFire(ct, site, gunners, cache=cache)
+    ]
+
+
 def _sentinelPadsNearTarget(
     ct: Controller, target: Position
 ) -> list[tuple[Position, Direction]]:
@@ -579,17 +664,24 @@ def _sentinelPadsNearTarget(
 
 def placeSentinel(bot, ct: Controller, target: Position) -> bool:
     """Range-only sentinel pad toward target (not used by defGun)."""
+    if ct.get_current_round() < SENTINEL_MIN_TURN:
+        return False
     if not _canAffordGunPlace(ct):
         return False
+    if not _sentinelPlaceReady(bot, ct):
+        return False
     pads = _sentinelPadsNearTarget(ct, target)
+    if not pads:
+        return False
+    pads = _gunfireSafePads(ct, pads)
     if not pads:
         return False
     pos = ct.get_position()
     footprint = _coreFootprint(target)
     pads.sort(
         key=lambda sf: (
-            min(sf[0].distance_squared(t) for t in footprint),
-            manhattan(pos, sf[0]),
+            -min(sf[0].distance_squared(t) for t in footprint),  # max range first
+            manhattan(pos, sf[0]),  # then nearest to self
         )
     )
     if ct.get_action_cooldown() == 0:
@@ -598,6 +690,7 @@ def placeSentinel(bot, ct: Controller, target: Position) -> bool:
                 continue
             if ct.can_build_sentinel(site, facing):
                 ct.build_sentinel(site, facing)
+                _markSentinelPlaced(bot, ct)
                 return True
     best_site = pads[0][0]
     if abs(pos.x - best_site.x) + abs(pos.y - best_site.y) <= 1:
@@ -680,9 +773,16 @@ def placeDefSentinel(
     bot, ct: Controller, target: Position, core_pos: Position, max_cheb: int
 ) -> bool:
     """Plant a sentinel inside the leash that can hit target."""
+    if ct.get_current_round() < SENTINEL_MIN_TURN:
+        return False
     if not _canAffordGunPlace(ct):
         return False
+    if not _sentinelPlaceReady(bot, ct):
+        return False
     pads = _defSentinelPads(ct, target, core_pos, max_cheb)
+    if not pads:
+        return False
+    pads = _gunfireSafePads(ct, pads)
     if not pads:
         return False
 
@@ -701,6 +801,7 @@ def placeDefSentinel(
                 continue
             if ct.can_build_sentinel(site, facing):
                 ct.build_sentinel(site, facing)
+                _markSentinelPlaced(bot, ct)
                 return True
 
     best_site = pads[0][0]

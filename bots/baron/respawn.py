@@ -71,6 +71,25 @@ def _builderTarget(ct: Controller, schedule: SpawnSchedule) -> int:
     return max(schedule.max_builders_early, min(target, schedule.max_builders))
 
 
+def _safeSites(
+    ct: Controller, sites: list[Position]
+) -> tuple[list[Position], list[Position]]:
+    """Split spawn candidates into (not under enemy gunner fire, everything).
+
+    A brand-new builder has no HP margin to shrug off a shot it spawned
+    straight into, so a covered apron tile must never be preferred over an
+    uncovered one just because it's closer to `goal`. Only fall back to the
+    unsafe list — last resort — when nothing on the apron is clear.
+    """
+    from offense import _enemyGunners, _tileUnderGunnerFire
+
+    gunners = _enemyGunners(ct)
+    if not gunners:
+        return sites, sites
+    safe = [s for s in sites if not _tileUnderGunnerFire(ct, s, gunners)]
+    return safe, sites
+
+
 def _aliveBuilders(hivemind, ct: Controller) -> int:
     """Living ally builders, from the core's ledger.
 
@@ -128,12 +147,27 @@ class Respawn:
         core_pos = ct.get_position()
         sites = _apronSites(ct, core_pos)
         sites.sort(key=lambda p: abs(p.x - goal.x) + abs(p.y - goal.y))
-        for site in sites:
+        safe_sites, all_sites = _safeSites(ct, sites)
+
+        cardinal_sites = [core_pos.add(d) for d in CARDINALS]
+        safe_cardinals, all_cardinals = _safeSites(ct, cardinal_sites)
+
+        # Safe pass first (apron, then cardinal fallback); only once every safe
+        # option is exhausted do we retry the same order accepting gunfire —
+        # spawning into a covered tile is a last resort, not a preference.
+        for site in safe_sites:
             if hivemind.spawn_builder(ct, site):
                 self.num_spawned += 1
                 return
-        for d in CARDINALS:
-            site = core_pos.add(d)
+        for site in safe_cardinals:
+            if hivemind.spawn_builder(ct, site):
+                self.num_spawned += 1
+                return
+        for site in all_sites:
+            if hivemind.spawn_builder(ct, site):
+                self.num_spawned += 1
+                return
+        for site in all_cardinals:
             if hivemind.spawn_builder(ct, site):
                 self.num_spawned += 1
                 return

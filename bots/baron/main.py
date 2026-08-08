@@ -37,7 +37,7 @@ BUILDER_TARGET_BY_TI: list[tuple[int, int]] = [
 # net for raising the crew ceiling later. Rank is derived from my_index alone
 # (builder.guardianRank), so role stays a pure function of the index: deterministic,
 # permanent per unit, no coordination, no oscillation.
-MAX_GUARDIANS: int | None = 4
+MAX_GUARDIANS: int | None = 2
 
 # --- Wave attack (≤0 / None = unset; positive = active gate) ---
 WAVE_ATTACK_TURN: int | None = -1  # e.g. 300 → all builders harass from that turn
@@ -127,7 +127,7 @@ FRONTIER_REFRESH_TURNS = 20
 ENCIRCLED_TURNS = 8
 
 # --- Gun placement (≤0 disables) ---
-GUN_PLACE_MIN_TI = 100  # need bank ≥ this to place gunner/sentinel
+GUN_PLACE_MIN_TI = 60 # need bank ≥ this to place gunner/sentinel
 
 # --- Ammo policy (guns.top_up_ammo reads these) ---
 AMMO_BASE = 12

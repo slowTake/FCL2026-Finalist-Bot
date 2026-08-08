@@ -225,7 +225,15 @@ def pathKnownBlocked(bot, target: Position) -> bool:
     return getattr(bot, "lastPathFailedTarget", None) == (target.x, target.y)
 
 
-def moveToward(bot, ct: Controller, target: Position) -> bool:
+def moveToward(
+    bot, ct: Controller, target: Position, *, avoid: set[tuple[int, int]] | None = None
+) -> bool:
+    """`avoid`: tiles to route around even though they're otherwise walkable —
+    e.g. a harasser's recent-dodge memory, which stays valid after the threat
+    that made a tile dangerous drops out of vision (see offense._dodgeMemory).
+    Plain walkability (`walkPassable`) has no notion of that, so callers that
+    care about it must pass it in explicitly; default is unchanged behaviour.
+    """
     if ct.get_move_cooldown() != 0:
         return False
     pos = ct.get_position()
@@ -237,6 +245,8 @@ def moveToward(bot, ct: Controller, target: Position) -> bool:
         if p == pos:
             return True
         if not inBounds(ct, p):
+            return False
+        if avoid and (p.x, p.y) in avoid:
             return False
         if ct.is_in_vision(p) and ct.get_tile_builder_bot_id(p) is not None:
             return False
@@ -250,6 +260,7 @@ def moveToward(bot, ct: Controller, target: Position) -> bool:
         and cached_t == target
         and len(cached) > 1
         and cached[0] == pos
+        and not (avoid and any((p.x, p.y) in avoid for p in cached))
     ):
         path = cached
         _notePathVerdict(bot, target, False)  # cache hit — a route was found
@@ -1134,6 +1145,67 @@ def _nearCore(bot, ct: Controller) -> bool:
     if bot.corePos is None:
         return False
     return _chebyshevToCore(ct.get_position(), bot.corePos) <= DEFEND_HOME_CHEBYSHEV
+
+
+def moveTowardLeash(
+    bot, ct: Controller, core_pos: Position, *, radius: int = DEFEND_HOME_CHEBYSHEV
+) -> bool:
+    """Path back inside `radius` Chebyshev of the core — not toward `core_pos` itself.
+
+    `moveToward(bot, ct, core_pos)` targets the literal core tile, which is a
+    building and therefore never passes `is_passable`. A*'s neighbour expansion
+    filters on that before a node is ever added to the open set (`pathing.py`'s
+    `astarFromSeeds`), so the core can never be reached as a goal — the search
+    always returns `None` and every leash recall silently degrades to
+    `moveToward`'s blind single-cardinal-step fallback, which has no obstacle
+    avoidance at all. On an open map that nudge usually happens to work; on a
+    tight map (e.g. Heart) a wall between the guardian and home blocks that one
+    step outright, and the guardian is stuck outside the leash for good — it
+    reads as "not returning" but is actually failing to path at all.
+
+    Targeting the *region* (any walkable tile within `radius`) instead of a
+    single unreachable point lets A* actually route around the wall.
+    """
+    if ct.get_move_cooldown() != 0:
+        return False
+    pos = ct.get_position()
+    if _chebyshevToCore(pos, core_pos) <= radius:
+        return False
+    local_map = bot.hivemind.local_map
+
+    def ok(p: Position) -> bool:
+        if p == pos:
+            return True
+        if not inBounds(ct, p):
+            return False
+        if ct.is_in_vision(p) and ct.get_tile_builder_bot_id(p) is not None:
+            return False
+        return walkPassable(ct, p, local_map=local_map)
+
+    path = astarFromSeeds(
+        [pos],
+        is_passable=ok,
+        is_goal=lambda p: _chebyshevToCore(p, core_pos) <= radius,
+        heuristic=lambda p: max(0, _chebyshevToCore(p, core_pos) - radius),
+        max_iters=PATH_MAX_ITERS,
+    )
+
+    if not path or len(path) < 2:
+        # Last resort only — no obstacle avoidance, same as moveToward's own
+        # fallback. Kept so open ground still gets a nudge if A* found nothing.
+        step = nearestCardinal(pos.direction_to(core_pos))
+        if step != Direction.CENTRE and ct.can_move(step):
+            ct.move(step)
+            return True
+        return False
+
+    nxt = path[1]
+    step = nearestCardinal(pos.direction_to(nxt))
+    if step != Direction.CENTRE and ct.can_move(step):
+        ct.move(step)
+        bot.cachedPath = None  # this path is region-goal-shaped, not moveToward's
+        return True
+    return False
 
 
 def _safeCoreStandTile(bot, ct: Controller, core: Position) -> Position | None:

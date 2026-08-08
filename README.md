@@ -75,6 +75,20 @@ Total: 12/15
 Win rate: 80.0%
 ```
 
+### `zip_bot.py`
+
+Packages a bot for league submission. Starting from `main.py`, it follows local imports and zips only the modules your bot actually loads — docs, replays, `__pycache__`, and unreachable modules are left out. Files land at the zip root (`main.py` must be the entry point), and re-running replaces any existing zip for that bot.
+
+```bash
+python scripts/zip_bot.py baron
+python scripts/zip_bot.py baron -n              # dry run: list files, don't write
+python scripts/zip_bot.py baron -o dist/         # write elsewhere (default: repo root)
+python scripts/zip_bot.py baron --all            # every .py in the bot dir, not just imported
+python scripts/zip_bot.py baron --include data.json   # add an extra file (repeatable)
+```
+
+Prints the file list and total size before writing, and (unless `--all`) which `.py` files in the bot dir were skipped as unimported — useful for catching a module you meant to wire in but forgot to import.
+
 ## CI bot test
 
 When your bot is ready, commit it under `bots/<your-bot>/main.py` and open a PR.
