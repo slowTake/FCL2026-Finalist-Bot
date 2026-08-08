@@ -20,6 +20,24 @@ GUNNER_RANGE_SQ = getattr(GameConstants, "GUNNER_ATTACK_RADIUS_SQUARED", 13)
 SENTINEL_RANGE_SQ = getattr(GameConstants, "SENTINEL_ATTACK_RADIUS_SQUARED", 32)
 GUNNER_ROTATE_MIN_TI = 50
 
+# Per-builder cooldown between sentinel placements (18 Ti a shot vs a gunner's
+# 4 HP-heal race, a bot re-planting every time its old sentinel dies or its
+# target shifts can otherwise spend on a sentinel almost every turn it's
+# unblocked). Tracked on bot.lastSentinelRound; gates placeSentinel (harasser,
+# offGun) and placeDefSentinel (guardian, defSentinel) alike.
+SENTINEL_PLACE_COOLDOWN_TURNS = 10
+
+
+def _sentinelPlaceReady(bot, ct: Controller) -> bool:
+    last = getattr(bot, "lastSentinelRound", None)
+    if last is None:
+        return True
+    return ct.get_current_round() - last >= SENTINEL_PLACE_COOLDOWN_TURNS
+
+
+def _markSentinelPlaced(bot, ct: Controller) -> None:
+    bot.lastSentinelRound = ct.get_current_round()
+
 
 def _coreFootprint(core_pos: Position) -> list[Position]:
     return [
@@ -620,6 +638,8 @@ def placeSentinel(bot, ct: Controller, target: Position) -> bool:
     """Range-only sentinel pad toward target (not used by defGun)."""
     if not _canAffordGunPlace(ct):
         return False
+    if not _sentinelPlaceReady(bot, ct):
+        return False
     pads = _sentinelPadsNearTarget(ct, target)
     if not pads:
         return False
@@ -637,6 +657,7 @@ def placeSentinel(bot, ct: Controller, target: Position) -> bool:
                 continue
             if ct.can_build_sentinel(site, facing):
                 ct.build_sentinel(site, facing)
+                _markSentinelPlaced(bot, ct)
                 return True
     best_site = pads[0][0]
     if abs(pos.x - best_site.x) + abs(pos.y - best_site.y) <= 1:
@@ -721,6 +742,8 @@ def placeDefSentinel(
     """Plant a sentinel inside the leash that can hit target."""
     if not _canAffordGunPlace(ct):
         return False
+    if not _sentinelPlaceReady(bot, ct):
+        return False
     pads = _defSentinelPads(ct, target, core_pos, max_cheb)
     if not pads:
         return False
@@ -740,6 +763,7 @@ def placeDefSentinel(
                 continue
             if ct.can_build_sentinel(site, facing):
                 ct.build_sentinel(site, facing)
+                _markSentinelPlaced(bot, ct)
                 return True
 
     best_site = pads[0][0]
