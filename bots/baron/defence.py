@@ -49,6 +49,11 @@ def _pickDefGunTarget(ct: Controller, core_pos: Position | None) -> Position | N
     out sends the guardian to a pad the leash step then marches it back from —
     it ping-pongs and never places. Out-of-leash turrets are `defSentinel`'s
     job. Defaults pass None: they have no leash and can go finish the job.
+
+    Skips anything an ally gunner already covers (`allyGunCovering`) — without
+    this, `defGun` re-picks the same already-answered threat every turn a target
+    stays in vision and never yields the turn to `defendHome`/`healAlly`, so a
+    gunner that took damage placing itself never gets repaired.
     """
     me = ct.get_team()
     pos = ct.get_position()
@@ -66,6 +71,8 @@ def _pickDefGunTarget(ct: Controller, core_pos: Position | None) -> Position | N
             and _chebyshevToCore(epos, core_pos) > DEFEND_HOME_CHEBYSHEV
         ):
             continue
+        if allyGunCovering(ct, epos):
+            continue  # already answered — don't stack gunners on one threat
         dist = abs(pos.x - epos.x) + abs(pos.y - epos.y)
         if etype in (EntityType.GUNNER, EntityType.SENTINEL, EntityType.LAUNCHER):
             if dist < best_turret_d:
