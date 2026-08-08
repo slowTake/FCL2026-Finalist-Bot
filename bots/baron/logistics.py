@@ -225,7 +225,15 @@ def pathKnownBlocked(bot, target: Position) -> bool:
     return getattr(bot, "lastPathFailedTarget", None) == (target.x, target.y)
 
 
-def moveToward(bot, ct: Controller, target: Position) -> bool:
+def moveToward(
+    bot, ct: Controller, target: Position, *, avoid: set[tuple[int, int]] | None = None
+) -> bool:
+    """`avoid`: tiles to route around even though they're otherwise walkable —
+    e.g. a harasser's recent-dodge memory, which stays valid after the threat
+    that made a tile dangerous drops out of vision (see offense._dodgeMemory).
+    Plain walkability (`walkPassable`) has no notion of that, so callers that
+    care about it must pass it in explicitly; default is unchanged behaviour.
+    """
     if ct.get_move_cooldown() != 0:
         return False
     pos = ct.get_position()
@@ -237,6 +245,8 @@ def moveToward(bot, ct: Controller, target: Position) -> bool:
         if p == pos:
             return True
         if not inBounds(ct, p):
+            return False
+        if avoid and (p.x, p.y) in avoid:
             return False
         if ct.is_in_vision(p) and ct.get_tile_builder_bot_id(p) is not None:
             return False
@@ -250,6 +260,7 @@ def moveToward(bot, ct: Controller, target: Position) -> bool:
         and cached_t == target
         and len(cached) > 1
         and cached[0] == pos
+        and not (avoid and any((p.x, p.y) in avoid for p in cached))
     ):
         path = cached
         _notePathVerdict(bot, target, False)  # cache hit — a route was found

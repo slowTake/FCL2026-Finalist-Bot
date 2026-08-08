@@ -20,6 +20,12 @@ _ORBIT_OFFSET = 3
 _BELT_TYPES = frozenset({EntityType.CONVEYOR, EntityType.SPLITTER})
 _FIRE_TI_COST = 2
 
+# How long a tile we just fled stays blacklisted from future dodges, in turns.
+# A stationary gunner just rotates to track us, so the tile we left reads as
+# "safe again" the very next check — without this memory avoidFire ping-pongs
+# between the same two tiles every turn.
+_AVOID_FIRE_MEMORY_TURNS = 3
+
 # Sentinel: caller did not pass a goal — fall back to _avoidGoal(bot).
 # Distinct from an explicit None, which means "no preferred direction".
 _GOAL_DEFAULT = object()
@@ -137,7 +143,7 @@ def _orbitEnemyCore(bot, ct: Controller, core: Position) -> bool:
         bot.harassOrbitIdx = (idx + 1) % len(waypoints)
         target = waypoints[bot.harassOrbitIdx]
 
-    return moveToward(bot, ct, target)
+    return _harassMove(bot, ct, target)
 
 
 def _enemyGunners(ct: Controller) -> list[tuple[Position, Direction]]:
@@ -178,12 +184,55 @@ def _avoidGoal(bot) -> Position | None:
     return getattr(bot, "enemyCorePos", None)
 
 
+def _dodgeMemory(bot) -> dict[tuple[int, int], int]:
+    mem = getattr(bot, "dodgeBlacklist", None)
+    if mem is None:
+        bot.dodgeBlacklist = {}
+        return bot.dodgeBlacklist
+    return mem
+
+
+def _pruneDodgeMemory(bot, ct: Controller) -> dict[tuple[int, int], int]:
+    """Drop entries older than _AVOID_FIRE_MEMORY_TURNS; return the live dict."""
+    mem = _dodgeMemory(bot)
+    if not mem:
+        return mem
+    round_n = ct.get_current_round()
+    stale = [
+        k for k, marked in mem.items() if round_n - marked >= _AVOID_FIRE_MEMORY_TURNS
+    ]
+    for k in stale:
+        del mem[k]
+    return mem
+
+
+def _harassMove(bot, ct: Controller, target: Position) -> bool:
+    """moveToward that also routes around this harasser's recent-dodge memory.
+
+    Every other harasser step (offGun, denyOre, denyBelt, seekHarvester,
+    seekCore, orbit) wants a plain goal-directed step and has no notion of
+    gunfire at all — so once a gunner drops out of vision (the harasser
+    stepped out of its range/LoS), these steps happily path straight back
+    onto the tile avoidFire just fled, because nothing there re-checks the
+    threat. Reusing avoidFire's own dodge blacklist here means the memory
+    survives losing sight of the gunner, not just its current facing.
+    """
+    avoid = _pruneDodgeMemory(bot, ct)
+    return moveToward(bot, ct, target, avoid=set(avoid) if avoid else None)
+
+
 def avoidFire(bot, ct: Controller, *, goal=_GOAL_DEFAULT) -> bool:
     """If under enemy gunner LoS, step to a safe tile that still advances toward goal.
 
     goal defaults to the harass target / enemy core. Pass an explicit Position to
     retreat elsewhere (relaying builders pass the ally core); pass None for the
     nearest safe tile with no preferred direction.
+
+    A tile we just fled is blacklisted for `_AVOID_FIRE_MEMORY_TURNS`: a
+    stationary gunner just rotates to track us, so on the next check the tile
+    we left reads as "safe" again purely because the gunner's facing moved —
+    without the blacklist that reads as a valid dodge target and we ping-pong
+    back into it, taking a hit at the exact moment we arrive.
     """
     pos = ct.get_position()
     gunners = _enemyGunners(ct)
@@ -196,6 +245,7 @@ def avoidFire(bot, ct: Controller, *, goal=_GOAL_DEFAULT) -> bool:
         goal = _avoidGoal(bot)
     goal_d = manhattan(pos, goal) if goal is not None else None
     local_map = bot.hivemind.local_map
+    dodgeMem = _pruneDodgeMemory(bot, ct)
 
     safe: list[tuple[Position, int, int]] = []  # cand, dist_to_goal, step
     for dy in range(-_AVOID_RADIUS, _AVOID_RADIUS + 1):
@@ -204,6 +254,8 @@ def avoidFire(bot, ct: Controller, *, goal=_GOAL_DEFAULT) -> bool:
                 continue
             cand = Position(pos.x + dx, pos.y + dy)
             if not inBounds(ct, cand):
+                continue
+            if (cand.x, cand.y) in dodgeMem:
                 continue
             if not walkPassable(ct, cand, local_map=local_map):
                 continue
@@ -228,6 +280,9 @@ def avoidFire(bot, ct: Controller, *, goal=_GOAL_DEFAULT) -> bool:
         # No goal — nearest safe step (legacy)
         pool = sorted(safe, key=lambda s: s[2])
 
+    # Blacklist the tile we're fleeing so a tracking gunner's rotation can't
+    # make it look safe again next turn and pull us straight back into it.
+    dodgeMem[(pos.x, pos.y)] = ct.get_current_round()
     return moveToward(bot, ct, pool[0][0])
 
 
@@ -415,7 +470,7 @@ def _tryForwardBarrier(bot, ct: Controller, *, adjacent_only: bool) -> bool:
     target = _nth(pads, harasserRank(bot))
     if target is None:
         return False
-    return moveToward(bot, ct, target)
+    return _harassMove(bot, ct, target)
 
 
 def _enemyBeltsByDist(ct: Controller) -> list[Position]:
@@ -532,7 +587,7 @@ def _cutAndBarrier(bot, ct: Controller) -> bool:
                 bot.denyBeltTile = None
                 return True
             return False
-        return moveToward(bot, ct, tile)
+        return _harassMove(bot, ct, tile)
 
     if not _enemyBeltAt(ct, tile):
         bot.denyBeltTile = None
@@ -549,7 +604,7 @@ def _cutAndBarrier(bot, ct: Controller) -> bool:
             ct.fire(tile)
             return True
         # Engine refused the adjacent shot — fall back to mounting the belt
-        return moveToward(bot, ct, tile)
+        return _harassMove(bot, ct, tile)
 
     # Mounted fallback: a builder may always fire the tile it stands on
     if pos == tile:
@@ -560,7 +615,7 @@ def _cutAndBarrier(bot, ct: Controller) -> bool:
             return True
         return False
 
-    return moveToward(bot, ct, tile)
+    return _harassMove(bot, ct, tile)
 
 
 def _denyOreCandidates(bot, ct: Controller) -> list[Position]:
@@ -647,7 +702,7 @@ def denyOre(bot, ct: Controller) -> bool:
 
     target = candidates[0]
     bot.harassTarget = (target.x, target.y)
-    return moveToward(bot, ct, target)
+    return _harassMove(bot, ct, target)
 
 
 def denyBelt(bot, ct: Controller) -> bool:
@@ -750,12 +805,12 @@ def seekHarvester(bot, ct: Controller) -> bool:
                 _markOreScouted(bot, tile)
                 bot.harassTarget = None
                 sticky = None
-        if sticky is not None and moveToward(bot, ct, tile):
+        if sticky is not None and _harassMove(bot, ct, tile):
             return True
 
     for harv in _localEnemyHarvesters(bot, ct):
         bot.harassTarget = (harv.x, harv.y)
-        if moveToward(bot, ct, harv):
+        if _harassMove(bot, ct, harv):
             return True
 
     for ore in _scoutOreTargets(bot, ct):
@@ -766,7 +821,7 @@ def seekHarvester(bot, ct: Controller) -> bool:
                 _markOreScouted(bot, ore)
                 continue
         bot.harassTarget = (ore.x, ore.y)
-        if moveToward(bot, ct, ore):
+        if _harassMove(bot, ct, ore):
             return True
     return False
 
@@ -776,7 +831,7 @@ def seekCore(bot, ct: Controller) -> bool:
     core = bot.enemyCorePos
     if core is None:
         return False
-    if moveToward(bot, ct, core):
+    if _harassMove(bot, ct, core):
         return True
     return _orbitEnemyCore(bot, ct, core)
 
