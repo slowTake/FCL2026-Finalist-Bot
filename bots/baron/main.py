@@ -157,6 +157,18 @@ MAX_PATH_SEARCHES_PER_TURN = 3
 # --- Gun placement (≤0 disables) ---
 GUN_PLACE_MIN_TI = 60 # need bank ≥ this to place gunner/sentinel
 
+# --- React-freeze cap (≤0 / None disables) ---
+# _reactEnemyTurret's skipEconomy branch consumes a default builder's whole turn,
+# every turn, for as long as an enemy turret stays in vision and nothing about it
+# is actionable (most commonly can't afford GUN_PLACE_MIN_TI yet) — with no cap,
+# observed freezing a builder in place for 100+ turns next to a turret it was
+# never going to answer anyway. Past this many *consecutive* frozen turns, stop
+# freezing and let the chain fall through to economy instead: buildHarvester /
+# checkOre / relayToCore already carry their own per-tile threat checks
+# (tileThreatenedByGunner), so this only removes the blanket "turret merely
+# visible" freeze, not tile-level danger avoidance.
+REACT_FREEZE_CAP_TURNS = 15
+
 # --- Core push gate (≤0 / None disables) ---
 # Harvesters are the easier, cheaper kill — denying one starves a whole belt line for
 # 3-20 Ti. Shooting the enemy core itself only pays off once the bank shows a real
@@ -227,6 +239,9 @@ class Player:
         self.motionless = 0
         self.posHistory: deque[tuple[int, int]] = deque(maxlen=OSCILLATION_WINDOW)
         self.pathSearchesThisTurn = 0
+        # Consecutive turns _reactEnemyTurret has frozen this builder via its
+        # skipEconomy branch — see REACT_FREEZE_CAP_TURNS.
+        self.reactFrozen = 0
         self.recheckingOre = False
         self.skippedOres: set[tuple[int, int]] = set()
         self.skippedTargets: set[tuple[int, int]] = set()

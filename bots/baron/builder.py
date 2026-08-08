@@ -378,31 +378,52 @@ def _reactEnemyTurret(
     (outside) instead; defaults have no leash and are unaffected.
     """
     if not enemyTurretInVision(ct):
+        bot.reactFrozen = 0
         return False
     # Committed to a belt: finish it. relayToCore drops the relay itself if the
     # next tile is under a gunner; dodging is handled by _dodgeWhileRelaying.
     if bot.inRelay:
         return False
     if not homeOnly and contestTurret(bot, ct):
+        bot.reactFrozen = 0
         return True
     if defGun(bot, ct, homeOnly=homeOnly):
+        bot.reactFrozen = 0
         return True
     if defendHome(bot, ct):
+        bot.reactFrozen = 0
         return True
     if healAlly(bot, ct):
+        bot.reactFrozen = 0
         return True
     if skipEconomy:
         # Nothing actionable, but the turret stays in vision — this consumes the
-        # turn every turn it's visible, with no cap; a turret parked nearby but
-        # unaffordable to answer (GUN_PLACE_MIN_TI) can freeze a default builder
-        # here for 100+ turns. bot.stuck keeps climbing the whole time regardless
-        # of why the position didn't change (Player._run_builder tracks position
-        # only, not cause), so by the time the turret finally leaves and
+        # turn every turn it's visible. bot.stuck keeps climbing the whole time
+        # regardless of why the position didn't change (Player._run_builder tracks
+        # position only, not cause), so by the time the turret finally leaves and
         # breakOreDeadlock gets a turn again, it blames and blacklists whatever
         # ore the builder happens to be standing on — a false deadlock caused by
         # this freeze, not by the ore being unreachable. Reset here so the count
         # only reflects turns actually spent failing at economy once react lets go.
         bot.stuck = 0
+
+        from main import REACT_FREEZE_CAP_TURNS
+
+        if REACT_FREEZE_CAP_TURNS and REACT_FREEZE_CAP_TURNS > 0:
+            bot.reactFrozen = getattr(bot, "reactFrozen", 0) + 1
+            if bot.reactFrozen > REACT_FREEZE_CAP_TURNS:
+                # Capped: a turret parked nearby but unaffordable to answer
+                # (GUN_PLACE_MIN_TI) used to freeze a default builder here for
+                # 100+ turns straight. Past the cap, stop freezing and let the
+                # chain fall through to economy — buildHarvester/checkOre/
+                # relayToCore all still carry their own per-tile threat check
+                # (tileThreatenedByGunner), so this only lifts the blanket
+                # "turret merely visible" freeze, not tile-level danger
+                # avoidance. Don't reset reactFrozen here: if economy also
+                # can't make progress and the turret is still visible next
+                # turn, this must not freeze for another full cap before
+                # yielding again.
+                return False
         return True
     return False
 
