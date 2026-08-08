@@ -326,7 +326,7 @@ def _corePushReady(ct: Controller) -> bool:
     """
     from main import CORE_PUSH_MIN_TI
 
-    if CORE_PUSH_MIN_TI is None or CORE_PUSH_MIN_TI <= 0:
+    if CORE_PUSH_MIN_TI is None or CORE_PUSH_MIN_TI <= 250:
         return True
     return ct.get_global_resources() >= CORE_PUSH_MIN_TI
 

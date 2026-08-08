@@ -5,6 +5,7 @@ from __future__ import annotations
 from fcode import Controller, Direction, EntityType, Environment, Position
 
 from guns import (
+    GUNNER_RANGE_SQ,
     allyGunCovering,
     allySentinelCovering,
     placeDefSentinel,
@@ -93,6 +94,76 @@ def defGun(bot, ct: Controller, *, homeOnly: bool = False) -> bool:
     if target is None:
         return False
     return placeGun(bot, ct, target)
+
+
+def _gunnerFiringAtCore(
+    ct: Controller, core: Position
+) -> tuple[Position, Direction, Position] | None:
+    """Nearest enemy gunner currently landing a shot on a core footprint tile.
+
+    Engine ground truth (`can_fire_from`) only — this wants a shot that is
+    actually connecting right now, not merely a gunner in range. Returns
+    (gunner_pos, facing, core_tile) for the closest such gunner, else None.
+    """
+    me = ct.get_team()
+    pos = ct.get_position()
+    best: tuple[Position, Direction, Position] | None = None
+    best_d = 10**9
+    for eid in ct.get_nearby_units():
+        if ct.get_team(eid) == me:
+            continue
+        if ct.get_entity_type(eid) != EntityType.GUNNER:
+            continue
+        gpos = ct.get_position(eid)
+        facing = ct.get_direction(eid)
+        for tile in _coreFootprint(core):
+            if gpos.distance_squared(tile) > GUNNER_RANGE_SQ:
+                continue
+            if not ct.can_fire_from(gpos, facing, EntityType.GUNNER, tile):
+                continue
+            d = abs(pos.x - gpos.x) + abs(pos.y - gpos.y)
+            if d < best_d:
+                best_d = d
+                best = (gpos, facing, tile)
+    return best
+
+
+def blockGunLine(bot, ct: Controller) -> bool:
+    """Barrier-cheap defence: drop a belt in a gunner's current line of fire.
+
+    A conveyor is ~3 Ti and, per `gunnerHasLos`'s chew-through model, sits
+    squarely in the shot: the engine's own `can_fire_from` already refuses to
+    fire through an occupied tile, so the gunner must destroy the belt before
+    it can land another hit on the core. That is far cheaper than fielding a
+    gunner to kill the threat outright (30+ Ti and several turns), so this
+    runs ahead of the turret-response chain (`_reactEnemyTurret` / `defGun` /
+    `defSentinel`) — those spend Ti to remove the threat, this only spends Ti
+    to blunt it, and a cheaper answer should always be tried first.
+
+    Gunners only. The LoS/chew-through machinery (`gunnerHasLos`,
+    `tileThreatenedByGunner`) only exists for gunners in this codebase —
+    sentinels/launchers aren't modeled the same way and fall through to the
+    normal turret responses instead.
+    """
+    core = bot.corePos
+    if core is None or bot.inRelay or getattr(bot, "recheckingOre", False):
+        return False
+    hit = _gunnerFiringAtCore(ct, core)
+    if hit is None:
+        return False
+    gpos, facing, core_tile = hit
+    del gpos
+    block = core_tile.add(facing.opposite())
+    if not inBounds(ct, block):
+        return False
+    if _isBeltOrCore(bot, ct, block, core):
+        return False  # already blocked
+    if not _layableTile(ct, block):
+        return False
+
+    from logistics import facingIntoCore, placeRelayBelt
+
+    return placeRelayBelt(ct, block, facingIntoCore(block, core)) == "placed"
 
 
 _TURRET_TYPES = (EntityType.GUNNER, EntityType.SENTINEL, EntityType.LAUNCHER)

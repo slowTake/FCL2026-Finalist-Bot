@@ -20,6 +20,11 @@
 #    idx % 5 in (1, 0) (builders 1,5,6,10,11,…)
 #    Ignores wave. Home defence is entirely the guardians' job — no core-HP recall.
 # 1. leash — outside Chebyshev 4 of core → moveToward core
+# 1b. blockGunLine — enemy gunner currently landing a shot on the core → belt
+#        (~3 Ti) directly in its line of fire, forcing it to chew through before it
+#        can hit the core again. Cheaper than every turret response below, so it
+#        runs first. Gunners only — no chew-through LoS model exists for
+#        sentinels/launchers, so those fall through to reactEnemyTurret as before.
 # 2. reactEnemyTurret — defGun / defendHome / healAlly (skipEconomy=False: an
 #        unactionable turret must not block patrol. homeOnly=True: no action that
 #        needs leaving the leash — contestTurret and unleashed defGun both place
@@ -194,6 +199,7 @@ from logistics import (
     relayEverComplete,
 )
 from defence import (
+    blockGunLine,
     clearBarriers,
     defGun,
     defSentinel,
@@ -531,6 +537,10 @@ def runGuardian(bot, ct: Controller) -> None:
 
     if not _guardianLeashOk(bot, ct):
         moveTowardLeash(bot, ct, bot.corePos)
+        return
+    # Cheapest answer first: a belt in the gunner's line of fire (~3 Ti) costs far
+    # less than fielding a gunner to kill it. Gunners only — see blockGunLine.
+    if blockGunLine(bot, ct):
         return
     # skipEconomy=False: a turret we can't act on must not block patrol.
     # homeOnly=True: defGun / defSentinel answer turrets without leaving home.
