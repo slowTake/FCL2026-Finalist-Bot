@@ -27,6 +27,11 @@ GUNNER_ROTATE_MIN_TI = 50
 # offGun) and placeDefSentinel (guardian, defSentinel) alike.
 SENTINEL_PLACE_COOLDOWN_TURNS = 10
 
+# Both placeSentinel (harasser, offensive) and placeDefSentinel (guardian,
+# home defence) — too early, 18 Ti is better spent on economy/gunners than a
+# sentinel, offensive or defensive.
+SENTINEL_MIN_TURN = 50
+
 
 def _sentinelPlaceReady(bot, ct: Controller) -> bool:
     last = getattr(bot, "lastSentinelRound", None)
@@ -603,6 +608,29 @@ def _bestSentinelFacing(
     return None
 
 
+def _gunfireSafePads(
+    ct: Controller, pads: list[tuple[Position, Direction]]
+) -> list[tuple[Position, Direction]]:
+    """Drop any pad inside a visible enemy gunner's line of fire.
+
+    Sentinels are 18 Ti and slow to replace (SENTINEL_PLACE_COOLDOWN_TURNS) —
+    never spend one on a tile a gunner can already answer. Hard filter, not a
+    deprioritization: a covered tile is dropped outright, even if every other
+    candidate loses on every other measure.
+    """
+    from offense import _enemyGunners, _tileUnderGunnerFire
+
+    gunners = _enemyGunners(ct)
+    if not gunners:
+        return pads
+    cache: dict = {}
+    return [
+        (site, facing)
+        for site, facing in pads
+        if not _tileUnderGunnerFire(ct, site, gunners, cache=cache)
+    ]
+
+
 def _sentinelPadsNearTarget(
     ct: Controller, target: Position
 ) -> list[tuple[Position, Direction]]:
@@ -636,6 +664,8 @@ def _sentinelPadsNearTarget(
 
 def placeSentinel(bot, ct: Controller, target: Position) -> bool:
     """Range-only sentinel pad toward target (not used by defGun)."""
+    if ct.get_current_round() < SENTINEL_MIN_TURN:
+        return False
     if not _canAffordGunPlace(ct):
         return False
     if not _sentinelPlaceReady(bot, ct):
@@ -643,12 +673,15 @@ def placeSentinel(bot, ct: Controller, target: Position) -> bool:
     pads = _sentinelPadsNearTarget(ct, target)
     if not pads:
         return False
+    pads = _gunfireSafePads(ct, pads)
+    if not pads:
+        return False
     pos = ct.get_position()
     footprint = _coreFootprint(target)
     pads.sort(
         key=lambda sf: (
-            min(sf[0].distance_squared(t) for t in footprint),
-            manhattan(pos, sf[0]),
+            -min(sf[0].distance_squared(t) for t in footprint),  # max range first
+            manhattan(pos, sf[0]),  # then nearest to self
         )
     )
     if ct.get_action_cooldown() == 0:
@@ -740,11 +773,16 @@ def placeDefSentinel(
     bot, ct: Controller, target: Position, core_pos: Position, max_cheb: int
 ) -> bool:
     """Plant a sentinel inside the leash that can hit target."""
+    if ct.get_current_round() < SENTINEL_MIN_TURN:
+        return False
     if not _canAffordGunPlace(ct):
         return False
     if not _sentinelPlaceReady(bot, ct):
         return False
     pads = _defSentinelPads(ct, target, core_pos, max_cheb)
+    if not pads:
+        return False
+    pads = _gunfireSafePads(ct, pads)
     if not pads:
         return False
 

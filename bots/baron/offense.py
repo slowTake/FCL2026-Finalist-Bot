@@ -162,12 +162,14 @@ def _tileUnderGunnerFire(
     ct: Controller,
     tile: Position,
     gunners: list[tuple[Position, Direction]],
+    *,
+    cache: dict | None = None,
 ) -> bool:
     for gpos, facing in gunners:
         if tile.distance_squared(gpos) > GUNNER_RANGE_SQ:
             continue
         # Their gunner, their ray: their own buildings shield the tile, ours get chewed.
-        if gunnerHasLos(ct, gpos, facing, tile, shooterIsAlly=False):
+        if gunnerHasLos(ct, gpos, facing, tile, shooterIsAlly=False, cache=cache):
             return True
         # Optimistic: gunner aimed at us even if engine LoS disagrees on fog
         if facing == gpos.direction_to(tile) and tile.distance_squared(gpos) <= GUNNER_RANGE_SQ:

@@ -37,7 +37,7 @@ BUILDER_TARGET_BY_TI: list[tuple[int, int]] = [
 # net for raising the crew ceiling later. Rank is derived from my_index alone
 # (builder.guardianRank), so role stays a pure function of the index: deterministic,
 # permanent per unit, no coordination, no oscillation.
-MAX_GUARDIANS: int | None = 4
+MAX_GUARDIANS: int | None = 2
 
 # --- Wave attack (≤0 / None = unset; positive = active gate) ---
 WAVE_ATTACK_TURN: int | None = -1  # e.g. 300 → all builders harass from that turn
