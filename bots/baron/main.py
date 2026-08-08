@@ -127,7 +127,7 @@ FRONTIER_REFRESH_TURNS = 20
 ENCIRCLED_TURNS = 8
 
 # --- Gun placement (≤0 disables) ---
-GUN_PLACE_MIN_TI = 100  # need bank ≥ this to place gunner/sentinel
+GUN_PLACE_MIN_TI = 60 # need bank ≥ this to place gunner/sentinel
 
 # --- Ammo policy (guns.top_up_ammo reads these) ---
 AMMO_BASE = 12
