@@ -71,6 +71,16 @@ GUARDIAN_ECON_SLACK = 1
 # False = nearest convenient (core then self). True = index-stagger slots.
 ORE_STAGGER = False
 
+# --- Ore-block ledger memory (≤0 disables the age bound) ---
+# How stale a remembered enemy blocker (most commonly a denyOre barrier) on an
+# ore tile may be and still disqualify it in pickEmptyOre/_pickRecheckOre.
+# Without this the rejection is permanent: nothing ever expires entity memory in
+# a builder's own local_map short of regaining vision of that exact tile, and
+# the rejection is exactly what stops a builder from ever walking back to look
+# — self-reinforcing, forever. Mirrors TURRET_MEMORY_TURNS's role for
+# threateningTurret: an old sighting is still useful signal, just not forever.
+ORE_BLOCK_MEMORY_TURNS = 30
+
 # --- Ore deadlock breaker (≤0 disables) ---
 # Turns a default builder may sit motionless outside a relay before it drops its
 # ore claim, blacklists the node and re-picks. Guards against builders piling up

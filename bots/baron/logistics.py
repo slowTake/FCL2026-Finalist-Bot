@@ -478,6 +478,21 @@ def _allyBarrierOnOre(ct: Controller, tile: Position) -> bool:
     )
 
 
+def _oreLedgerStale(bot, entry: dict) -> bool:
+    """True if a remembered ore-tile entity is old enough to stop disqualifying it.
+
+    See ORE_BLOCK_MEMORY_TURNS. `entry` is a `local_map` cell (the same dict its
+    caller already read `entity` off of), which carries `last_seen_turn`.
+    """
+    from main import ORE_BLOCK_MEMORY_TURNS
+
+    memory = ORE_BLOCK_MEMORY_TURNS
+    if not memory or memory <= 0:
+        return False
+    age = bot.hivemind.global_turn - entry.get("last_seen_turn", -(10**9))
+    return age > memory
+
+
 def pickEmptyOre(bot, ct: Controller) -> Position | None:
     """Pick empty ore: convenience or index-stagger; skip ally-on-tile pads.
 
@@ -512,19 +527,24 @@ def pickEmptyOre(bot, ct: Controller) -> Position | None:
     for ore in knownOreTiles(bot):
         entry = bot.hivemind.local_map.get((ore.x, ore.y), {})
         ent = entry.get("entity")
+        if ent and _oreLedgerStale(bot, entry):
+            # Old enough to stop trusting — treat as if never seen, so a builder
+            # can walk back and re-check rather than being permanently locked out
+            # (see _oreLedgerStale / ORE_BLOCK_MEMORY_TURNS).
+            ent = None
         if ent:
             if ent.get("type") == EntityType.HARVESTER:
                 continue
             # Anything else the ledger remembers as an enemy-owned blocker — most
             # commonly their own denyOre barrier — disqualifies the tile until
-            # it's back in vision to re-check. Previously only a remembered
-            # HARVESTER was rejected here, so a remembered enemy barrier stayed
-            # "eligible" indefinitely while out of vision: pickEmptyOre could send
-            # a builder to chase ore it had already been walled off from, while
-            # _pickRecheckOre's stricter ledger read (rejects any remembered
-            # entity) never would have. A remembered ally barrier still passes —
-            # that's the "empty" this function's docstring promises: checkOre
-            # clears our own denyOre-style barriers and builds on arrival.
+            # it's back in vision to re-check (or the memory goes stale). Previously
+            # only a remembered HARVESTER was rejected here, so a remembered enemy
+            # barrier stayed "eligible" indefinitely while out of vision:
+            # pickEmptyOre could send a builder to chase ore it had already been
+            # walled off from, while _pickRecheckOre's stricter ledger read (rejects
+            # any remembered entity) never would have. A remembered ally barrier
+            # still passes — that's the "empty" this function's docstring promises:
+            # checkOre clears our own denyOre-style barriers and builds on arrival.
             if ent.get("team") != me and ent.get("type") in _ORE_ENEMY_BLOCKERS:
                 continue
         if (
@@ -1433,6 +1453,11 @@ def _pickRecheckOre(bot, ct: Controller) -> Position | None:
             continue
         entry = bot.hivemind.local_map.get(key_xy, {})
         ent = entry.get("entity")
+        if ent and _oreLedgerStale(bot, entry):
+            # See pickEmptyOre's identical treatment / ORE_BLOCK_MEMORY_TURNS —
+            # this is the recheck path, so leaving stale memory permanently
+            # disqualifying here would be the last resort that ever rescues it.
+            ent = None
         if ent and ent.get("type") == EntityType.HARVESTER:
             consider(ore, kind="harvester")
         elif not ent:
