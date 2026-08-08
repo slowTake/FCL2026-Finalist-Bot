@@ -265,18 +265,31 @@ def moveToward(
         path = cached
         _notePathVerdict(bot, target, False)  # cache hit — a route was found
     else:
-        path = astarFromSeeds(
-            [pos],
-            is_passable=ok,
-            is_goal=lambda p: p == target,
-            heuristic=lambda p: manhattan(p, target),
-            max_iters=PATH_MAX_ITERS,
-        )
-        bot.cachedPath = path
-        bot.cachedPathTarget = target
-        # Only `path is None` means "no route on the known map". A short path is a
-        # planner quirk, not proof of blockage, so it must not read as unreachable.
-        _notePathVerdict(bot, target, path is None)
+        from main import MAX_PATH_SEARCHES_PER_TURN
+
+        searches = getattr(bot, "pathSearchesThisTurn", 0)
+        if MAX_PATH_SEARCHES_PER_TURN and searches >= MAX_PATH_SEARCHES_PER_TURN:
+            # Budget spent for this turn — a role chain that falls through several
+            # move-toward steps (denyOre → seekHarvester's per-candidate loop →
+            # seekCore's orbit fallback) can otherwise stack 5-15 full 800-iteration
+            # searches in one call, which is the actual cost behind an exec-time
+            # TLE. Skip straight to the direct-step fallback below instead.
+            path = None
+        else:
+            bot.pathSearchesThisTurn = searches + 1
+            path = astarFromSeeds(
+                [pos],
+                is_passable=ok,
+                is_goal=lambda p: p == target,
+                heuristic=lambda p: manhattan(p, target),
+                max_iters=PATH_MAX_ITERS,
+            )
+            bot.cachedPath = path
+            bot.cachedPathTarget = target
+            # Only `path is None` means "no route on the known map". A short path is
+            # a planner quirk, not proof of blockage, so it must not read as
+            # unreachable.
+            _notePathVerdict(bot, target, path is None)
 
     if not path or len(path) < 2:
         step = nearestCardinal(pos.direction_to(target))

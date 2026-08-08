@@ -147,14 +147,25 @@
 #        clear them. State-only, no turn cost. Needed because denyBelt's Mode B is
 #        gated off while a gun is affordable, so a funded harasser beside a belt
 #        correctly refuses to cut it (10 shots / 20 Ti for a 3 Ti conveyor) and then
-#        had no way to give the target up.
+#        had no way to give the target up. bot.stuck now also trips on tight
+#        oscillation (main.OSCILLATION_WINDOW/DISTINCT_LIMIT), not just exact
+#        standstill — a unit bouncing between two tiles used to never accumulate it.
 # 3b. denyOre — barrier empty ore inside DENY_ORE_CHEBYSHEV of the enemy core:
 #        3 Ti denies a 20 Ti harvester and its whole line, and they pay 6-30 Ti to
 #        clear it. Two guards keep it off our side — _oreCloserToAlly (midline) and
 #        DENY_ORE_MIN_ALLY_CHEBYSHEV (floor from our own core, for small maps where an
 #        ore is marginally nearer them yet inside our working range). Skips occupied
 #        nodes and tiles under gunner fire. Not a lock-out: pickEmptyOre admits our own
-#        barriers and checkOre clears them to build.
+#        barriers and checkOre clears them to build. Candidates are filtered through
+#        _dropSkipped (previously weren't — breakBeltDeadlock's blacklist had no
+#        effect on this list) and a target moveToward just proved unreachable is
+#        blacklisted immediately via pathKnownBlocked, not after HARASS_DEADLOCK_TURNS
+#        more full A* searches. Both existed to fix a real bug: a harasser stuck on a
+#        walled-off or harvester-blocked ore never reached denyBelt/seekHarvester
+#        below it and re-ran a full uncached 800-iter search every turn — see also
+#        MAX_PATH_SEARCHES_PER_TURN, a hard per-turn cap on full searches in
+#        logistics.moveToward that bounds the worst case regardless of which step in
+#        the chain is looping.
 # 4. denyBelt — Mode A: barrier on the empty tile ahead of an enemy belt's facing
 #        (3 Ti, unthrottled). Mode B: cut an enemy belt from an adjacent tile and
 #        barrier it in place (sticky via bot.denyBeltTile; falls back to mounting the

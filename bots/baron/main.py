@@ -10,6 +10,8 @@ Store slots (HiveMind v2):
 
 from __future__ import annotations
 
+from collections import deque
+
 from fcode import Controller, EntityType, Position
 
 # --- Builder spawn policy ---
@@ -126,6 +128,32 @@ FRONTIER_REFRESH_TURNS = 20
 # that fenced itself in with its own denyBelt barriers.
 ENCIRCLED_TURNS = 8
 
+# --- Oscillation window (bot.stuck; ≤1 disables the extra check) ---
+# `bot.stuck` used to count only exact standstill (identical tile turn over turn),
+# which never trips while a unit bounces between two or more tiles — e.g. denyOre
+# pulling toward an unreachable ore while avoidFire's dodge memory pushes back the
+# next turn. That left every stuck-counter consumer (breakOreDeadlock,
+# breakBeltDeadlock, breakEncirclement) dead code against a harasser oscillating in
+# place: it never accumulates ENCIRCLED_TURNS/ORE_DEADLOCK_TURNS/HARASS_DEADLOCK_TURNS
+# and, worse, never falls through to yield the turn to whatever comes after it in the
+# role chain (see denyBelt never getting a turn behind a looping denyOre). A unit
+# confined to OSCILLATION_DISTINCT_LIMIT or fewer distinct tiles across the last
+# OSCILLATION_WINDOW turns now also counts as stuck.
+OSCILLATION_WINDOW = 6
+OSCILLATION_DISTINCT_LIMIT = 2
+
+# --- Path-search budget (≤0 / None disables) ---
+# Hard cap on full A* searches (`astarFromSeeds`, PATH_MAX_ITERS=800 each) one bot
+# may run in a single turn. Without this, a harasser whose role chain falls through
+# several move-toward steps in one turn (denyOre → seekHarvester's per-candidate
+# loop → seekCore's orbit fallback) can trigger 5-15 full searches in that one call,
+# which is the dominant cost behind an "Exec Time TLE" turn — one failed search
+# already burns its full iteration budget (no early exit, unlike a hit), and nothing
+# upstream bounded how many of those a single turn could stack. Once the budget is
+# spent, `moveToward` falls back to a single direct cardinal step instead of
+# searching, same as its existing no-path fallback.
+MAX_PATH_SEARCHES_PER_TURN = 3
+
 # --- Gun placement (≤0 disables) ---
 GUN_PLACE_MIN_TI = 60 # need bank ≥ this to place gunner/sentinel
 
@@ -188,6 +216,8 @@ class Player:
         self.cachedPathTarget: Position | None = None
         self.lastPos: Position | None = None
         self.stuck = 0
+        self.posHistory: deque[tuple[int, int]] = deque(maxlen=OSCILLATION_WINDOW)
+        self.pathSearchesThisTurn = 0
         self.recheckingOre = False
         self.skippedOres: set[tuple[int, int]] = set()
         self.skippedTargets: set[tuple[int, int]] = set()
@@ -241,8 +271,15 @@ class Player:
         return None
 
     def _run_builder(self, ct: Controller) -> None:
+        self.pathSearchesThisTurn = 0
         pos = ct.get_position()
-        if self.lastPos == pos:
+        self.posHistory.append((pos.x, pos.y))
+        oscillating = (
+            OSCILLATION_DISTINCT_LIMIT > 0
+            and len(self.posHistory) == self.posHistory.maxlen
+            and len(set(self.posHistory)) <= OSCILLATION_DISTINCT_LIMIT
+        )
+        if self.lastPos == pos or oscillating:
             self.stuck += 1
         else:
             self.stuck = 0

@@ -12,7 +12,7 @@ from guns import (
     placeGun,
     placeSentinel,
 )
-from logistics import moveToward
+from logistics import moveToward, pathKnownBlocked
 from pathing import CARDINALS, inBounds, manhattan, walkPassable
 from walls import wallEnemyCore
 
@@ -702,7 +702,11 @@ def _denyOreCandidates(bot, ct: Controller) -> list[Position]:
             continue
         scored.append((d_enemy, manhattan(pos, ore), ore))
     scored.sort(key=lambda s: (s[0], s[1]))
-    return [ore for _de, _dm, ore in scored]
+    # denyBelt's candidate lists (_forwardBarrierPads, _enemyBeltsByDist) both filter
+    # through _dropSkipped; this one didn't, so a target blacklisted by denyOre's own
+    # pathKnownBlocked check below (or by breakBeltDeadlock) was immediately re-picked
+    # next call — the blacklist had no effect on this list at all.
+    return _dropSkipped(bot, [ore for _de, _dm, ore in scored])
 
 
 def denyOre(bot, ct: Controller) -> bool:
@@ -732,7 +736,17 @@ def denyOre(bot, ct: Controller) -> bool:
 
     target = candidates[0]
     bot.harassTarget = (target.x, target.y)
-    return _harassMove(bot, ct, target)
+    moved = _harassMove(bot, ct, target)
+    if not moved and pathKnownBlocked(bot, target):
+        # A* just proved this ore unreachable (walled off / occupied with no way
+        # around) — blacklist it immediately instead of waiting up to
+        # HARASS_DEADLOCK_TURNS more full searches for bot.stuck to catch up.
+        # Checked right here, right after the only moveToward call this function
+        # makes, so the verdict is guaranteed to be this target's, not some other
+        # step's leftover from earlier in the turn.
+        _skippedTargets(bot).add((target.x, target.y))
+        bot.harassTarget = None
+    return moved
 
 
 def denyBelt(bot, ct: Controller) -> bool:
