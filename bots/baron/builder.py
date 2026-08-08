@@ -612,3 +612,60 @@ def runBuilderRoles(bot, ct: Controller) -> None:
 # Back-compat
 def run_builder_roles(bot, ct: Controller) -> None:
     runBuilderRoles(bot, ct)
+
+# will wall off the entire perimeter of the core, will need repeated calls to complete
+# each non-wall tile will need a separete call to finish the job, if done in a loop then it'll repair any gaps that the enemy makes
+def wall_enemy_core(ct: Controller, core: Position) -> None: 
+    targets = [
+        Position(core.x, core.y - 1),
+        Position(core.x + 1, core.y - 1),
+        Position(core.x, core.y + 2),
+        Position(core.x + 1, core.y + 2),
+        Position(core.x - 1, core.y),
+        Position(core.x - 1, core.y + 1),
+        Position(core.x + 2, core.y),
+        Position(core.x + 2, core.y + 1),
+    ]
+
+    for tile in targets:
+        if not ct.is_in_vision(tile):
+            continue
+        bid = ct.get_tile_building_id(tile)
+        if bid is not None:
+            etype = ct.get_entity_type(bid)
+            if etype == EntityType.BARRIER:
+                continue
+            if etype in (EntityType.CONVEYOR, EntityType.SPLITTER):
+                if ct.can_destroy(tile) and ct.get_action_cooldown() == 0:
+                    ct.destroy(tile)
+                continue
+            continue
+
+        if ct.get_action_cooldown() != 0:
+            continue
+        cost = ct.get_barrier_cost()
+        if cost > ct.get_global_resources():
+            continue
+        if ct.can_build_barrier(tile):
+            ct.build_barrier(tile)
+
+
+# version that just builds wall at a specified target
+# gets rid of anything in the way and then will build
+def wall_at_target(ct: Controller, target: Position) -> None:
+    bid = ct.get_tile_building_id(target)
+    if bid is not None:
+        etype = ct.get_entity_type(bid)
+        if etype == EntityType.BARRIER:
+            return
+        if etype in (EntityType.CONVEYOR, EntityType.SPLITTER):
+            if ct.can_destroy(target) and ct.get_action_cooldown() == 0:
+                ct.destroy(target)     
+    
+    if ct.get_action_cooldown() != 0:
+        return
+    cost = ct.get_barrier_cost()
+    if cost > ct.get_global_resources():
+        return
+    if ct.can_build_barrier(target):
+        ct.build_barrier(target)
