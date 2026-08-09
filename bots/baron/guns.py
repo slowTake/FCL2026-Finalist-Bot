@@ -13,6 +13,7 @@ from fcode import (
     Position,
 )
 
+from geometry import chebyshevToCore, coreFootprint, isAdjacent
 from pathing import inBounds, manhattan
 
 # Gunner attack r²=13; sentinel r²=32 (GameConstants).
@@ -43,14 +44,6 @@ def _sentinelPlaceReady(bot, ct: Controller) -> bool:
 def _markSentinelPlaced(bot, ct: Controller) -> None:
     bot.lastSentinelRound = ct.get_current_round()
 
-
-def _coreFootprint(core_pos: Position) -> list[Position]:
-    return [
-        core_pos,
-        Position(core_pos.x + 1, core_pos.y),
-        Position(core_pos.x, core_pos.y + 1),
-        Position(core_pos.x + 1, core_pos.y + 1),
-    ]
 
 # Placement LoS: pass through destroyables + turrets; walls/cores/barriers mid-ray block.
 _TRANSPARENT_LOS = frozenset(
@@ -173,15 +166,6 @@ def topUpAmmo(
         return
     if ct.can_convert_ammo(need):
         ct.convert_ammo(need)
-
-
-def top_up_ammo(
-    ct: Controller,
-    *,
-    local_map: dict[Any, Any] | None = None,
-    min_turn: int = 0,
-) -> None:
-    topUpAmmo(ct, local_map=local_map, min_turn=min_turn)
 
 
 def _entityOnTile(
@@ -429,7 +413,7 @@ def placeGun(bot, ct: Controller, target: Position) -> bool:
     # Adjacent build first
     if ct.get_action_cooldown() == 0:
         for site, facing in pads:
-            if abs(pos.x - site.x) + abs(pos.y - site.y) != 1:
+            if not isAdjacent(pos, site):
                 continue
             if ct.can_build_gunner(site, facing):
                 ct.build_gunner(site, facing)
@@ -437,18 +421,11 @@ def placeGun(bot, ct: Controller, target: Position) -> bool:
 
     # Move toward nearest viable pad (already sorted closer-to-target first)
     best_site = pads[0][0]
-    if abs(pos.x - best_site.x) + abs(pos.y - best_site.y) <= 1:
+    if manhattan(pos, best_site) <= 1:
         return False
     from logistics import moveToward
 
     return moveToward(bot, ct, best_site)
-
-
-def place_gunner_aggressive(bot, ct: Controller, **kwargs: Any) -> bool:
-    target = kwargs.get("target")
-    if target is None:
-        return False
-    return placeGun(bot, ct, target)
 
 
 def _hostileTiles(
@@ -458,7 +435,7 @@ def _hostileTiles(
     epos = ct.get_position(eid)
     if etype != EntityType.CORE:
         return [epos]
-    return _coreFootprint(epos)
+    return coreFootprint(epos)
 
 
 def _hostileOnFacing(
@@ -552,14 +529,10 @@ def gunnerLoop(ct: Controller) -> None:
         ct.rotate(facing)
 
 
-def run_gunner(ct: Controller) -> None:
-    gunnerLoop(ct)
-
-
 def _aimCoreTile(site: Position, core_pos: Position) -> Position:
     """Nearest 2x2 footprint tile to site."""
     return min(
-        _coreFootprint(core_pos),
+        coreFootprint(core_pos),
         key=lambda t: site.distance_squared(t),
     )
 
@@ -606,7 +579,7 @@ def _bestSentinelFacing(
     ct: Controller, site: Position, core_pos: Position
 ) -> Direction | None:
     """Facing from site that can hit some core footprint tile. No NORTH fallback."""
-    footprint = _coreFootprint(core_pos)
+    footprint = coreFootprint(core_pos)
     preferred = facing8way(site, _aimCoreTile(site, core_pos))
     ordered: list[Direction] = []
     if preferred != Direction.CENTRE:
@@ -649,7 +622,7 @@ def _sentinelPadsNearTarget(
     """In-range empty pads with a facing that hits the core footprint (target=origin)."""
     pads: list[tuple[Position, Direction]] = []
     w, h = ct.get_map_width(), ct.get_map_height()
-    footprint = _coreFootprint(target)
+    footprint = coreFootprint(target)
     # Search around footprint (origin-centered box still covers r²<=32)
     for dy in range(-6, 7):
         for dx in range(-6, 7):
@@ -689,7 +662,7 @@ def placeSentinel(bot, ct: Controller, target: Position) -> bool:
     if not pads:
         return False
     pos = ct.get_position()
-    footprint = _coreFootprint(target)
+    footprint = coreFootprint(target)
     pads.sort(
         key=lambda sf: (
             -min(sf[0].distance_squared(t) for t in footprint),  # max range first
@@ -698,25 +671,18 @@ def placeSentinel(bot, ct: Controller, target: Position) -> bool:
     )
     if ct.get_action_cooldown() == 0:
         for site, facing in pads:
-            if abs(pos.x - site.x) + abs(pos.y - site.y) != 1:
+            if not isAdjacent(pos, site):
                 continue
             if ct.can_build_sentinel(site, facing):
                 ct.build_sentinel(site, facing)
                 _markSentinelPlaced(bot, ct)
                 return True
     best_site = pads[0][0]
-    if abs(pos.x - best_site.x) + abs(pos.y - best_site.y) <= 1:
+    if manhattan(pos, best_site) <= 1:
         return False
     from logistics import moveToward
 
     return moveToward(bot, ct, best_site)
-
-
-def chebyshevToCore(pos: Position, core_pos: Position) -> int:
-    """Chebyshev distance from pos to the nearest core footprint tile."""
-    return min(
-        max(abs(pos.x - t.x), abs(pos.y - t.y)) for t in _coreFootprint(core_pos)
-    )
 
 
 def allySentinelCovering(ct: Controller, tile: Position) -> bool:
@@ -809,7 +775,7 @@ def placeDefSentinel(
 
     if ct.get_action_cooldown() == 0:
         for site, facing in pads:
-            if abs(pos.x - site.x) + abs(pos.y - site.y) != 1:
+            if not isAdjacent(pos, site):
                 continue
             if ct.can_build_sentinel(site, facing):
                 ct.build_sentinel(site, facing)
@@ -817,18 +783,11 @@ def placeDefSentinel(
                 return True
 
     best_site = pads[0][0]
-    if abs(pos.x - best_site.x) + abs(pos.y - best_site.y) <= 1:
+    if manhattan(pos, best_site) <= 1:
         return False
     from logistics import moveToward
 
     return moveToward(bot, ct, best_site)
-
-
-def place_sentinel_aggressive(bot, ct: Controller, **kwargs: Any) -> bool:
-    target = kwargs.get("target")
-    if target is None:
-        return False
-    return placeSentinel(bot, ct, target)
 
 
 def sentinelLoop(ct: Controller) -> None:
@@ -866,7 +825,3 @@ def sentinelLoop(ct: Controller) -> None:
                 best = epos
     if best is not None and ct.can_fire(best):
         ct.fire(best)
-
-
-def run_sentinel(ct: Controller) -> None:
-    sentinelLoop(ct)

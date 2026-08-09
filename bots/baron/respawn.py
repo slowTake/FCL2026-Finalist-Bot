@@ -12,6 +12,7 @@ from fcode import (
     Position,
 )
 
+from geometry import coreFootprint
 from pathing import CARDINALS, inBounds
 
 
@@ -22,17 +23,8 @@ class SpawnSchedule:
     builder_target_by_ti: tuple[tuple[int, int], ...] = ()
 
 
-def _coreFootprint(core_pos: Position) -> list[Position]:
-    return [
-        core_pos,
-        Position(core_pos.x + 1, core_pos.y),
-        Position(core_pos.x, core_pos.y + 1),
-        Position(core_pos.x + 1, core_pos.y + 1),
-    ]
-
-
 def _apronSites(ct: Controller, core_pos: Position) -> list[Position]:
-    footprint = _coreFootprint(core_pos)
+    footprint = coreFootprint(core_pos)
     keys = {(t.x, t.y) for t in footprint}
     sites: list[Position] = []
     seen: set[tuple[int, int]] = set()

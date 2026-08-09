@@ -112,7 +112,7 @@
 # 2. maintainHarvester
 #    2a. checkOre — harvester → relayToCore; empty → build (same gunner-aim gate);
 #        ally block → destroy (skip gunner/sentinel if that ore is threatened);
-#        enemy gunner/sentinel/belt/launcher/barrier → placeGunnerOnOre (stub)
+#        enemy gunner/sentinel/belt/launcher/barrier → nothing (yields the turn)
 #    2b. relayToCore — next belt tile under a visible gunner's LoS/arc → blacklist
 #        it (bot.relayThreatBlocked, reset in clearRelay) and replan from origin;
 #        abort only if that finds nothing. Else path → facing / clearWrongBelt →
@@ -193,11 +193,14 @@ from __future__ import annotations
 
 from fcode import Controller, EntityType, Position
 
+from geometry import (
+    DEFEND_HOME_CHEBYSHEV,
+    TURRET_TYPES,
+    chebyshevToCore,
+    nearCore,
+)
 from hivemind import CoreState, unpack_cores
 from logistics import (
-    DEFEND_HOME_CHEBYSHEV,
-    _chebyshevToCore,
-    _nearCore,
     abortRelay,
     breakOreDeadlock,
     buildHarvester,
@@ -502,12 +505,9 @@ def runDefault(bot, ct: Controller) -> None:
     exploreFrontier(bot, ct, outward=False)
 
 
-_ENEMY_THREAT_TYPES = (
-    EntityType.GUNNER,
-    EntityType.SENTINEL,
-    EntityType.LAUNCHER,
-    EntityType.BUILDER_BOT,
-)
+# Turrets plus builders: the guardian's chore gate treats an enemy builder as
+# hostile too, unlike the turret-only checks elsewhere.
+_ENEMY_THREAT_TYPES = TURRET_TYPES + (EntityType.BUILDER_BOT,)
 
 
 def guardianEconomyOn() -> bool:
@@ -534,7 +534,7 @@ def _guardianLeashOk(bot, ct: Controller) -> bool:
     tile, which is one step further out. Without the slack the leash step would
     march the guardian home every other turn and the relay would never finish.
     """
-    if _nearCore(bot, ct):
+    if nearCore(bot, ct):
         return True
     if not guardianEconomyOn():
         return False
@@ -546,7 +546,7 @@ def _guardianLeashOk(bot, ct: Controller) -> bool:
     if slack <= 0:
         return False
     reach = DEFEND_HOME_CHEBYSHEV + slack
-    return _chebyshevToCore(ct.get_position(), bot.corePos) <= reach
+    return chebyshevToCore(ct.get_position(), bot.corePos) <= reach
 
 
 def _guardianEconomy(bot, ct: Controller) -> bool:
@@ -700,8 +700,3 @@ def runBuilderRoles(bot, ct: Controller) -> None:
         runHarasser(bot, ct)
         return
     runDefault(bot, ct)
-
-
-# Back-compat
-def run_builder_roles(bot, ct: Controller) -> None:
-    runBuilderRoles(bot, ct)

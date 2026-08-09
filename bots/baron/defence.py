@@ -4,6 +4,16 @@ from __future__ import annotations
 
 from fcode import Controller, Direction, EntityType, Environment, Position
 
+from geometry import (
+    BELT_TYPES,
+    DEFEND_HOME_CHEBYSHEV,
+    TURRET_TYPES,
+    chebyshevToCore,
+    coreFootprint,
+    isAdjacent,
+    nearCore,
+    tileEntity,
+)
 from guns import (
     GUNNER_RANGE_SQ,
     allyGunCovering,
@@ -13,32 +23,7 @@ from guns import (
 )
 from pathing import CARDINALS, inBounds, manhattan, walkPassable
 
-DEFEND_HOME_CHEBYSHEV = 4
 _PATROL_OFFSET = 2
-
-
-def _coreFootprint(core_pos: Position) -> list[Position]:
-    return [
-        core_pos,
-        Position(core_pos.x + 1, core_pos.y),
-        Position(core_pos.x, core_pos.y + 1),
-        Position(core_pos.x + 1, core_pos.y + 1),
-    ]
-
-
-def _chebyshevToCore(pos: Position, core_pos: Position) -> int:
-    best = 10**9
-    for tile in _coreFootprint(core_pos):
-        d = max(abs(pos.x - tile.x), abs(pos.y - tile.y))
-        if d < best:
-            best = d
-    return best
-
-
-def _nearCore(bot, ct: Controller) -> bool:
-    if bot.corePos is None:
-        return False
-    return _chebyshevToCore(ct.get_position(), bot.corePos) <= DEFEND_HOME_CHEBYSHEV
 
 
 def _pickDefGunTarget(ct: Controller, core_pos: Position | None) -> Position | None:
@@ -68,7 +53,7 @@ def _pickDefGunTarget(ct: Controller, core_pos: Position | None) -> Position | N
         epos = ct.get_position(eid)
         if (
             core_pos is not None
-            and _chebyshevToCore(epos, core_pos) > DEFEND_HOME_CHEBYSHEV
+            and chebyshevToCore(epos, core_pos) > DEFEND_HOME_CHEBYSHEV
         ):
             continue
         if allyGunCovering(ct, epos):
@@ -95,7 +80,7 @@ def defGun(bot, ct: Controller, *, homeOnly: bool = False) -> bool:
     """
     if bot.inRelay or getattr(bot, "recheckingOre", False):
         return False
-    if not _nearCore(bot, ct):
+    if not nearCore(bot, ct):
         return False
     target = _pickDefGunTarget(ct, bot.corePos if homeOnly else None)
     if target is None:
@@ -123,7 +108,7 @@ def _gunnerFiringAtCore(
             continue
         gpos = ct.get_position(eid)
         facing = ct.get_direction(eid)
-        for tile in _coreFootprint(core):
+        for tile in coreFootprint(core):
             if gpos.distance_squared(tile) > GUNNER_RANGE_SQ:
                 continue
             if not ct.can_fire_from(gpos, facing, EntityType.GUNNER, tile):
@@ -173,8 +158,6 @@ def blockGunLine(bot, ct: Controller) -> bool:
     return placeRelayBelt(ct, block, facingIntoCore(block, core)) == "placed"
 
 
-_TURRET_TYPES = (EntityType.GUNNER, EntityType.SENTINEL, EntityType.LAUNCHER)
-
 # Which parked turret to answer first: the ones that out-range the leash.
 _TURRET_PRIORITY = {
     EntityType.SENTINEL: 0,  # reach sqrt(32) ≈ 5.7 — shells the core from 5–6
@@ -207,14 +190,14 @@ def threateningTurret(bot, ct: Controller) -> Position | None:
         if not ent or ent.get("team") == me:
             continue
         etype = ent.get("type")
-        if etype not in _TURRET_TYPES:
+        if etype not in TURRET_TYPES:
             continue
         if memory > 0:
             age = hm.global_turn - cell.get("last_seen_turn", -(10**9))
             if age > memory:
                 continue
         epos = Position(x, y)
-        d = _chebyshevToCore(epos, core)
+        d = chebyshevToCore(epos, core)
         if d > TURRET_THREAT_CHEBYSHEV:
             continue
         key = (_TURRET_PRIORITY.get(etype, 3), d, x, y)
@@ -238,7 +221,7 @@ def defSentinel(bot, ct: Controller) -> bool:
         return False
     if bot.inRelay or getattr(bot, "recheckingOre", False):
         return False
-    if not _nearCore(bot, ct):
+    if not nearCore(bot, ct):
         return False
     target = threateningTurret(bot, ct)
     if target is None:
@@ -269,7 +252,7 @@ def clearBarriers(bot, ct: Controller) -> bool:
         if ct.get_entity_type(eid) != EntityType.BARRIER:
             continue
         epos = ct.get_position(eid)
-        if core is not None and _chebyshevToCore(epos, core) > DEFEND_HOME_CHEBYSHEV:
+        if core is not None and chebyshevToCore(epos, core) > DEFEND_HOME_CHEBYSHEV:
             continue
         dist = abs(pos.x - epos.x) + abs(pos.y - epos.y)
         if dist < best_d:
@@ -278,7 +261,7 @@ def clearBarriers(bot, ct: Controller) -> bool:
     if best is None:
         return False
 
-    if abs(pos.x - best.x) + abs(pos.y - best.y) == 1:
+    if isAdjacent(pos, best):
         if ct.get_action_cooldown() == 0 and ct.can_fire(best):
             ct.fire(best)
             return True
@@ -289,27 +272,15 @@ def clearBarriers(bot, ct: Controller) -> bool:
     return moveToward(bot, ct, best)
 
 
-_BELT_TYPES = (EntityType.CONVEYOR, EntityType.SPLITTER)
-
-
 def _isBeltOrCore(bot, ct: Controller, tile: Position, core: Position) -> bool:
     """True if tile carries an ally belt or is part of the ally core footprint."""
-    for foot in _coreFootprint(core):
+    for foot in coreFootprint(core):
         if tile.x == foot.x and tile.y == foot.y:
             return True
-    me = ct.get_team()
-    if ct.is_in_vision(tile):
-        bid = ct.get_tile_building_id(tile)
-        if bid is None:
-            return False
-        return (
-            ct.get_entity_type(bid) in _BELT_TYPES and ct.get_team(bid) == me
-        )
-    cell = bot.hivemind.local_map.get((tile.x, tile.y))
-    ent = cell.get("entity") if cell else None
-    if not ent or ent.get("team") != me:
+    ent = tileEntity(ct, tile, local_map=bot.hivemind.local_map)
+    if not ent or ent.get("team") != ct.get_team():
         return False
-    return ent.get("type") in _BELT_TYPES
+    return ent.get("type") in BELT_TYPES
 
 
 _RELAY_OWNER_CHEBYSHEV = 2
@@ -377,7 +348,7 @@ def _danglingBeltEnds(bot, ct: Controller) -> list[tuple[Position, Position]]:
         if facing is None or facing == Direction.CENTRE:
             continue
         belt = Position(x, y)
-        d = _chebyshevToCore(belt, core)
+        d = chebyshevToCore(belt, core)
         if d > DEFEND_HOME_CHEBYSHEV:
             continue
         target = belt.add(facing)
@@ -424,13 +395,13 @@ def _reconnectFacing(
     """
     from logistics import travelFacing
 
-    here = _chebyshevToCore(target, core)
+    here = chebyshevToCore(target, core)
 
     for d in CARDINALS:
         near = target.add(d)
         if not inBounds(ct, near):
             continue
-        if _chebyshevToCore(near, core) >= here:
+        if chebyshevToCore(near, core) >= here:
             continue
         if _isBeltOrCore(bot, ct, near, core):
             return travelFacing(target, near)
@@ -440,7 +411,7 @@ def _reconnectFacing(
         far = near.add(d)
         if not inBounds(ct, near) or not inBounds(ct, far):
             continue
-        if _chebyshevToCore(far, core) >= here:
+        if chebyshevToCore(far, core) >= here:
             continue
         if not _layableTile(ct, near):
             continue
@@ -490,7 +461,7 @@ def reconnectBelts(bot, ct: Controller) -> bool:
 
     pos = ct.get_position()
     for target, facing in actionable:
-        if abs(pos.x - target.x) + abs(pos.y - target.y) != 1:
+        if not isAdjacent(pos, target):
             continue
         if placeRelayBelt(ct, target, facing) == "placed":
             return True
@@ -543,17 +514,3 @@ def patrolHome(bot, ct: Controller) -> bool:
     from logistics import moveToward
 
     return moveToward(bot, ct, target)
-
-
-def run_phalanx(bot, ct: Controller) -> None:
-    del bot, ct
-
-
-def update_phalanx_builder_threat(
-    ct: Controller,
-    *,
-    sticky_until: int,
-    last_side: int,
-) -> tuple[int, int]:
-    del ct
-    return sticky_until, last_side

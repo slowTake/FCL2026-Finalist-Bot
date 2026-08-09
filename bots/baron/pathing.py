@@ -7,6 +7,8 @@ from typing import Callable
 
 from fcode import Controller, Direction, EntityType, Environment, Position
 
+from geometry import BELT_TYPES
+
 Point = tuple[int, int]
 PassableFn = Callable[[Position], bool]
 GoalFn = Callable[[Position], bool]
@@ -85,75 +87,33 @@ def astar(
     heuristic: HeuristicFn | None = None,
     max_iters: int = 800,
 ) -> list[Position] | None:
-    """Cardinal A* to a goal position or any tile matching is_goal."""
-    start_p = _point(start)
+    """Cardinal A* to a goal position or any tile matching is_goal.
+
+    Single-seed convenience wrapper: `astarFromSeeds` below owns the only search
+    loop in this file. This used to be a second, byte-for-byte copy of that loop,
+    which meant every fix to one had to be mirrored by hand into the other.
+    """
     goal_p = _point(goal) if goal is not None else None
 
     if is_goal is None:
         if goal_p is None:
             raise ValueError("astar requires goal or is_goal")
 
-        def _is_goal(pos: Position) -> bool:
+        def is_goal(pos: Position) -> bool:
             return _point(pos) == goal_p
 
-        is_goal = _is_goal
+    if heuristic is None and goal_p is not None:
 
-    if heuristic is None:
-        if goal_p is not None:
+        def heuristic(pos: Position) -> int:
+            return manhattan(pos, goal_p)
 
-            def _h(pos: Position) -> int:
-                return manhattan(pos, goal_p)
-
-            heuristic = _h
-        else:
-
-            def _h0(_pos: Position) -> int:
-                return 0
-
-            heuristic = _h0
-
-    if is_goal(_pos(start_p)):
-        return [_pos(start_p)]
-
-    open_heap: list[tuple[int, int, Point]] = []
-    counter = 0
-    heappush(open_heap, (heuristic(_pos(start_p)), counter, start_p))
-    counter += 1
-
-    came_from: dict[Point, Point | None] = {start_p: None}
-    g_score: dict[Point, int] = {start_p: 0}
-    closed: set[Point] = set()
-    iters = 0
-
-    while open_heap and iters < max_iters:
-        iters += 1
-        _f, _c, current = heappop(open_heap)
-        if current in closed:
-            continue
-        closed.add(current)
-
-        cur_pos = _pos(current)
-        if is_goal(cur_pos):
-            return _reconstruct(came_from, current)
-
-        for nxt in neighbors(current):
-            nkey = _point(nxt)
-            if nkey in closed:
-                continue
-            if not is_passable(nxt):
-                continue
-            tentative = g_score[current] + 1
-            if tentative >= g_score.get(nkey, 1 << 30):
-                continue
-            came_from[nkey] = current
-            g_score[nkey] = tentative
-            heappush(
-                open_heap,
-                (tentative + heuristic(nxt), counter, nkey),
-            )
-            counter += 1
-
-    return None
+    return astarFromSeeds(
+        [_pos(_point(start))],
+        is_passable=is_passable,
+        is_goal=is_goal,
+        heuristic=heuristic,
+        max_iters=max_iters,
+    )
 
 
 def astarFromSeeds(
@@ -236,7 +196,7 @@ def walkPassable(
         if bid is None:
             return True
         etype = ct.get_entity_type(bid)
-        return etype in (EntityType.CONVEYOR, EntityType.SPLITTER)
+        return etype in BELT_TYPES
     if local_map is not None:
         entry = local_map.get((pos.x, pos.y))
         if entry is not None:
@@ -284,10 +244,7 @@ def relayPassable(
     bid = ct.get_tile_building_id(pos)
     if bid is None:
         return ct.get_tile_env(pos) == Environment.EMPTY
-    etype = ct.get_entity_type(bid)
-    if etype in (EntityType.CONVEYOR, EntityType.SPLITTER):
-        return True
-    return False
+    return ct.get_entity_type(bid) in BELT_TYPES
 
 
 # Cheapest thing to knock down first when a builder has walled itself in.

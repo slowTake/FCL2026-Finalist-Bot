@@ -12,13 +12,13 @@ from guns import (
     placeGun,
     placeSentinel,
 )
+from geometry import BELT_TYPES, chebyshevToCore, coreFootprint, isAdjacent
 from logistics import moveToward, pathKnownBlocked
 from pathing import CARDINALS, inBounds, manhattan, walkPassable
 from walls import wallEnemyCore
 
 _AVOID_RADIUS = 4
 _ORBIT_OFFSET = 3
-_BELT_TYPES = frozenset({EntityType.CONVEYOR, EntityType.SPLITTER})
 _FIRE_TI_COST = 2
 
 # How long a tile we just fled stays blacklisted from future dodges, in turns.
@@ -47,21 +47,6 @@ def _nth(items: list, rank: int):
     return items[rank % len(items)]
 
 
-def _coreFootprint(core_pos: Position) -> list[Position]:
-    return [
-        core_pos,
-        Position(core_pos.x + 1, core_pos.y),
-        Position(core_pos.x, core_pos.y + 1),
-        Position(core_pos.x + 1, core_pos.y + 1),
-    ]
-
-
-def _chebyshevToFootprint(pos: Position, core_pos: Position) -> int:
-    return min(
-        max(abs(pos.x - t.x), abs(pos.y - t.y)) for t in _coreFootprint(core_pos)
-    )
-
-
 def _orbitMidSide(bot, ct: Controller, core: Position) -> list[Position]:
     """Four mid-side tiles around enemy 2x2 at ORBIT_OFFSET."""
     o = _ORBIT_OFFSET
@@ -87,13 +72,13 @@ def _orbitRing(bot, ct: Controller, core: Position) -> list[Position]:
     local_map = bot.hivemind.local_map
     o = _ORBIT_OFFSET
     # Bounding box around footprint expanded by o
-    xs = [t.x for t in _coreFootprint(core)]
-    ys = [t.y for t in _coreFootprint(core)]
+    xs = [t.x for t in coreFootprint(core)]
+    ys = [t.y for t in coreFootprint(core)]
     scored: list[Position] = []
     for y in range(min(ys) - o, max(ys) + o + 1):
         for x in range(min(xs) - o, max(xs) + o + 1):
             tile = Position(x, y)
-            if _chebyshevToFootprint(tile, core) != o:
+            if chebyshevToCore(tile, core) != o:
                 continue
             if not inBounds(ct, tile):
                 continue
@@ -377,7 +362,7 @@ def _enemyBeltAt(ct: Controller, tile: Position) -> bool:
         return False
     if ct.get_team(bid) == ct.get_team():
         return False
-    return ct.get_entity_type(bid) in _BELT_TYPES
+    return ct.get_entity_type(bid) in BELT_TYPES
 
 
 def _oreCloserToAlly(bot, ct: Controller, pad: Position) -> bool:
@@ -399,7 +384,7 @@ def _forwardBarrierPads(bot, ct: Controller) -> list[Position]:
     for eid in ct.get_nearby_entities():
         if ct.get_team(eid) == me:
             continue
-        if ct.get_entity_type(eid) not in _BELT_TYPES:
+        if ct.get_entity_type(eid) not in BELT_TYPES:
             continue
         try:
             facing = ct.get_direction(eid)
@@ -490,7 +475,7 @@ def _tryForwardBarrier(bot, ct: Controller, *, adjacent_only: bool) -> bool:
     pos = ct.get_position()
     if ct.get_action_cooldown() == 0:
         for pad in pads:
-            if abs(pos.x - pad.x) + abs(pos.y - pad.y) != 1:
+            if not isAdjacent(pos, pad):
                 continue
             if ct.can_build_barrier(pad):
                 ct.build_barrier(pad)
@@ -510,7 +495,7 @@ def _enemyBeltsByDist(ct: Controller) -> list[Position]:
     for eid in ct.get_nearby_entities():
         if ct.get_team(eid) == me:
             continue
-        if ct.get_entity_type(eid) not in _BELT_TYPES:
+        if ct.get_entity_type(eid) not in BELT_TYPES:
             continue
         belts.append(ct.get_position(eid))
     belts.sort(key=lambda p: (manhattan(pos, p), p.x, p.y))
@@ -602,7 +587,7 @@ def _cutAndBarrier(bot, ct: Controller) -> bool:
         bot.lastCutRound = ct.get_current_round()
 
     pos = ct.get_position()
-    adjacent = abs(pos.x - tile.x) + abs(pos.y - tile.y) == 1
+    adjacent = isAdjacent(pos, tile)
 
     # Belt cleared — plant the barrier from where we already stand
     if ct.is_in_vision(tile) and ct.is_tile_empty(tile):
@@ -670,13 +655,13 @@ def _denyOreCandidates(bot, ct: Controller) -> list[Position]:
     pos = ct.get_position()
     scored: list[tuple[int, int, Position]] = []
     for ore in knownOreTiles(bot):
-        d_enemy = _chebyshevToFootprint(ore, enemy)
+        d_enemy = chebyshevToCore(ore, enemy)
         if d_enemy > radius:
             continue
         # Two independent guards on our own side. The midline alone is not enough on
         # a small map: an ore can be marginally nearer their core yet sit well inside
         # our working range — atoll's contested centre deposit is exactly that shape.
-        if _chebyshevToFootprint(ore, ally) < floor:
+        if chebyshevToCore(ore, ally) < floor:
             continue
         # Midline, inlined rather than via _oreCloserToAlly. That helper leads with
         # `ct.get_tile_env(pad)`, which every other call site in the codebase guards
@@ -728,7 +713,7 @@ def denyOre(bot, ct: Controller) -> bool:
     pos = ct.get_position()
     if ct.get_action_cooldown() == 0:
         for ore in candidates:
-            if abs(pos.x - ore.x) + abs(pos.y - ore.y) != 1:
+            if not isAdjacent(pos, ore):
                 continue
             if ct.can_build_barrier(ore):
                 ct.build_barrier(ore)
@@ -878,21 +863,3 @@ def seekCore(bot, ct: Controller) -> bool:
     if _harassMove(bot, ct, core):
         return True
     return _orbitEnemyCore(bot, ct, core)
-
-
-def run_raider(bot, ct: Controller) -> None:
-    from builder import runHarasser
-
-    runHarasser(bot, ct)
-
-
-def run_raiders(bot, ct: Controller) -> None:
-    from builder import runHarasser
-
-    runHarasser(bot, ct)
-
-
-def run_attack_builder(bot, ct: Controller) -> None:
-    from builder import runHarasser
-
-    runHarasser(bot, ct)
