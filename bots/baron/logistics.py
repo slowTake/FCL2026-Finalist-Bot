@@ -4,6 +4,16 @@ from __future__ import annotations
 
 from fcode import Controller, Direction, EntityType, Environment, Position
 
+from geometry import (
+    BELT_TYPES,
+    DEFEND_HOME_CHEBYSHEV,
+    TURRET_TYPES,
+    chebyshevToCore,
+    coreFootprint,
+    isAdjacent,
+    nearCore,
+    tileEntity,
+)
 from pathing import (
     CARDINALS,
     astarFromSeeds,
@@ -33,15 +43,6 @@ _ORE_BLOCK_CLEAR = (
 # disqualify the node. HARVESTER is handled separately (team-agnostic — any
 # harvester, ally or enemy, means the node is already claimed).
 _ORE_ENEMY_BLOCKERS = _ORE_BLOCK_CLEAR + (EntityType.CORE,)
-
-
-def _coreFootprint(core_pos: Position) -> list[Position]:
-    return [
-        core_pos,
-        Position(core_pos.x + 1, core_pos.y),
-        Position(core_pos.x, core_pos.y + 1),
-        Position(core_pos.x + 1, core_pos.y + 1),
-    ]
 
 
 def clearRelay(bot) -> None:
@@ -132,17 +133,9 @@ def _rememberedAllyHarvester(bot, ct: Controller, tile: Position) -> bool:
     (`relayToCore`'s `bot.oreSite or ct.get_position()`), which is why this
     checks the *entity type*, not just presence.
     """
-    if ct.is_in_vision(tile):
-        bid = ct.get_tile_building_id(tile)
-        return (
-            bid is not None
-            and ct.get_entity_type(bid) == EntityType.HARVESTER
-            and ct.get_team(bid) == ct.get_team()
-        )
-    entry = bot.hivemind.local_map.get((tile.x, tile.y), {})
-    ent = entry.get("entity")
+    ent = tileEntity(ct, tile, local_map=bot.hivemind.local_map)
     return (
-        bool(ent)
+        ent is not None
         and ent.get("type") == EntityType.HARVESTER
         and ent.get("team") == ct.get_team()
     )
@@ -259,11 +252,7 @@ def enemyTurretInVision(ct: Controller) -> bool:
     for eid in ct.get_nearby_entities():
         if ct.get_team(eid) == me:
             continue
-        if ct.get_entity_type(eid) in (
-            EntityType.GUNNER,
-            EntityType.SENTINEL,
-            EntityType.LAUNCHER,
-        ):
+        if ct.get_entity_type(eid) in TURRET_TYPES:
             return True
     return False
 
@@ -277,11 +266,7 @@ def nearestEnemyTurret(ct: Controller) -> Position | None:
     for eid in ct.get_nearby_entities():
         if ct.get_team(eid) == me:
             continue
-        if ct.get_entity_type(eid) not in (
-            EntityType.GUNNER,
-            EntityType.SENTINEL,
-            EntityType.LAUNCHER,
-        ):
+        if ct.get_entity_type(eid) not in TURRET_TYPES:
             continue
         epos = ct.get_position(eid)
         d = manhattan(pos, epos)
@@ -325,8 +310,8 @@ def isCoreAdjacent(
                 return True
     if core_pos is None:
         return False
-    for tile in _coreFootprint(core_pos):
-        if abs(pos.x - tile.x) + abs(pos.y - tile.y) == 1:
+    for tile in coreFootprint(core_pos):
+        if isAdjacent(pos, tile):
             return True
     return False
 
@@ -363,8 +348,8 @@ def _isEnemyCoreAdjacent(
             return True
     if enemy_core is None:
         return False
-    for ctile in _coreFootprint(enemy_core):
-        if abs(tile.x - ctile.x) + abs(tile.y - ctile.y) == 1:
+    for ctile in coreFootprint(enemy_core):
+        if isAdjacent(tile, ctile):
             return True
     return False
 
@@ -374,17 +359,19 @@ def travelFacing(from_pos: Position, to_pos: Position) -> Direction:
 
 
 def facingIntoCore(pos: Position, core_pos: Position) -> Direction:
-    best: Direction | None = None
-    best_dist = 10**9
-    for tile in _coreFootprint(core_pos):
-        dist = abs(pos.x - tile.x) + abs(pos.y - tile.y)
-        if dist != 1:
+    """Cardinal facing from `pos` into the core it is standing next to.
+
+    First adjacent footprint tile wins — the old "nearest" tie-break was
+    vestigial, since every candidate that passes the adjacency filter is at
+    distance 1 by definition and so could never beat the first one found.
+    Falls back to a crow-flies heading when `pos` is not actually adjacent.
+    """
+    for tile in coreFootprint(core_pos):
+        if not isAdjacent(pos, tile):
             continue
-        if dist < best_dist:
-            best_dist = dist
-            best = travelFacing(pos, tile)
-    if best is not None and best != Direction.CENTRE:
-        return best
+        best = travelFacing(pos, tile)
+        if best != Direction.CENTRE:
+            return best
     return nearestCardinal(pos.direction_to(core_pos))
 
 
@@ -567,7 +554,7 @@ def _allowOreSite(bot, ore: Position) -> bool:
         return True
     if bot.corePos is None:
         return True
-    return _chebyshevToCore(ore, bot.corePos) <= DEFEND_HOME_CHEBYSHEV
+    return chebyshevToCore(ore, bot.corePos) <= DEFEND_HOME_CHEBYSHEV
 
 
 def _selfNearOre(ct: Controller, ore: Position) -> bool:
@@ -845,7 +832,7 @@ def _shouldClearAllyOreBlock(ct: Controller, tile: Position) -> bool:
 def _approachOreBlock(bot, ct: Controller, tile: Position) -> bool:
     """Move to a walkable cardinal neighbor of blocked ore (not onto the blocker)."""
     pos = ct.get_position()
-    if abs(pos.x - tile.x) + abs(pos.y - tile.y) == 1:
+    if isAdjacent(pos, tile):
         return False
     local_map = bot.hivemind.local_map
     best: Position | None = None
@@ -960,7 +947,7 @@ def beltFacingOk(ct: Controller, pos: Position, needed: Direction) -> bool:
     bid = ct.get_tile_building_id(pos)
     if bid is None:
         return False
-    if ct.get_entity_type(bid) not in (EntityType.CONVEYOR, EntityType.SPLITTER):
+    if ct.get_entity_type(bid) not in BELT_TYPES:
         return False
     try:
         return ct.get_direction(bid) == needed
@@ -976,7 +963,7 @@ def clearWrongBelt(bot, ct: Controller, tile: Position) -> str:
     if bid is None:
         return "clear"
     etype = ct.get_entity_type(bid)
-    if etype not in (EntityType.CONVEYOR, EntityType.SPLITTER):
+    if etype not in BELT_TYPES:
         return "failed"
     pos = ct.get_position()
     ally = ct.get_team(bid) == ct.get_team()
@@ -990,7 +977,7 @@ def clearWrongBelt(bot, ct: Controller, tile: Position) -> str:
                 return "acted"
         return "failed"
 
-    adjacent = abs(pos.x - tile.x) + abs(pos.y - tile.y) == 1
+    adjacent = isAdjacent(pos, tile)
     if not adjacent:
         if moveToward(bot, ct, tile):
             return "acted"
@@ -1198,7 +1185,7 @@ def relayToCore(bot, ct: Controller) -> None:
         block_id = ct.get_tile_building_id(tile)
         if block_id is not None:
             etype = ct.get_entity_type(block_id)
-            if etype not in (EntityType.CONVEYOR, EntityType.SPLITTER):
+            if etype not in BELT_TYPES:
                 bot.relayPath = None
                 bot.relayBuiltTo = -1
                 return
@@ -1234,7 +1221,7 @@ def relayToCore(bot, ct: Controller) -> None:
             _reportAndAbort(bot, ct)
         return
 
-    adjacent = abs(pos.x - tile.x) + abs(pos.y - tile.y) == 1
+    adjacent = isAdjacent(pos, tile)
     if adjacent:
         result = placeRelayBelt(ct, tile, needed)
         if result == "placed":
@@ -1264,7 +1251,7 @@ def bid_is_belt(ct: Controller, tile: Position) -> bool:
     bid = ct.get_tile_building_id(tile)
     if bid is None:
         return False
-    return ct.get_entity_type(bid) in (EntityType.CONVEYOR, EntityType.SPLITTER)
+    return ct.get_entity_type(bid) in BELT_TYPES
 
 
 # ------------------------------------------------------------------
@@ -1310,7 +1297,7 @@ def buildHarvester(bot, ct: Controller) -> bool:
         return True
     # Try stand next to it
     pos = ct.get_position()
-    if abs(pos.x - target.x) + abs(pos.y - target.y) == 1:
+    if isAdjacent(pos, target):
         return False
     return False
 
@@ -1328,7 +1315,7 @@ def checkOre(bot, ct: Controller, tile: Position) -> bool:
             return False
 
         pos = ct.get_position()
-        if abs(pos.x - tile.x) + abs(pos.y - tile.y) == 1:
+        if isAdjacent(pos, tile):
             if ct.get_action_cooldown() == 0 and ct.can_build_harvester(tile):
                 ct.build_harvester(tile)
                 bot.relayOrigin = tile
@@ -1364,7 +1351,7 @@ def checkOre(bot, ct: Controller, tile: Position) -> bool:
             if not _shouldClearAllyOreBlock(ct, tile):
                 return False
             pos = ct.get_position()
-            if abs(pos.x - tile.x) + abs(pos.y - tile.y) == 1:
+            if isAdjacent(pos, tile):
                 if ct.get_action_cooldown() == 0 and ct.can_destroy(tile):
                     ct.destroy(tile)
                     return True
@@ -1396,23 +1383,7 @@ def maintainHarvester(bot, ct: Controller) -> bool:
     return acted
 
 
-DEFEND_HOME_CHEBYSHEV = 4
 ORE_RECHECK_CLEAR_INTERVAL = 50
-
-
-def _chebyshevToCore(pos: Position, core_pos: Position) -> int:
-    best = 10**9
-    for tile in _coreFootprint(core_pos):
-        d = max(abs(pos.x - tile.x), abs(pos.y - tile.y))
-        if d < best:
-            best = d
-    return best
-
-
-def _nearCore(bot, ct: Controller) -> bool:
-    if bot.corePos is None:
-        return False
-    return _chebyshevToCore(ct.get_position(), bot.corePos) <= DEFEND_HOME_CHEBYSHEV
 
 
 def moveTowardLeash(
@@ -1437,7 +1408,7 @@ def moveTowardLeash(
     if ct.get_move_cooldown() != 0:
         return False
     pos = ct.get_position()
-    if _chebyshevToCore(pos, core_pos) <= radius:
+    if chebyshevToCore(pos, core_pos) <= radius:
         return False
     local_map = bot.hivemind.local_map
 
@@ -1453,8 +1424,8 @@ def moveTowardLeash(
     path = astarFromSeeds(
         [pos],
         is_passable=ok,
-        is_goal=lambda p: _chebyshevToCore(p, core_pos) <= radius,
-        heuristic=lambda p: max(0, _chebyshevToCore(p, core_pos) - radius),
+        is_goal=lambda p: chebyshevToCore(p, core_pos) <= radius,
+        heuristic=lambda p: max(0, chebyshevToCore(p, core_pos) - radius),
         max_iters=PATH_MAX_ITERS,
     )
 
@@ -1491,7 +1462,7 @@ def _safeCoreStandTile(bot, ct: Controller, core: Position) -> Position | None:
 
     gunners = _enemyGunners(ct)
     pos = ct.get_position()
-    footprint = _coreFootprint(core)
+    footprint = coreFootprint(core)
     on_core = {(t.x, t.y) for t in footprint}
     local_map = bot.hivemind.local_map
     best: Position | None = None
@@ -1532,12 +1503,12 @@ def defendHome(bot, ct: Controller) -> bool:
     """
     if bot.inRelay or getattr(bot, "recheckingOre", False):
         return False
-    if not _nearCore(bot, ct):
+    if not nearCore(bot, ct):
         return False
 
     if bot.corePos is None or ct.get_action_cooldown() != 0:
         return False
-    for tile in _coreFootprint(bot.corePos):
+    for tile in coreFootprint(bot.corePos):
         bid = None
         if ct.is_in_vision(tile):
             bid = ct.get_tile_building_id(tile)
@@ -1689,18 +1660,8 @@ def _pickRecheckOre(bot, ct: Controller) -> Position | None:
 
 def _enemyBarrierAt(bot, ct: Controller, tile: Position) -> bool:
     """Enemy barrier on tile, from vision or the ledger."""
-    me = ct.get_team()
-    if ct.is_in_vision(tile):
-        bid = ct.get_tile_building_id(tile)
-        if bid is None:
-            return False
-        return (
-            ct.get_entity_type(bid) == EntityType.BARRIER
-            and ct.get_team(bid) != me
-        )
-    cell = bot.hivemind.local_map.get((tile.x, tile.y))
-    ent = cell.get("entity") if cell else None
-    if not ent or ent.get("team") == me:
+    ent = tileEntity(ct, tile, local_map=bot.hivemind.local_map)
+    if not ent or ent.get("team") == ct.get_team():
         return False
     return ent.get("type") == EntityType.BARRIER
 
@@ -1721,18 +1682,8 @@ _ALLY_DOOR_TYPES = (
 
 def _allyDoorAt(bot, ct: Controller, tile: Position) -> bool:
     """Ally building on tile that we would demolish to reopen a route."""
-    me = ct.get_team()
-    if ct.is_in_vision(tile):
-        bid = ct.get_tile_building_id(tile)
-        if bid is None:
-            return False
-        return (
-            ct.get_team(bid) == me
-            and ct.get_entity_type(bid) in _ALLY_DOOR_TYPES
-        )
-    cell = bot.hivemind.local_map.get((tile.x, tile.y))
-    ent = cell.get("entity") if cell else None
-    if not ent or ent.get("team") != me:
+    ent = tileEntity(ct, tile, local_map=bot.hivemind.local_map)
+    if not ent or ent.get("team") != ct.get_team():
         return False
     return ent.get("type") in _ALLY_DOOR_TYPES
 
@@ -1829,7 +1780,7 @@ def _blockedRouteTarget(bot) -> tuple[Position, bool] | None:
 def _openAllyDoor(bot, ct: Controller, tile: Position) -> bool:
     """Demolish an ally building sealing the lane. Free, no action cooldown."""
     pos = ct.get_position()
-    if abs(pos.x - tile.x) + abs(pos.y - tile.y) == 1:
+    if isAdjacent(pos, tile):
         if not ct.can_destroy(tile):
             return False
         ct.destroy(tile)

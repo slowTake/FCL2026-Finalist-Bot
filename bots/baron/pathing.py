@@ -7,6 +7,8 @@ from typing import Callable
 
 from fcode import Controller, Direction, EntityType, Environment, Position
 
+from geometry import BELT_TYPES
+
 Point = tuple[int, int]
 PassableFn = Callable[[Position], bool]
 GoalFn = Callable[[Position], bool]
@@ -194,7 +196,7 @@ def walkPassable(
         if bid is None:
             return True
         etype = ct.get_entity_type(bid)
-        return etype in (EntityType.CONVEYOR, EntityType.SPLITTER)
+        return etype in BELT_TYPES
     if local_map is not None:
         entry = local_map.get((pos.x, pos.y))
         if entry is not None:
@@ -242,10 +244,7 @@ def relayPassable(
     bid = ct.get_tile_building_id(pos)
     if bid is None:
         return ct.get_tile_env(pos) == Environment.EMPTY
-    etype = ct.get_entity_type(bid)
-    if etype in (EntityType.CONVEYOR, EntityType.SPLITTER):
-        return True
-    return False
+    return ct.get_entity_type(bid) in BELT_TYPES
 
 
 # Cheapest thing to knock down first when a builder has walled itself in.

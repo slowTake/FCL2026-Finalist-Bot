@@ -10,7 +10,8 @@ Quick index: where to edit and main entrypoints. Update when adding public funct
 | `builder.py` | Role orchestrators + task lists | `runBuilderRoles`, `isGuardian`, `isHarasser`, `runGuardian`, `runDefault`, `runHarasser` |
 | `defence.py` | Defensive orchestrators | `defGun`, `defSentinel`, `threateningTurret`, `clearBarriers`, `reconnectBelts`, `patrolHome` |
 | `logistics.py` | Default helpers | `buildHarvester`, `maintainHarvester`, `checkOre`, `relayToCore`, `defendHome`, `healAlly`, `recheckOreNodes`, `openBlockedRoute`, `pathKnownBlocked` |
-| `pathing.py` | A*, passable, obstruction fallback, encirclement breakout | `astar`, `astarFromSeeds`, `walkPassable`, `relayPassable`, `findPathAroundObstruction`, `breakEncirclement` |
+| `geometry.py` | Shared tile primitives (imports `fcode` only — safe to import anywhere) | `coreFootprint`, `chebyshevToCore`, `nearCore`, `isAdjacent`, `tileEntity`, `DEFEND_HOME_CHEBYSHEV`, `BELT_TYPES`, `TURRET_TYPES` |
+| `pathing.py` | A*, passable, obstruction fallback, encirclement breakout | `astarFromSeeds` (the one search loop; `astar` is a single-seed wrapper), `walkPassable`, `relayPassable`, `findPathAroundObstruction`, `breakEncirclement` |
 | `offense.py` | Harasser helpers | `snipeHarvester`, `offGun`, `avoidFire`, `denyOre`, `denyBelt`, `breakBeltDeadlock`, `seekHarvester`, `seekCore` |
 | `guns.py` | Placement + turret loops | `placeGun`, `placeDefSentinel`, `allyGunCovering`, `allySentinelCovering`, `gunnerLoop`, `placeSentinel`, `sentinelLoop`, `topUpAmmo` |
 | `respawn.py` | Core spawn schedule | `Respawn.run_core_spawn`, `SpawnSchedule` |
