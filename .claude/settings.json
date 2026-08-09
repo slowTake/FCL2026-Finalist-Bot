@@ -1,0 +1,30 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_input.file_path // empty' | { read -r f; case \"$f\" in */bots/baron/*.py) touch /tmp/baron-gauntlet-dirty; python3 -m py_compile \"$f\" || exit 2 ;; esac; }",
+            "statusMessage": "Compiling baron..."
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -f /tmp/baron-gauntlet-dirty ]; then rm -f /tmp/baron-gauntlet-dirty; cd /home/peter/projects/teaPot && timeout 480 .venv/bin/python scripts/mirror_gauntlet.py --bot baron > /tmp/baron-gauntlet-last.log 2>&1; ec=$?; if [ $ec -ne 0 ]; then tail -30 /tmp/baron-gauntlet-last.log; exit 2; fi; fi",
+            "statusMessage": "Running baron gauntlet regression...",
+            "timeout": 500,
+            "async": true,
+            "asyncRewake": true
+          }
+        ]
+      }
+    ]
+  }
+}
