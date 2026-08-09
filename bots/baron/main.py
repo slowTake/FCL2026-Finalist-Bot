@@ -68,6 +68,50 @@ GUARDIAN_ECONOMY = True
 # relay — an ore at the leash edge is worked from an adjacent tile one step out.
 GUARDIAN_ECON_SLACK = 1
 
+# --- Guardian patrol offset ---
+# How far patrolHome's mid-side waypoints sit from the core footprint. Was a
+# fixed 2 (defence.py's old _PATROL_OFFSET). Raised, but deliberately to 3, one
+# short of DEFEND_HOME_CHEBYSHEV(4), not to 4 itself: _guardianLeashOk grants
+# no slack while merely patrolling (the GUARDIAN_ECON_SLACK widening only
+# applies while inRelay/oreSite is set), so a waypoint sitting exactly on the
+# leash boundary would leave zero margin — any single A*-forced detour around
+# an obstacle between waypoints puts the guardian at Chebyshev 5, trips
+# moveTowardLeash, and yanks it home mid-patrol. That is the same oscillation
+# class this pass exists to fix, so the offset stays one tile inside the wall
+# rather than touching it. A guardian's own vision (~Chebyshev 4.5) from a
+# waypoint out here still reaches meaningfully closer to
+# TURRET_THREAT_CHEBYSHEV(6) than the old offset ever did — a sentinel parked
+# right at that boundary was observed going completely undetected (its
+# distance² from the core was one over the core's own vision r²) for the
+# entire back half of a match, with no ally unit ever patrolling far enough
+# out to spot it and let defSentinel answer. Reaching further would need the
+# leash itself widened too — out of scope for this pass.
+GUARDIAN_PATROL_OFFSET = 3
+
+# --- Relay merge (False disables) ---
+# pickRelayPath's only goal used to be core-adjacency — a builder relaying a
+# harvester near an already-connected ally line would happily build/walk a
+# full independent line the rest of the way home rather than joining the
+# existing one a few tiles away, because relayPassable already treats an
+# existing belt as passable at the same cost as empty ground (no incentive to
+# prefer it, only crosses one when it happens to be on the shortest route).
+# With this on, the relay's goal is "core-adjacent OR cardinally adjacent to
+# an ally CONVEYOR PROVABLY already connected to the core" (logistics.
+# _relayReachesCore — a bounded forward-walk following each tile's own stored
+# facing, CONVEYOR only, never SPLITTER, since a splitter rotates its output
+# among three directions and a sighting can't say which one the chain
+# actually takes; not "any ally belt" either — an unconditional accept risks
+# landing on a dead/orphaned stub or a sibling's not-yet-committed head,
+# indistinguishable from a live line at the tile level alone). The final
+# tile's needed facing is likewise never recomputed if it's already a
+# provably-connected conveyor in its own right — see neededBeltFacing.
+RELAY_MERGE_ENABLED = True
+# Hop budget for _relayReachesCore's forward-walk. Also bounds worst-case
+# per-turn cost, since the merge goal is evaluated on every node A* expands —
+# capped low enough to stay well inside the 10ms/turn CPU budget even against
+# a long belt line, generous enough to span a normal relay's length.
+RELAY_MERGE_MAX_HOPS = 10
+
 # --- Steal enemy harvesters (False disables) ---
 # A default's ore-scan (pickMaintainOre / _pickRecheckOre / checkOre) normally
 # only ever relays a harvester it owns. With this on, an enemy-owned harvester
@@ -100,6 +144,23 @@ ORE_STAGGER = False
 # — self-reinforcing, forever. Mirrors TURRET_MEMORY_TURNS's role for
 # threateningTurret: an old sighting is still useful signal, just not forever.
 ORE_BLOCK_MEMORY_TURNS = 30
+
+# --- Relay ledger trust (≤0 disables the fallback outright) ---
+# beltFacingOk/extendRelayWatermark normally require live ct.is_in_vision to
+# confirm a belt tile's facing. A relay longer than one unit's own vision
+# (sqrt(20)) can never be verified "already fully built" from a single vantage
+# point without this: a builder parked near one end of its own already-complete
+# corridor, with the other end out of sight, would otherwise keep re-walking
+# the whole route on every relay re-entry — pure movement, no action, forever
+# — and since bot.inRelay stays True the entire time, it locks the unit out of
+# defendHome/defGun/defSentinel/blockGunLine (all `if bot.inRelay: return
+# False`). A stale sighting is worse than no sighting though — the segment may
+# have been destroyed since — so this bounds how old a ledger belt entry may
+# be and still count; older falls through to "unknown," same as before this
+# knob existed. Mirrors ORE_BLOCK_MEMORY_TURNS's shape, own dial: a wrongly
+# trusted belt entry can silently mark a broken relay complete, a materially
+# worse failure than misjudging one ore tile.
+RELAY_LEDGER_TRUST_TURNS = 30
 
 # --- Ore deadlock breaker (≤0 disables) ---
 # Turns a default builder may sit motionless outside a relay before it drops its
@@ -181,9 +242,14 @@ ENCIRCLED_TURNS = 8
 # and, worse, never falls through to yield the turn to whatever comes after it in the
 # role chain (see denyBelt never getting a turn behind a looping denyOre). A unit
 # confined to OSCILLATION_DISTINCT_LIMIT or fewer distinct tiles across the last
-# OSCILLATION_WINDOW turns now also counts as stuck.
+# OSCILLATION_WINDOW turns now also counts as stuck. Was 2 (catches a straight
+# A-B ping-pong); raised to 3 after a guardian was observed bouncing across
+# three distinct tiles ((15,9)/(16,9)/(17,9), near its own core) for 100+ turns
+# without ever tripping this — 2 was one tile too tight for that shape of loop,
+# and every downstream consumer (patrolHome's waypoint-advance escape,
+# breakOreDeadlock, breakEncirclement) inherits the same blind spot.
 OSCILLATION_WINDOW = 6
-OSCILLATION_DISTINCT_LIMIT = 2
+OSCILLATION_DISTINCT_LIMIT = 3
 
 # --- Path-search budget (≤0 / None disables) ---
 # Hard cap on full A* searches (`astarFromSeeds`, PATH_MAX_ITERS=800 each) one bot
@@ -313,6 +379,12 @@ class Player:
         self.scoutedOres: set[tuple[int, int]] = set()
         self.patrolIdx = 0
         self.harassOrbitIdx = 0
+        # The gun-line barrier this guardian itself placed (defence.blockGunLine),
+        # if any — owned by whichever guardian placed it, so
+        # defence.maintainGunLineBlock knows which tile to rebuild on sight
+        # rather than relying solely on the reactive re-place that only
+        # triggers once the gunner has already landed another hit through it.
+        self.gunLineBlockTile: tuple[int, int] | None = None
 
     def run(self, ct: Controller) -> None:
         self.hivemind.tick(ct)

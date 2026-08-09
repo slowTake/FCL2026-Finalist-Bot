@@ -959,27 +959,236 @@ def pickMaintainOre(bot, ct: Controller) -> Position | None:
 # ------------------------------------------------------------------
 
 
+def _beltDirectionAt(bot, ct: Controller, tile: Position) -> Direction | None:
+    """Facing of the ally CONVEYOR at tile, vision first then ledger.
+
+    CONVEYOR only — deliberately excludes SPLITTER, matching
+    `_danglingBeltEnds`'s own precedent: a splitter rotates its output among
+    three directions, so "the way it points" (whichever output was current at
+    sighting time, live or via a possibly-stale ledger entry) does not
+    identify where the chain actually goes. A wrong guess here isn't just a
+    missed merge — it's a *false positive* connectivity proof, which is
+    exactly what the walk below exists to prevent.
+
+    None for anything else — enemy-owned, not a conveyor, no data, or a stale
+    ledger entry (`_beltLedgerStale`). The connectivity walk below treats
+    None as "chain broken here."
+    """
+    me = ct.get_team()
+    if ct.is_in_vision(tile):
+        bid = ct.get_tile_building_id(tile)
+        if bid is None or ct.get_team(bid) != me:
+            return None
+        if ct.get_entity_type(bid) != EntityType.CONVEYOR:
+            return None
+        try:
+            return ct.get_direction(bid)
+        except Exception:
+            return None
+    entry = bot.hivemind.local_map.get((tile.x, tile.y))
+    if not entry or _beltLedgerStale(bot, entry):
+        return None
+    ent = entry.get("entity")
+    if not ent or ent.get("team") != me or ent.get("type") != EntityType.CONVEYOR:
+        return None
+    return ent.get("direction")
+
+
+def _relayReachesCore(
+    bot,
+    ct: Controller,
+    tile: Position,
+    core_pos: Position,
+    *,
+    cache: dict | None = None,
+) -> bool:
+    """Bounded forward-walk proving `tile`'s ally belt chain actually feeds the core.
+
+    Follows each tile's own stored facing (the same ledger `direction` field
+    `_danglingBeltEnds` already reads) toward wherever it actually points,
+    capped at `main.RELAY_MERGE_MAX_HOPS`. This is the forward counterpart to
+    `defence._reconnectFacing`'s backward "what should feed this gap"
+    reasoning — asking "does this chain actually get there" is what a merge
+    target needs proven before a new relay may end at it instead of the core:
+    an unconditional "any ally belt is fine" would risk landing on a
+    dead/orphaned stub or a sibling's not-yet-committed head, neither
+    distinguishable from a live line at the single-tile level (see
+    `OrphanRelayRegistry`'s own rationale for why that distinction matters).
+
+    `cache` (keyed by the starting tile) is a per-`pickRelayPath`-call memo —
+    the merge goal is evaluated on every node A* expands, so without it the
+    same candidate's chain could be re-walked many times in one search.
+    """
+    from main import RELAY_MERGE_MAX_HOPS
+
+    key0 = (tile.x, tile.y)
+    if cache is not None and key0 in cache:
+        return cache[key0]
+    max_hops = RELAY_MERGE_MAX_HOPS if RELAY_MERGE_MAX_HOPS and RELAY_MERGE_MAX_HOPS > 0 else 10
+    cur = tile
+    seen: set[tuple[int, int]] = set()
+    result = False
+    for _ in range(max_hops):
+        if any(cur.x == t.x and cur.y == t.y for t in coreFootprint(core_pos)):
+            result = True
+            break
+        key = (cur.x, cur.y)
+        if key in seen:
+            break  # loop — shouldn't happen on a real belt line, defensive only
+        seen.add(key)
+        d = _beltDirectionAt(bot, ct, cur)
+        if d is None or d == Direction.CENTRE:
+            break
+        cur = cur.add(d)
+        if not inBounds(ct, cur):
+            break
+    if cache is not None:
+        cache[key0] = result
+    return result
+
+
+def _mergeCandidateNeighbor(
+    bot, ct: Controller, tile: Position, core_pos: Position, *, cache: dict | None = None
+) -> Position | None:
+    """A cardinal neighbor of tile that is a provably-connected ally belt, or None.
+
+    Shared by the relay-path merge goal and the final-segment facing proof —
+    both need the exact same answer, so there is only one place that answers
+    it. Excludes the core footprint itself (isCoreAdjacent already owns that
+    case) and any neighbor another ally builder is currently near
+    (`_allyBuilderNear`, the same guard `_danglingBeltEnds` uses — that
+    builder's relay-in-progress head may still reroute out from under a merge).
+
+    Order matters for cost: `_relayReachesCore` is checked first because it's
+    memoized per `pickRelayPath` call and cheap on a repeat visit; the
+    unmemoized `_allyBuilderNear` unit scan only runs once that's already
+    passed, since `is_goal` calls this on every node A* expands.
+    """
+    from defence import _allyBuilderNear, _isBeltOrCore
+
+    footprint = coreFootprint(core_pos)
+    for d in CARDINALS:
+        near = tile.add(d)
+        if not inBounds(ct, near):
+            continue
+        if any(near.x == t.x and near.y == t.y for t in footprint):
+            continue
+        if not _isBeltOrCore(bot, ct, near, core_pos):
+            continue
+        if not _relayReachesCore(bot, ct, near, core_pos, cache=cache):
+            continue
+        if _allyBuilderNear(ct, near):
+            continue
+        return near
+    return None
+
+
 def neededBeltFacing(
-    path: list[Position], idx: int, core_pos: Position
+    bot, ct: Controller, path: list[Position], idx: int, core_pos: Position
 ) -> Direction:
-    """Facing for path[idx]: toward next hop, or into core on last tile."""
+    """Facing for path[idx]: toward next hop; into the core on the last tile;
+    or, when `RELAY_MERGE_ENABLED` and the path ended by merging into an
+    existing ally line instead of reaching the core, into that line.
+
+    The merge case is proof-based like `_reconnectFacing`, never a
+    crow-flies guess — `facingIntoCore` used unconditionally here would aim
+    at the core anchor regardless of which existing belt the path actually
+    merged into, producing exactly the belt-pointing-at-nothing/torn-out-by-
+    `clearWrongBelt` cycle `_reconnectFacing`'s own docstring describes from
+    the one other place this codebase tried a crow-flies fallback.
+
+    **If `tile` is itself already an ally CONVEYOR whose own current facing
+    already reaches the core, that facing is kept as-is — never recomputed.**
+    This is not an optimization, it is load-bearing: `tile` reaching the goal
+    condition proves it is *adjacent to* a provably-connected belt, but says
+    nothing about whether `tile` is itself already a *member* of that same
+    chain (e.g. two tiles mid-line, each already facing the other onward).
+    Recomputing a fresh neighbor-based facing for such a tile can point it at
+    a neighbor that is only "provably connected" *through `tile`'s own
+    current facing* — accepting that would invert the pair into a 2-tile
+    cycle, destroying a working ally belt via `clearWrongBelt` and severing
+    everything downstream of it from the core. Checking self-connectivity
+    first closes that: an empty `tile` (the normal, first-build case) has no
+    facing to read (`_beltDirectionAt` returns `None`), so this only ever
+    applies to a tile that is already a real, working belt.
+    """
     if idx >= len(path) - 1:
-        return facingIntoCore(path[idx], core_pos)
+        tile = path[idx]
+        if isCoreAdjacent(ct, tile, core_pos):
+            return facingIntoCore(tile, core_pos)
+        from main import RELAY_MERGE_ENABLED
+
+        if RELAY_MERGE_ENABLED:
+            own = _beltDirectionAt(bot, ct, tile)
+            if own is not None and own != Direction.CENTRE and _relayReachesCore(
+                bot, ct, tile, core_pos
+            ):
+                return own
+            near = _mergeCandidateNeighbor(bot, ct, tile, core_pos)
+            if near is not None:
+                return travelFacing(tile, near)
+        return facingIntoCore(tile, core_pos)
     return travelFacing(path[idx], path[idx + 1])
 
 
-def beltFacingOk(ct: Controller, pos: Position, needed: Direction) -> bool:
-    if not ct.is_in_vision(pos):
+def _beltLedgerStale(bot, entry: dict) -> bool:
+    """True if a remembered belt-tile sighting is too old to trust its facing.
+
+    Mirrors `_oreLedgerStale`/`ORE_BLOCK_MEMORY_TURNS` — same shape, own knob
+    (`RELAY_LEDGER_TRUST_TURNS`), because a wrongly-trusted belt ledger entry
+    can silently mark a broken relay "complete" rather than merely mis-judge
+    an ore tile, so it gets its own dial rather than sharing one tuned for a
+    different risk.
+    """
+    from main import RELAY_LEDGER_TRUST_TURNS
+
+    trust = RELAY_LEDGER_TRUST_TURNS
+    if not trust or trust <= 0:
+        return True  # knob disables the fallback outright — always "stale"
+    age = bot.hivemind.global_turn - entry.get("last_seen_turn", -(10**9))
+    return age > trust
+
+
+def beltFacingOk(
+    bot, ct: Controller, pos: Position, needed: Direction, *, local_map: dict | None = None
+) -> bool:
+    """True if pos already holds a belt facing `needed` — vision first, ledger fallback.
+
+    A relay spanning more tiles than one unit's own vision (sqrt(20)) can cover
+    at once could never confirm "already fully built" from a single vantage
+    point without this — `extendRelayWatermark`/`relayToCore`'s fog-recovery
+    loop would keep re-walking an already-complete corridor forever, treating
+    every out-of-sight tile as unverified. The ledger already carries the
+    `direction` field for CONVEYOR/SPLITTER sightings (`_danglingBeltEnds`
+    reads the same field), so this is a read, not new state — bounded by
+    `_beltLedgerStale` so a genuinely stale sighting still falls through to
+    "unknown" (returns False) rather than trusting a segment that may have
+    since been destroyed.
+
+    Team-checked on both branches: an enemy belt whose facing happens to
+    match `needed` must never read as "already built" for our own relay —
+    that would mark the segment complete without ever laying a tile of ours.
+    """
+    me = ct.get_team()
+    if ct.is_in_vision(pos):
+        bid = ct.get_tile_building_id(pos)
+        if bid is None or ct.get_team(bid) != me:
+            return False
+        if ct.get_entity_type(bid) not in BELT_TYPES:
+            return False
+        try:
+            return ct.get_direction(bid) == needed
+        except Exception:
+            return False
+    if local_map is None:
         return False
-    bid = ct.get_tile_building_id(pos)
-    if bid is None:
+    entry = local_map.get((pos.x, pos.y))
+    if not entry or _beltLedgerStale(bot, entry):
         return False
-    if ct.get_entity_type(bid) not in BELT_TYPES:
+    ent = entry.get("entity")
+    if not ent or ent.get("team") != me or ent.get("type") not in BELT_TYPES:
         return False
-    try:
-        return ct.get_direction(bid) == needed
-    except Exception:
-        return False
+    return ent.get("direction") == needed
 
 
 def clearWrongBelt(bot, ct: Controller, tile: Position) -> str:
@@ -1039,19 +1248,25 @@ def placeRelayBelt(ct: Controller, tile: Position, facing: Direction) -> str:
 
 
 def extendRelayWatermark(
+    bot,
     ct: Controller,
     path: list[Position],
     core_pos: Position,
     built_to: int,
 ) -> int:
-    """Raise watermark through contiguous visible correct-facing belts."""
+    """Raise watermark through contiguous correct-facing belts, vision or ledger.
+
+    A relay longer than one unit's own vision cone can never be confirmed
+    "already fully built" from a single vantage point without the ledger
+    fallback `beltFacingOk` now carries — see its docstring. Still stops at
+    the first tile that fails either check (wrong facing, empty, or a stale/
+    absent ledger entry), same as before.
+    """
     i = built_to + 1
     while i < len(path):
         tile = path[i]
-        if not ct.is_in_vision(tile):
-            break
-        needed = neededBeltFacing(path, i, core_pos)
-        if not beltFacingOk(ct, tile, needed):
+        needed = neededBeltFacing(bot, ct, path, i, core_pos)
+        if not beltFacingOk(bot, ct, tile, needed, local_map=bot.hivemind.local_map):
             break
         built_to = i
         i += 1
@@ -1069,8 +1284,19 @@ def pickRelayPath(
     if bot.oreSite is not None:
         ore_blocked.add((bot.oreSite.x, bot.oreSite.y))
 
+    from main import RELAY_MERGE_ENABLED
+
+    # Per-call memo: the merge goal is evaluated on every node A* expands, so
+    # without this the same candidate belt's connectivity chain could be
+    # walked repeatedly within one search. See _relayReachesCore.
+    merge_cache: dict = {}
+
     def is_goal(p: Position) -> bool:
-        return isCoreAdjacent(ct, p, core_pos)
+        if isCoreAdjacent(ct, p, core_pos):
+            return True
+        if not RELAY_MERGE_ENABLED:
+            return False
+        return _mergeCandidateNeighbor(bot, ct, p, core_pos, cache=merge_cache) is not None
 
     threat_blocked = getattr(bot, "relayThreatBlocked", None) or None
 
@@ -1140,7 +1366,7 @@ def relayToCore(bot, ct: Controller) -> None:
             abortRelay(bot)
             return
         bot.relayBuiltTo = extendRelayWatermark(
-            ct, path, core_pos, bot.relayBuiltTo
+            bot, ct, path, core_pos, bot.relayBuiltTo
         )
 
     if path is None:
@@ -1155,7 +1381,7 @@ def relayToCore(bot, ct: Controller) -> None:
             bot.relayPath = None
             abortRelay(bot)
             return
-        bot.relayBuiltTo = extendRelayWatermark(ct, path, core_pos, -1)
+        bot.relayBuiltTo = extendRelayWatermark(bot, ct, path, core_pos, -1)
 
     work_from = bot.relayBuiltTo + 1
     if work_from >= len(path):
@@ -1170,8 +1396,8 @@ def relayToCore(bot, ct: Controller) -> None:
     # Skip already-correct tiles that watermark may have missed in fog edge
     while idx < len(path):
         tile = path[idx]
-        needed = neededBeltFacing(path, idx, core_pos)
-        if ct.is_in_vision(tile) and beltFacingOk(ct, tile, needed):
+        needed = neededBeltFacing(bot, ct, path, idx, core_pos)
+        if beltFacingOk(bot, ct, tile, needed, local_map=bot.hivemind.local_map):
             bot.relayBuiltTo = idx
             idx += 1
             continue
@@ -1185,7 +1411,7 @@ def relayToCore(bot, ct: Controller) -> None:
         return
 
     tile = path[idx]
-    needed = neededBeltFacing(path, idx, core_pos)
+    needed = neededBeltFacing(bot, ct, path, idx, core_pos)
     pos = ct.get_position()
 
     # Don't spend titanium on a tile a visible enemy gunner is covering. Route
@@ -1204,7 +1430,7 @@ def relayToCore(bot, ct: Controller) -> None:
             abortRelay(bot)
             return
         bot.relayPath = new_path
-        bot.relayBuiltTo = extendRelayWatermark(ct, new_path, core_pos, -1)
+        bot.relayBuiltTo = extendRelayWatermark(bot, ct, new_path, core_pos, -1)
         return
 
     # Non-belt building blocking — replan
@@ -1218,7 +1444,7 @@ def relayToCore(bot, ct: Controller) -> None:
                 return
 
     if ct.is_in_vision(tile) and bid_is_belt(ct, tile):
-        if not beltFacingOk(ct, tile, needed):
+        if not beltFacingOk(bot, ct, tile, needed, local_map=bot.hivemind.local_map):
             result = clearWrongBelt(bot, ct, tile)
             if result == "acted":
                 return
@@ -1231,7 +1457,7 @@ def relayToCore(bot, ct: Controller) -> None:
                 return
             # clear — fall through to place
 
-    if beltFacingOk(ct, tile, needed):
+    if beltFacingOk(bot, ct, tile, needed, local_map=bot.hivemind.local_map):
         bot.relayBuiltTo = idx
         return
 

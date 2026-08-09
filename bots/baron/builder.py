@@ -24,11 +24,16 @@
 #    idx % 5 in (1, 0) (builders 1,5,6,10,11,…)
 #    Ignores wave. Home defence is entirely the guardians' job — no core-HP recall.
 # 1. leash — outside Chebyshev 4 of core → moveToward core
-# 1b. blockGunLine — enemy gunner currently landing a shot on the core → belt
+# 1b. blockGunLine — enemy gunner currently landing a shot on the core → barrier
 #        (~3 Ti) directly in its line of fire, forcing it to chew through before it
 #        can hit the core again. Cheaper than every turret response below, so it
 #        runs first. Gunners only — no chew-through LoS model exists for
 #        sentinels/launchers, so those fall through to reactEnemyTurret as before.
+# 1c. maintainGunLineBlock — same tier, right after: rebuilds THIS guardian's own
+#        gun-line barrier (bot.gunLineBlockTile) the instant it's destroyed, rather
+#        than waiting on blockGunLine's own reactive re-place (which only fires once
+#        the gunner has already landed another hit through the gap). Opportunistic —
+#        only acts when the tile is already in vision, never a dedicated sortie.
 # 2. reactEnemyTurret — defGun / defendHome / healAlly (skipEconomy=False: an
 #        unactionable turret must not block patrol. homeOnly=True: no action that
 #        needs leaving the leash — contestTurret and unleashed defGun both place
@@ -71,7 +76,12 @@
 #        back to core. A visible enemy unit drops the relay claim so defence isn't
 #        blocked by the inRelay guards; the leash widens by GUARDIAN_ECON_SLACK
 #        while a claim is held.
-# 9. patrolHome — cycle mid-side waypoints around core
+# 9. patrolHome — cycle mid-side waypoints around core at GUARDIAN_PATROL_OFFSET
+#        (main.py, one tile inside the leash — zero slack while merely patrolling,
+#        so a waypoint on the boundary itself would risk moveTowardLeash yanking
+#        the guardian home mid-cycle); each side falls back to its two nearest
+#        diagonal corners if the mid-side tile is walled (some maps wall N/S but
+#        not the corners), so patrol coverage doesn't silently drop below 4 sides
 #
 # ## default — priority order (orchestrator: runDefault below)
 #    idx % 5 in (3, 4) (builders 3,4,8,9,…)
@@ -238,6 +248,7 @@ from defence import (
     clearBarriers,
     defGun,
     defSentinel,
+    maintainGunLineBlock,
     patrolHome,
     reconnectBelts,
 )
@@ -631,9 +642,14 @@ def runGuardian(bot, ct: Controller) -> None:
     if not _guardianLeashOk(bot, ct):
         moveTowardLeash(bot, ct, bot.corePos)
         return
-    # Cheapest answer first: a belt in the gunner's line of fire (~3 Ti) costs far
-    # less than fielding a gunner to kill it. Gunners only — see blockGunLine.
+    # Cheapest answer first: a barrier in the gunner's line of fire (~3 Ti) costs
+    # far less than fielding a gunner to kill it. Gunners only — see blockGunLine.
     if blockGunLine(bot, ct):
+        return
+    # Same tier: whichever guardian placed a block owns rebuilding it the
+    # instant it's gone, rather than waiting on the reactive re-place that
+    # only fires once the gunner has already landed another hit through it.
+    if maintainGunLineBlock(bot, ct):
         return
     # skipEconomy=False: a turret we can't act on must not block patrol.
     # homeOnly=True: defGun / defSentinel answer turrets without leaving home.
