@@ -379,6 +379,12 @@ class Player:
         self.scoutedOres: set[tuple[int, int]] = set()
         self.patrolIdx = 0
         self.harassOrbitIdx = 0
+        # The gun-line barrier this guardian itself placed (defence.blockGunLine),
+        # if any — owned by whichever guardian placed it, so
+        # defence.maintainGunLineBlock knows which tile to rebuild on sight
+        # rather than relying solely on the reactive re-place that only
+        # triggers once the gunner has already landed another hit through it.
+        self.gunLineBlockTile: tuple[int, int] | None = None
 
     def run(self, ct: Controller) -> None:
         self.hivemind.tick(ct)

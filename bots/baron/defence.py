@@ -118,13 +118,44 @@ def _gunnerFiringAtCore(
     return best
 
 
-def blockGunLine(bot, ct: Controller) -> bool:
-    """Barrier-cheap defence: drop a belt in a gunner's current line of fire.
+def _gunLineBlocked(bot, ct: Controller, tile: Position, core: Position) -> bool:
+    """True if tile already holds an ally BARRIER, or is part of the core footprint."""
+    for foot in coreFootprint(core):
+        if tile.x == foot.x and tile.y == foot.y:
+            return True
+    ent = tileEntity(ct, tile, local_map=bot.hivemind.local_map)
+    if not ent or ent.get("team") != ct.get_team():
+        return False
+    return ent.get("type") == EntityType.BARRIER
 
-    A conveyor is ~3 Ti and, per `gunnerHasLos`'s chew-through model, sits
-    squarely in the shot: the engine's own `can_fire_from` already refuses to
-    fire through an occupied tile, so the gunner must destroy the belt before
-    it can land another hit on the core. That is far cheaper than fielding a
+
+def _placeGunLineBarrier(ct: Controller, tile: Position) -> bool:
+    """Build the barrier that blocks a gunner's line of fire. True if placed this turn.
+
+    Barrier, not conveyor: this tile has no economic role, it exists purely
+    to eat shots, and a barrier is 30 HP against a conveyor's 20 for the same
+    ~3 Ti — 50% more shots the gunner has to spend to break through for equal
+    cost on our side.
+    """
+    if not ct.is_in_vision(tile):
+        return False
+    if ct.get_tile_building_id(tile) is not None:
+        return False
+    if ct.get_action_cooldown() != 0:
+        return False
+    if ct.can_build_barrier(tile):
+        ct.build_barrier(tile)
+        return True
+    return False
+
+
+def blockGunLine(bot, ct: Controller) -> bool:
+    """Barrier-cheap defence: drop a barrier in a gunner's current line of fire.
+
+    Per `gunnerHasLos`'s chew-through model, sitting squarely in the shot
+    works because the engine's own `can_fire_from` already refuses to fire
+    through an occupied tile — the gunner must destroy the barrier before it
+    can land another hit on the core. That is far cheaper than fielding a
     gunner to kill the threat outright (30+ Ti and several turns), so this
     runs ahead of the turret-response chain (`_reactEnemyTurret` / `defGun` /
     `defSentinel`) — those spend Ti to remove the threat, this only spends Ti
@@ -134,6 +165,11 @@ def blockGunLine(bot, ct: Controller) -> bool:
     `tileThreatenedByGunner`) only exists for gunners in this codebase —
     sentinels/launchers aren't modeled the same way and fall through to the
     normal turret responses instead.
+
+    Records the tile on `bot.gunLineBlockTile` so `maintainGunLineBlock` can
+    follow up and rebuild it the moment it's gone, rather than this being a
+    one-off placement that only gets reactively re-triggered once the gunner
+    has already landed another hit through the gap.
     """
     core = bot.corePos
     if core is None or bot.inRelay or getattr(bot, "recheckingOre", False):
@@ -146,14 +182,54 @@ def blockGunLine(bot, ct: Controller) -> bool:
     block = core_tile.add(facing.opposite())
     if not inBounds(ct, block):
         return False
-    if _isBeltOrCore(bot, ct, block, core):
+    if _gunLineBlocked(bot, ct, block, core):
         return False  # already blocked
     if not _layableTile(ct, block):
         return False
+    if _placeGunLineBarrier(ct, block):
+        bot.gunLineBlockTile = (block.x, block.y)
+        return True
+    return False
 
-    from logistics import facingIntoCore, placeRelayBelt
 
-    return placeRelayBelt(ct, block, facingIntoCore(block, core)) == "placed"
+def maintainGunLineBlock(bot, ct: Controller) -> bool:
+    """Rebuild this guardian's own gun-line barrier the moment it's destroyed.
+
+    `blockGunLine` is a one-off placement; without this, the block only ever
+    gets reactively re-placed once `_gunnerFiringAtCore` proves the gunner
+    has already landed *another* hit through the gap (that's the only way it
+    notices a break), and only if whichever guardian's turn comes up next
+    happens to have that exact tile in vision. This makes the specific
+    builder that placed a block own its upkeep instead: check every turn the
+    tile is in vision, rebuild the instant it's gone — cheap for us (~3 Ti a
+    barrier), and every rebuild the enemy forces is shots and ammo they spent
+    for nothing.
+
+    Opportunistic, not a dedicated sortie: this only acts when the tile is
+    already in vision and needs rebuilding, at the same priority tier as
+    `blockGunLine` itself — it does not pull the guardian off patrol/economy
+    to go stand next to a barrier that's still standing. Ownership needs no
+    explicit release either: once the tile holds a barrier again, this is a
+    no-op every turn until something breaks it again, and if the owning
+    guardian dies, `bot.gunLineBlockTile` simply dies with it — any other
+    guardian's own `blockGunLine` picks the gap back up fresh if the gunner
+    is still connecting.
+    """
+    core = bot.corePos
+    tile_xy = getattr(bot, "gunLineBlockTile", None)
+    if core is None or tile_xy is None:
+        return False
+    if bot.inRelay or getattr(bot, "recheckingOre", False):
+        return False
+    tile = Position(tile_xy[0], tile_xy[1])
+    if _gunLineBlocked(bot, ct, tile, core):
+        return False  # still standing, nothing to do
+    if not ct.is_in_vision(tile):
+        return False  # can't confirm or act — wait for vision, don't chase it
+    if not _layableTile(ct, tile):
+        bot.gunLineBlockTile = None  # tile is occupied by something else now
+        return False
+    return _placeGunLineBarrier(ct, tile)
 
 
 # Which parked turret to answer first: the ones that out-range the leash.
