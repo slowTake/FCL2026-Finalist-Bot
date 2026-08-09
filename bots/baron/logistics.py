@@ -59,6 +59,193 @@ def abortRelay(bot) -> None:
     clearRelay(bot)
 
 
+# ------------------------------------------------------------------
+# Orphan relay registry — store slots 1-3 (main.SLOT_ORPHAN_1/2/3)
+# ------------------------------------------------------------------
+# `abortRelay` above wipes only the aborting builder's own state; nothing else
+# ever learns the harvester it was relaying from still needs a belt unless
+# this same builder happens to re-find that exact tile itself later. This is a
+# small, team-wide "still needs a belt" mailbox so any *other* idle builder
+# can pick it up — see CONTEXT.md's RelayToCore section for the full design
+# rationale (why report-only with no claim field, why only some abort sites
+# report, why 3 slots).
+#
+# Record = one u32: an explicit occupied bit (so a real (0,0)-at-turn-0
+# record is never confused with an empty slot's bare 0) plus 7-bit x, 7-bit y
+# (map dimensions top out at 40x32 — mirrors pack_cores's coordinate width in
+# hivemind.py, not the ledger's narrower 5-bit one in vision_v2.py) and a
+# 10-bit report turn (MAX_TURNS=1000 fits with room to spare — no wraparound
+# handling needed).
+_ORPHAN_TURN_BITS = 10
+_ORPHAN_TURN_MASK = (1 << _ORPHAN_TURN_BITS) - 1
+_ORPHAN_COORD_BITS = 7
+_ORPHAN_COORD_MASK = (1 << _ORPHAN_COORD_BITS) - 1
+_ORPHAN_OCCUPIED_BIT = 1 << (_ORPHAN_COORD_BITS * 2 + _ORPHAN_TURN_BITS)
+
+
+def _orphanSlots() -> tuple[int, int, int]:
+    from main import SLOT_ORPHAN_1, SLOT_ORPHAN_2, SLOT_ORPHAN_3
+
+    return (SLOT_ORPHAN_1, SLOT_ORPHAN_2, SLOT_ORPHAN_3)
+
+
+def _packOrphan(x: int, y: int, turn: int) -> int:
+    return (
+        _ORPHAN_OCCUPIED_BIT
+        | ((x & _ORPHAN_COORD_MASK) << (_ORPHAN_COORD_BITS + _ORPHAN_TURN_BITS))
+        | ((y & _ORPHAN_COORD_MASK) << _ORPHAN_TURN_BITS)
+        | (turn & _ORPHAN_TURN_MASK)
+    )
+
+
+def _unpackOrphan(val: int) -> tuple[int, int, int] | None:
+    """(x, y, reportedAtTurn), or None if the slot is empty."""
+    if val == 0:
+        return None
+    turn = val & _ORPHAN_TURN_MASK
+    y = (val >> _ORPHAN_TURN_BITS) & _ORPHAN_COORD_MASK
+    x = (val >> (_ORPHAN_COORD_BITS + _ORPHAN_TURN_BITS)) & _ORPHAN_COORD_MASK
+    return x, y, turn
+
+
+def _readOrphanRegistry(ct: Controller) -> list[tuple[int, tuple[int, int, int]]]:
+    """[(slot, (x, y, reportedAtTurn)), ...] for every occupied slot."""
+    out = []
+    for slot in _orphanSlots():
+        rec = _unpackOrphan(ct.read_store(slot))
+        if rec is not None:
+            out.append((slot, rec))
+    return out
+
+
+def _rememberedAllyHarvester(bot, ct: Controller, tile: Position) -> bool:
+    """True if `tile` is known — live or remembered — to hold an ally harvester.
+
+    Mirrors the fog-tolerant live-vision/local_map fallback pattern
+    `pickMaintainOre`/`_pickRecheckOre` already use elsewhere in this file:
+    ground truth when we have it, last-remembered state otherwise. The
+    reporting builder is very often *not* standing at `relayOrigin` anymore
+    by the time an abort fires (it aborts at whatever tile along the route it
+    got stuck on), so requiring live vision here would silently drop most
+    reports — but this must not accept an arbitrary tile either, since
+    `relayOrigin` can fall back to the builder's own bare position
+    (`relayToCore`'s `bot.oreSite or ct.get_position()`), which is why this
+    checks the *entity type*, not just presence.
+    """
+    if ct.is_in_vision(tile):
+        bid = ct.get_tile_building_id(tile)
+        return (
+            bid is not None
+            and ct.get_entity_type(bid) == EntityType.HARVESTER
+            and ct.get_team(bid) == ct.get_team()
+        )
+    entry = bot.hivemind.local_map.get((tile.x, tile.y), {})
+    ent = entry.get("entity")
+    return (
+        bool(ent)
+        and ent.get("type") == EntityType.HARVESTER
+        and ent.get("team") == ct.get_team()
+    )
+
+
+def reportOrphanRelay(bot, ct: Controller, tile: Position) -> None:
+    """Broadcast `tile` (a harvester whose relay we're giving up on) for pickup.
+
+    Dedups by tile — if already registered (by us or someone else), just
+    refreshes its turn instead of taking a second slot; two builders
+    reporting the same tile in the same round write byte-identical values, so
+    that collision is harmless by construction. Otherwise takes a free slot,
+    or evicts whichever entry is stalest if all three are already holding
+    *different* tiles.
+    """
+    if not _rememberedAllyHarvester(bot, ct, tile):
+        return  # not actually a harvester we own — nothing to report
+    turn = ct.get_current_round() & _ORPHAN_TURN_MASK
+    entries = _readOrphanRegistry(ct)
+    for slot, (x, y, _t) in entries:
+        if (x, y) == (tile.x, tile.y):
+            ct.write_store(slot, _packOrphan(tile.x, tile.y, turn))
+            return
+    occupied = {slot for slot, _ in entries}
+    free = [s for s in _orphanSlots() if s not in occupied]
+    if free:
+        ct.write_store(free[0], _packOrphan(tile.x, tile.y, turn))
+        return
+    oldest_slot, _ = min(entries, key=lambda e: e[1][2])
+    ct.write_store(oldest_slot, _packOrphan(tile.x, tile.y, turn))
+
+
+def clearOrphanRelay(ct: Controller, tile: Position) -> None:
+    """Clear a registry entry for `tile`, if one exists — its relay is done."""
+    for slot, (x, y, _t) in _readOrphanRegistry(ct):
+        if (x, y) == (tile.x, tile.y):
+            ct.write_store(slot, 0)
+            return
+
+
+def _reportAndAbort(bot, ct: Controller) -> None:
+    """abortRelay, but first offer the harvester up for another builder to finish.
+
+    Only called from relayToCore's builder-local / fog-dependent abort sites —
+    a different builder, with different fog knowledge or a different approach
+    angle, genuinely has a shot where this one didn't. Deliberately *not*
+    called from the enemy-core-adjacent abort (every builder re-derives the
+    same geometric verdict — reporting it just thrashes the registry) or the
+    titanium-starved placement abort (every builder shares one bank and fails
+    identically; it self-resolves once Ti arrives, so reporting it floods the
+    registry with a tile that isn't actually stuck).
+    """
+    if bot.relayOrigin is not None:
+        reportOrphanRelay(bot, ct, bot.relayOrigin)
+    abortRelay(bot)
+
+
+def _pickOrphanRelay(bot, ct: Controller) -> Position | None:
+    """Nearest usable orphan from the shared registry, else None.
+
+    Applies the same filters every other candidate in `pickMaintainOre` /
+    `_pickRecheckOre` already goes through — `_allowOreSite` (so a guardian's
+    leash confines this to in-leash orphans for free, no guardian-specific
+    code needed) and `skippedOres` (so a builder that already gave up on this
+    exact tile doesn't immediately re-pick it here). Also evicts entries that
+    live vision now proves stale (TTL-expired, or the harvester is visibly
+    gone) — not-in-vision entries are trusted as-is, same fog tolerance as
+    the rest of this file.
+    """
+    from main import ORPHAN_REGISTRY_TTL_TURNS
+
+    skipped = getattr(bot, "skippedOres", set())
+    now = ct.get_current_round()
+    pos = ct.get_position()
+    best: Position | None = None
+    best_d = 10**9
+    for slot, (x, y, turn) in _readOrphanRegistry(ct):
+        if now - turn > ORPHAN_REGISTRY_TTL_TURNS:
+            ct.write_store(slot, 0)
+            continue
+        if (x, y) in skipped:
+            continue
+        tile = Position(x, y)
+        if not _allowOreSite(bot, tile):
+            continue
+        if ct.is_in_vision(tile):
+            bid = ct.get_tile_building_id(tile)
+            if (
+                bid is None
+                or ct.get_entity_type(bid) != EntityType.HARVESTER
+                or ct.get_team(bid) != ct.get_team()
+            ):
+                ct.write_store(slot, 0)  # visibly no longer a live ally harvester
+                continue
+            if allyBuilderNearOre(ct, tile):
+                continue  # someone's already there working it
+        d = manhattan(pos, tile)
+        if d < best_d:
+            best_d = d
+            best = tile
+    return best
+
+
 def relayEverComplete(ct: Controller) -> bool:
     """True after the team has finished at least one inbound relay (slot 0)."""
     from main import SLOT_RELAY_COMPLETE
@@ -233,6 +420,27 @@ def pathKnownBlocked(bot, target: Position) -> bool:
     return getattr(bot, "lastPathFailedTarget", None) == (target.x, target.y)
 
 
+def _blockedByEnemyBot(ct: Controller, p: Position) -> bool:
+    """True only if an *enemy* builder bot currently occupies `p`.
+
+    An ally bot on the tile is not a real obstacle — build legality
+    (`can_build_*`) never cares who else is standing nearby, and the occupant will
+    almost certainly have moved on by the time a multi-tile route actually reaches
+    it. Treating it as passable here still costs nothing: the one genuinely
+    immovable case, stepping onto a tile that is occupied *right now*, is already
+    caught downstream by `can_move` refusing that single step. Blocking on it in
+    A* instead used to make every route through a patrolling guardian read as
+    sealed, stalling relays and leash returns that were never actually blocked
+    (see the entity-11/entity-14 contention in the 2026-08-09 drumlin game).
+    An enemy bot is kept as a real obstacle: unlike an ally, it may be parked
+    there on purpose and isn't something we can coordinate around.
+    """
+    if not ct.is_in_vision(p):
+        return False
+    occ = ct.get_tile_builder_bot_id(p)
+    return occ is not None and ct.get_team(occ) != ct.get_team()
+
+
 def moveToward(
     bot, ct: Controller, target: Position, *, avoid: set[tuple[int, int]] | None = None
 ) -> bool:
@@ -256,7 +464,7 @@ def moveToward(
             return False
         if avoid and (p.x, p.y) in avoid:
             return False
-        if ct.is_in_vision(p) and ct.get_tile_builder_bot_id(p) is not None:
+        if _blockedByEnemyBot(ct, p):
             return False
         return walkPassable(ct, p, local_map=local_map)
 
@@ -660,12 +868,18 @@ def _approachOreBlock(bot, ct: Controller, tile: Position) -> bool:
 
 
 def pickMaintainOre(bot, ct: Controller) -> Position | None:
-    """Prefer sticky site, else staggered empty or nearest harvester/block."""
+    """Prefer sticky site, else a reported orphan, else staggered empty/harvester/block."""
     _clearStickyIfAllyClaimed(bot, ct)
     if bot.oreSite is not None:
         if _allowOreSite(bot, bot.oreSite):
             return bot.oreSite
         bot.oreSite = None
+
+    # An orphaned harvester already has 20 Ti sunk into it and needs only belts —
+    # cheaper to rescue than starting fresh, so it outranks pickEmptyOre below.
+    orphan = _pickOrphanRelay(bot, ct)
+    if orphan is not None:
+        return orphan
 
     pos = ct.get_position()
     core = bot.corePos
@@ -925,7 +1139,11 @@ def relayToCore(bot, ct: Controller) -> None:
         path = pickRelayPath(bot, ct, bot.relayOrigin, core_pos)
         bot.relayPath = path
         bot.relayBuiltTo = -1
-        if path is None or _isEnemyCoreAdjacent(ct, path[-1], enemy_core):
+        if path is None:
+            bot.relayPath = None
+            _reportAndAbort(bot, ct)
+            return
+        if _isEnemyCoreAdjacent(ct, path[-1], enemy_core):
             bot.relayPath = None
             abortRelay(bot)
             return
@@ -934,6 +1152,8 @@ def relayToCore(bot, ct: Controller) -> None:
     work_from = bot.relayBuiltTo + 1
     if work_from >= len(path):
         markRelayComplete(ct)
+        if bot.relayOrigin is not None:
+            clearOrphanRelay(ct, bot.relayOrigin)
         clearRelay(bot)
         bot.oreSite = None
         return
@@ -950,6 +1170,8 @@ def relayToCore(bot, ct: Controller) -> None:
         break
     else:
         markRelayComplete(ct)
+        if bot.relayOrigin is not None:
+            clearOrphanRelay(ct, bot.relayOrigin)
         clearRelay(bot)
         bot.oreSite = None
         return
@@ -967,7 +1189,10 @@ def relayToCore(bot, ct: Controller) -> None:
     if tileThreatenedByGunner(ct, tile):
         bot.relayThreatBlocked.add((tile.x, tile.y))
         new_path = pickRelayPath(bot, ct, bot.relayOrigin, core_pos)
-        if new_path is None or _isEnemyCoreAdjacent(ct, new_path[-1], enemy_core):
+        if new_path is None:
+            _reportAndAbort(bot, ct)
+            return
+        if _isEnemyCoreAdjacent(ct, new_path[-1], enemy_core):
             abortRelay(bot)
             return
         bot.relayPath = new_path
@@ -992,7 +1217,7 @@ def relayToCore(bot, ct: Controller) -> None:
             if result == "failed":
                 bot.relayStuck = getattr(bot, "relayStuck", 0) + 1
                 if bot.relayStuck >= 3:
-                    abortRelay(bot)
+                    _reportAndAbort(bot, ct)
                 return
             if result == "waiting":
                 return
@@ -1012,7 +1237,7 @@ def relayToCore(bot, ct: Controller) -> None:
                 return
         bot.relayStuck = getattr(bot, "relayStuck", 0) + 1
         if bot.relayStuck >= 3:
-            abortRelay(bot)
+            _reportAndAbort(bot, ct)
         return
 
     adjacent = abs(pos.x - tile.x) + abs(pos.y - tile.y) == 1
@@ -1038,7 +1263,7 @@ def relayToCore(bot, ct: Controller) -> None:
     else:
         bot.relayStuck = getattr(bot, "relayStuck", 0) + 1
         if bot.relayStuck >= 3:
-            abortRelay(bot)
+            _reportAndAbort(bot, ct)
 
 
 def bid_is_belt(ct: Controller, tile: Position) -> bool:
@@ -1233,7 +1458,7 @@ def moveTowardLeash(
             return True
         if not inBounds(ct, p):
             return False
-        if ct.is_in_vision(p) and ct.get_tile_builder_bot_id(p) is not None:
+        if _blockedByEnemyBot(ct, p):
             return False
         return walkPassable(ct, p, local_map=local_map)
 
@@ -1390,7 +1615,11 @@ def healAlly(bot, ct: Controller) -> bool:
 
 
 def _pickRecheckOre(bot, ct: Controller) -> Position | None:
-    """Prefer empty, then clearable ally-blocked, then harvester; honor skippedOres."""
+    """Prefer a reported orphan, then empty, then ally-blocked, then harvester."""
+    orphan = _pickOrphanRelay(bot, ct)
+    if orphan is not None:
+        return orphan
+
     skipped = getattr(bot, "skippedOres", set())
     pos = ct.get_position()
     core = bot.corePos
@@ -1557,7 +1786,7 @@ def findBlockingDoor(
             return True  # pretend it is open — this is what we are looking for
         if relay:
             return relayPassable(ct, p, local_map=local_map)
-        if ct.is_in_vision(p) and ct.get_tile_builder_bot_id(p) is not None:
+        if _blockedByEnemyBot(ct, p):
             return False
         return walkPassable(ct, p, local_map=local_map)
 

@@ -2,7 +2,8 @@
 
 Store slots (HiveMind v2):
   0  SLOT_RELAY_COMPLETE   1 after first inbound relay finishes
-  1–3 Player free
+  1–3 SLOT_ORPHAN_1/2/3    orphaned-harvester registry (logistics.py) — the
+       last Player-free slots; nothing else may claim them
   4–15 HiveMind-owned — never write from Player
        4 builder registry · 5–12 delta ledger · 13 metronome
        14 map id · 15 packed cores
@@ -197,9 +198,21 @@ DEFAULT_AMMO_START_TURN = 1
 RAIDER_AMMO_START_TURN = 30
 MAX_AMMO_POOL: int | None = None
 
-# --- Store slots (Player 0–3 only; 1–3 free) ---
+# --- Store slots (Player 0–3 only; 4–15 HiveMind-owned) ---
 SLOT_RELAY_COMPLETE = 0
+SLOT_ORPHAN_1 = 1
+SLOT_ORPHAN_2 = 2
+SLOT_ORPHAN_3 = 3
 SLOT_PACKED_CORES = 15
+
+# --- Orphan relay registry (≤0 disables reporting/pickup) ---
+# How stale an orphan-registry entry (bots/baron/logistics.py) may be before a
+# reader treats it as unreadable and evicts it on next write. No claim/heartbeat
+# mechanism exists (see docs/adr or CONTEXT.md's RelayToCore section for why),
+# so this is the only thing that ever frees a slot whose harvester died or got
+# reconnected some way the explicit clear-on-success hook didn't see. Mirrors
+# ORE_RECHECK_CLEAR_INTERVAL (logistics.py) rather than inventing a new figure.
+ORPHAN_REGISTRY_TTL_TURNS = 50
 
 DEBUG = True
 

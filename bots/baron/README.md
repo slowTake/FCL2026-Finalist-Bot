@@ -1,6 +1,6 @@
 # baron
 
-Multi-module bot on **HiveMind v2**. Per five builders: **2 guardians** / **2 harassers** / **1 default** (`idx % 5`). Defaults run harvesters + inbound relay; guardians leash home; harassers pressure.
+Multi-module bot on **HiveMind v2**. Per five builders: **2 guardians** / **1 harasser** / **2 defaults** (`idx % 5`). Defaults run harvesters + inbound relay; guardians leash home; harassers pressure.
 
 ## Layout
 
@@ -20,14 +20,14 @@ Agents: [`AGENT.md`](AGENT.md). Terms: [`CONTEXT.md`](CONTEXT.md).
 | Slot | Owner | Purpose |
 |------|-------|---------|
 | 0 | Player | `SLOT_RELAY_COMPLETE` |
-| 1–3 | Player | free |
+| 1–3 | Player | `SLOT_ORPHAN_1/2/3` — orphaned-harvester registry (`logistics.py`) |
 | 4 | HiveMind | Builder registry count |
 | 5–12 | HiveMind | Delta ledger |
 | 13 | HiveMind | Metronome |
 | 14 | HiveMind | Map id |
 | 15 | HiveMind | Packed cores |
 
-Never write 4–15 from Player.
+Never write 4–15 from Player. 1–3 are now spoken for — nothing else may claim them.
 
 ## Run
 
