@@ -71,7 +71,12 @@
 #        back to core. A visible enemy unit drops the relay claim so defence isn't
 #        blocked by the inRelay guards; the leash widens by GUARDIAN_ECON_SLACK
 #        while a claim is held.
-# 9. patrolHome — cycle mid-side waypoints around core
+# 9. patrolHome — cycle mid-side waypoints around core at GUARDIAN_PATROL_OFFSET
+#        (main.py, one tile inside the leash — zero slack while merely patrolling,
+#        so a waypoint on the boundary itself would risk moveTowardLeash yanking
+#        the guardian home mid-cycle); each side falls back to its two nearest
+#        diagonal corners if the mid-side tile is walled (some maps wall N/S but
+#        not the corners), so patrol coverage doesn't silently drop below 4 sides
 #
 # ## default — priority order (orchestrator: runDefault below)
 #    idx % 5 in (3, 4) (builders 3,4,8,9,…)

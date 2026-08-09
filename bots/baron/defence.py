@@ -23,8 +23,6 @@ from guns import (
 )
 from pathing import CARDINALS, inBounds, manhattan, walkPassable
 
-_PATROL_OFFSET = 2
-
 
 def _pickDefGunTarget(ct: Controller, core_pos: Position | None) -> Position | None:
     """Nearest enemy gunner/sentinel/launcher in vision — never a builder.
@@ -471,25 +469,75 @@ def reconnectBelts(bot, ct: Controller) -> bool:
 
 
 def _patrolWaypoints(bot, ct: Controller) -> list[Position]:
-    """Four mid-side tiles around the 2x2 footprint at patrol offset."""
+    """Mid-side tiles around the 2x2 footprint at patrol offset, one per side.
+
+    Offset is `main.GUARDIAN_PATROL_OFFSET` — one tile inside
+    `DEFEND_HOME_CHEBYSHEV`, not on it, so a single A*-forced detour around an
+    obstacle between waypoints still has margin before `_guardianLeashOk`
+    (which grants no slack while merely patrolling) trips and
+    `moveTowardLeash` yanks the guardian home mid-cycle. Still meaningfully
+    wider than the old fixed offset, giving a guardian's own vision
+    (~Chebyshev 4.5) a real chance to reach out toward
+    `TURRET_THREAT_CHEBYSHEV`(6) instead of sitting right against the core.
+
+    Each side tries its straight mid-side tile first, then the two nearest
+    diagonal corners on that same side if the mid-side tile is walled —
+    confirmed on a real map (`heart`) that a core's N/S mid-side tiles can
+    sit inside terrain, silently dropping `patrolHome` to only 2 of 4
+    waypoints and leaving a guardian with nowhere to cycle to but back and
+    forth between the two that remained. Adjacent sides share their nearest
+    corner (e.g. N and W both list the NW corner first), so a corner already
+    claimed by an earlier side is skipped rather than reused — otherwise two
+    walled mid-side tiles could silently collapse to the *same* fallback
+    tile, still short of 4 distinct waypoints despite the fallback existing.
+    """
     core = bot.corePos
     if core is None:
         return []
-    o = _PATROL_OFFSET
-    raw = [
-        Position(core.x, core.y - o),  # N
-        Position(core.x + 1 + o, core.y),  # E
-        Position(core.x, core.y + 1 + o),  # S
-        Position(core.x - o, core.y),  # W
-    ]
+    from main import GUARDIAN_PATROL_OFFSET
+
+    o = GUARDIAN_PATROL_OFFSET
     local_map = bot.hivemind.local_map
-    out: list[Position] = []
-    for tile in raw:
+    claimed: set[tuple[int, int]] = set()
+
+    def usable(tile: Position) -> bool:
+        key = (tile.x, tile.y)
+        if key in claimed:
+            return False
         if not inBounds(ct, tile):
+            return False
+        return walkPassable(ct, tile, local_map=local_map)
+
+    # (mid-side tile, [nearest-corner fallbacks]) per side.
+    sides = [
+        (
+            Position(core.x, core.y - o),  # N
+            [Position(core.x - o, core.y - o), Position(core.x + 1 + o, core.y - o)],
+        ),
+        (
+            Position(core.x + 1 + o, core.y),  # E
+            [Position(core.x + 1 + o, core.y - o), Position(core.x + 1 + o, core.y + 1 + o)],
+        ),
+        (
+            Position(core.x, core.y + 1 + o),  # S
+            [Position(core.x - o, core.y + 1 + o), Position(core.x + 1 + o, core.y + 1 + o)],
+        ),
+        (
+            Position(core.x - o, core.y),  # W
+            [Position(core.x - o, core.y - o), Position(core.x - o, core.y + 1 + o)],
+        ),
+    ]
+    out: list[Position] = []
+    for primary, fallbacks in sides:
+        if usable(primary):
+            out.append(primary)
+            claimed.add((primary.x, primary.y))
             continue
-        if not walkPassable(ct, tile, local_map=local_map):
-            continue
-        out.append(tile)
+        for alt in fallbacks:
+            if usable(alt):
+                out.append(alt)
+                claimed.add((alt.x, alt.y))
+                break
     return out
 
 
