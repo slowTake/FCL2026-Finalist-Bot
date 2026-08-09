@@ -346,6 +346,12 @@ def _bestGunnerFacing(
 # manual ray-walk fallback in gunnerHasLos.
 _MAX_GUN_PADS = 10
 
+# Same idea as _MAX_GUN_PADS but for _sentinelPadsNearTarget's 13x13 box
+# (up to 169 candidates) — that scan never had an early-exit cap, so it always
+# walked the full box even once placeSentinel had more than enough pads to
+# pick from.
+_MAX_SENTINEL_PADS = 10
+
 
 def _gunnerPadsNearTarget(
     ct: Controller, target: Position
@@ -644,6 +650,8 @@ def _sentinelPadsNearTarget(
             if facing is None:
                 continue
             pads.append((site, facing))
+            if len(pads) >= _MAX_SENTINEL_PADS:
+                return pads
     return pads
 
 

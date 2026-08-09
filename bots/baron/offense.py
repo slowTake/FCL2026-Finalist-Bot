@@ -233,7 +233,11 @@ def avoidFire(bot, ct: Controller, *, goal=_GOAL_DEFAULT) -> bool:
     gunners = _enemyGunners(ct)
     if not gunners:
         return False
-    if not _tileUnderGunnerFire(ct, pos, gunners):
+    # Shared per-tile memo (env / entity lookups), same pattern as
+    # _gunfireSafePads/_gunnerPadsNearTarget in guns.py — the dy/dx box below
+    # can re-check the same gunner's ray from many candidate tiles in one call.
+    cache: dict = {}
+    if not _tileUnderGunnerFire(ct, pos, gunners, cache=cache):
         return False
 
     if goal is _GOAL_DEFAULT:
@@ -256,7 +260,7 @@ def avoidFire(bot, ct: Controller, *, goal=_GOAL_DEFAULT) -> bool:
                 continue
             if ct.is_in_vision(cand) and ct.get_tile_builder_bot_id(cand) is not None:
                 continue
-            if _tileUnderGunnerFire(ct, cand, gunners):
+            if _tileUnderGunnerFire(ct, cand, gunners, cache=cache):
                 continue
             step = abs(dx) + abs(dy)
             if goal is not None:
