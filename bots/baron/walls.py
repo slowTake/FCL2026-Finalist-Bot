@@ -53,26 +53,3 @@ def wallEnemyCore(ct: Controller, core: Position) -> bool:
             ct.build_barrier(tile)
             return True
     return False
-
-
-# version that just builds wall at a specified target
-# gets rid of anything in the way and then will build
-def wallAtTarget(ct: Controller, target: Position) -> None:
-    if not inBounds(ct, target):
-        return
-    bid = ct.get_tile_building_id(target)
-    if bid is not None:
-        etype = ct.get_entity_type(bid)
-        if etype == EntityType.BARRIER:
-            return
-        if etype in (EntityType.CONVEYOR, EntityType.SPLITTER):
-            if ct.can_destroy(target) and ct.get_action_cooldown() == 0:
-                ct.destroy(target)
-
-    if ct.get_action_cooldown() != 0:
-        return
-    cost = ct.get_barrier_cost()
-    if cost > ct.get_global_resources():
-        return
-    if ct.can_build_barrier(target):
-        ct.build_barrier(target)

@@ -175,15 +175,6 @@ def topUpAmmo(
         ct.convert_ammo(need)
 
 
-def top_up_ammo(
-    ct: Controller,
-    *,
-    local_map: dict[Any, Any] | None = None,
-    min_turn: int = 0,
-) -> None:
-    topUpAmmo(ct, local_map=local_map, min_turn=min_turn)
-
-
 def _entityOnTile(
     ct: Controller, pos: Position, *, cache: dict | None = None
 ) -> tuple[EntityType | None, bool]:
@@ -444,13 +435,6 @@ def placeGun(bot, ct: Controller, target: Position) -> bool:
     return moveToward(bot, ct, best_site)
 
 
-def place_gunner_aggressive(bot, ct: Controller, **kwargs: Any) -> bool:
-    target = kwargs.get("target")
-    if target is None:
-        return False
-    return placeGun(bot, ct, target)
-
-
 def _hostileTiles(
     ct: Controller, eid: int, etype: EntityType
 ) -> list[Position]:
@@ -550,10 +534,6 @@ def gunnerLoop(ct: Controller) -> None:
         return
     if ct.can_rotate(facing):
         ct.rotate(facing)
-
-
-def run_gunner(ct: Controller) -> None:
-    gunnerLoop(ct)
 
 
 def _aimCoreTile(site: Position, core_pos: Position) -> Position:
@@ -824,13 +804,6 @@ def placeDefSentinel(
     return moveToward(bot, ct, best_site)
 
 
-def place_sentinel_aggressive(bot, ct: Controller, **kwargs: Any) -> bool:
-    target = kwargs.get("target")
-    if target is None:
-        return False
-    return placeSentinel(bot, ct, target)
-
-
 def sentinelLoop(ct: Controller) -> None:
     """Fire best in-range hostile (no LoS); priority core > harvester > …
 
@@ -866,7 +839,3 @@ def sentinelLoop(ct: Controller) -> None:
                 best = epos
     if best is not None and ct.can_fire(best):
         ct.fire(best)
-
-
-def run_sentinel(ct: Controller) -> None:
-    sentinelLoop(ct)

@@ -187,7 +187,7 @@ REACT_FREEZE_CAP_TURNS = 15
 # tickling the core for free damage it can't press home.
 CORE_PUSH_MIN_TI = 150  # need bank ≥ this before offGun targets the enemy core
 
-# --- Ammo policy (guns.top_up_ammo reads these) ---
+# --- Ammo policy (guns.topUpAmmo reads these) ---
 AMMO_BASE = 12
 AMMO_PER_GUNNER = 3
 AMMO_PER_SENTINEL = 10
@@ -216,7 +216,7 @@ ORPHAN_REGISTRY_TTL_TURNS = 50
 
 DEBUG = True
 
-from guns import gunnerLoop, sentinelLoop, top_up_ammo
+from guns import gunnerLoop, sentinelLoop, topUpAmmo
 from hivemind import CoreState, HiveMind, unpack_cores
 from respawn import Respawn, SpawnSchedule
 from builder import runBuilderRoles
@@ -295,7 +295,7 @@ class Player:
             if round_n < RAIDER_AMMO_START_TURN
             else RAIDER_AMMO_START_TURN
         )
-        top_up_ammo(ct, local_map=self.hivemind.local_map, min_turn=min_turn)
+        topUpAmmo(ct, local_map=self.hivemind.local_map, min_turn=min_turn)
 
         enemy = self._resolveEnemyCore(ct)
         if enemy is not None and self.hivemind.map_id != 0:

@@ -112,7 +112,7 @@
 # 2. maintainHarvester
 #    2a. checkOre — harvester → relayToCore; empty → build (same gunner-aim gate);
 #        ally block → destroy (skip gunner/sentinel if that ore is threatened);
-#        enemy gunner/sentinel/belt/launcher/barrier → placeGunnerOnOre (stub)
+#        enemy gunner/sentinel/belt/launcher/barrier → nothing (yields the turn)
 #    2b. relayToCore — next belt tile under a visible gunner's LoS/arc → blacklist
 #        it (bot.relayThreatBlocked, reset in clearRelay) and replan from origin;
 #        abort only if that finds nothing. Else path → facing / clearWrongBelt →
@@ -700,8 +700,3 @@ def runBuilderRoles(bot, ct: Controller) -> None:
         runHarasser(bot, ct)
         return
     runDefault(bot, ct)
-
-
-# Back-compat
-def run_builder_roles(bot, ct: Controller) -> None:
-    runBuilderRoles(bot, ct)

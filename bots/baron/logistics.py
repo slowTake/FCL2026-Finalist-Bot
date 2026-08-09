@@ -940,12 +940,6 @@ def pickMaintainOre(bot, ct: Controller) -> Position | None:
     return best
 
 
-def placeGunnerOnOre(bot, ct: Controller, tile: Position) -> bool:
-    """Stub — gun placement deferred."""
-    del bot, ct, tile
-    return False
-
-
 # ------------------------------------------------------------------
 # Relay helpers
 # ------------------------------------------------------------------
@@ -1377,7 +1371,7 @@ def checkOre(bot, ct: Controller, tile: Position) -> bool:
                 return False
             return _approachOreBlock(bot, ct, tile)
         # Enemy occupancy — gun placement deferred
-        return placeGunnerOnOre(bot, ct, tile)
+        return False
 
     return False
 
@@ -1400,12 +1394,6 @@ def maintainHarvester(bot, ct: Controller) -> bool:
     if acted and not bot.inRelay and bot.oreSite is None:
         return False
     return acted
-
-
-# def idleHome(bot, ct: Controller) -> bool:
-#     """Removed from runDefault — soft-idle trap; use recheckOreNodes instead."""
-#     del bot, ct
-#     return False
 
 
 DEFEND_HOME_CHEBYSHEV = 4
@@ -1985,19 +1973,6 @@ def recheckOreNodes(bot, ct: Controller) -> bool:
     if not acted:
         bot.recheckingOre = False
     return acted
-
-
-# Back-compat — orchestrator lives in builder.runDefault
-def run_default(bot, ct: Controller) -> None:
-    from builder import runDefault
-
-    runDefault(bot, ct)
-
-
-def run_economy(bot, ct: Controller) -> None:
-    from builder import runDefault
-
-    runDefault(bot, ct)
 
 
 def exploreFrontier(bot, ct: Controller, *, outward: bool = False) -> bool:

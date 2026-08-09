@@ -878,21 +878,3 @@ def seekCore(bot, ct: Controller) -> bool:
     if _harassMove(bot, ct, core):
         return True
     return _orbitEnemyCore(bot, ct, core)
-
-
-def run_raider(bot, ct: Controller) -> None:
-    from builder import runHarasser
-
-    runHarasser(bot, ct)
-
-
-def run_raiders(bot, ct: Controller) -> None:
-    from builder import runHarasser
-
-    runHarasser(bot, ct)
-
-
-def run_attack_builder(bot, ct: Controller) -> None:
-    from builder import runHarasser
-
-    runHarasser(bot, ct)
