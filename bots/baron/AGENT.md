@@ -10,15 +10,15 @@ Quick index: where to edit and main entrypoints. Update when adding public funct
 | `builder.py` | Role orchestrators + task lists | `runBuilderRoles`, `isGuardian`, `isHarasser`, `runGuardian`, `runDefault`, `runHarasser` |
 | `defence.py` | Defensive orchestrators | `defGun`, `defSentinel`, `threateningTurret`, `clearBarriers`, `reconnectBelts`, `patrolHome` |
 | `logistics.py` | Default helpers | `buildHarvester`, `maintainHarvester`, `checkOre`, `relayToCore`, `defendHome`, `healAlly`, `recheckOreNodes`, `openBlockedRoute`, `pathKnownBlocked` |
-| `geometry.py` | Shared tile primitives (imports `fcode` only — safe to import anywhere) | `coreFootprint`, `chebyshevToCore`, `nearCore`, `isAdjacent`, `tileEntity`, `DEFEND_HOME_CHEBYSHEV`, `BELT_TYPES`, `TURRET_TYPES` |
+| `geometry.py` | Shared tile primitives (imports `fcode` only — safe to import anywhere) | `coreFootprint`, `chebyshevToCore`, `nearCore`, `isAdjacent`, `tileEntity`, `beltNeighbors`, `harvesterClaimedByAlly`, `DEFEND_HOME_CHEBYSHEV`, `BELT_TYPES`, `TURRET_TYPES` |
 | `pathing.py` | A*, passable, obstruction fallback, encirclement breakout | `astarFromSeeds` (the one search loop; `astar` is a single-seed wrapper), `walkPassable`, `relayPassable`, `findPathAroundObstruction`, `breakEncirclement` |
-| `offense.py` | Harasser helpers | `snipeHarvester`, `offGun`, `avoidFire`, `denyOre`, `denyBelt`, `breakBeltDeadlock`, `seekHarvester`, `seekCore` |
+| `offense.py` | Harasser helpers | `snipeHarvester`, `denyHarvesterSupply`, `offGun`, `avoidFire`, `denyOre`, `denyBelt`, `breakBeltDeadlock`, `seekHarvester`, `seekCore` |
 | `guns.py` | Placement + turret loops | `placeGun`, `placeDefSentinel`, `allyGunCovering`, `allySentinelCovering`, `gunnerLoop`, `placeSentinel`, `sentinelLoop`, `topUpAmmo` |
 | `respawn.py` | Core spawn schedule | `Respawn.run_core_spawn`, `SpawnSchedule` |
 | `hivemind.py` → `hivemind_v2` | Map fingerprint, delta ledger | `HiveMind.tick`, `unpack_cores`, `spawn_builder` |
 | `vision_v2.py` | Ledger pack/unpack (required by v2) | `pack_ledger_slot` |
 
-**Policy knobs** (builders, ammo, wave, home-guard, ore stagger, ore deadlock, Ti tiers) → top block in `main.py` (`BUILDER_TARGET_BY_TI`, `MAX_BUILDERS`, `WAVE_ATTACK_*`, `BUILDER_HOME_TURNS`, `ORE_STAGGER`, `ORE_DEADLOCK_TURNS`, `GUN_PLACE_MIN_TI`, `AMMO_CONVERT_MIN_TI`).
+**Policy knobs** (builders, ammo, wave, home-guard, ore stagger, ore deadlock, Ti tiers, harvester stealing) → top block in `main.py` (`BUILDER_TARGET_BY_TI`, `MAX_BUILDERS`, `WAVE_ATTACK_*`, `BUILDER_HOME_TURNS`, `ORE_STAGGER`, `ORE_DEADLOCK_TURNS`, `GUN_PLACE_MIN_TI`, `AMMO_CONVERT_MIN_TI`, `STEAL_ENEMY_HARVESTERS`).
 
 Role **task lists** → top comments in `builder.py`.
 
@@ -49,7 +49,7 @@ Example — `defGun` → `placeGun` only (never sentinels); out-of-leash turrets
 
 Example — `runGuardian` → leash → `_reactEnemyTurret` → `defGun` → `defSentinel` → `avoidFire` → `defendHome` → `healAlly` → *[not `underAttack`]* `clearBarriers` → *[not `underAttack`]* `reconnectBelts` → *[not `underAttack`]* economy → `patrolHome`. No builder-attack anywhere in the chain except `clearBarriers`; turrets answer turrets.
 
-Example — `runHarasser` → `snipeHarvester` → `offGun` → `avoidFire` → `denyOre` → `denyBelt` → `seekHarvester` → `seekCore`.
+Example — `runHarasser` → `snipeHarvester` → `denyHarvesterSupply` → `offGun` → `avoidFire` → `denyOre` → `denyBelt` → `seekHarvester` → `seekCore`.
 
 ---
 

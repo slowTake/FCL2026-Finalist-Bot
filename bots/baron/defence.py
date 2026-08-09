@@ -27,7 +27,7 @@ _PATROL_OFFSET = 2
 
 
 def _pickDefGunTarget(ct: Controller, core_pos: Position | None) -> Position | None:
-    """Nearest enemy gunner/sentinel/launcher (prefer) or builder in vision.
+    """Nearest enemy gunner/sentinel/launcher in vision — never a builder.
 
     `core_pos` set (guardians, via `homeOnly`) restricts targets to the leash: a
     gunner pad must sit within sqrt(13) ≈ 3.6 of its target, so aiming further
@@ -39,17 +39,24 @@ def _pickDefGunTarget(ct: Controller, core_pos: Position | None) -> Position | N
     this, `defGun` re-picks the same already-answered threat every turn a target
     stays in vision and never yields the turn to `defendHome`/`healAlly`, so a
     gunner that took damage placing itself never gets repaired.
+
+    A lone enemy `BUILDER_BOT` used to be a fallback target when no turret was
+    in range — spending Ti to place a gunner over a passing builder that was
+    never going to do real damage. Dropped so `defGun` matches `offGun`
+    (offense.py), which never targeted builders either. An already-built
+    gunner still opportunistically shoots a builder that wanders into its face
+    (guns.py's `_GUNNER_PRIORITY` is unchanged) — this only stops us from
+    *placing* a new one over one.
     """
     me = ct.get_team()
     pos = ct.get_position()
-    best_turret: Position | None = None
-    best_turret_d = 10**9
-    best_builder: Position | None = None
-    best_builder_d = 10**9
+    best: Position | None = None
+    best_d = 10**9
     for eid in ct.get_nearby_units():
         if ct.get_team(eid) == me:
             continue
-        etype = ct.get_entity_type(eid)
+        if ct.get_entity_type(eid) not in TURRET_TYPES:
+            continue
         epos = ct.get_position(eid)
         if (
             core_pos is not None
@@ -59,17 +66,10 @@ def _pickDefGunTarget(ct: Controller, core_pos: Position | None) -> Position | N
         if allyGunCovering(ct, epos):
             continue  # already answered — don't stack gunners on one threat
         dist = abs(pos.x - epos.x) + abs(pos.y - epos.y)
-        if etype in (EntityType.GUNNER, EntityType.SENTINEL, EntityType.LAUNCHER):
-            if dist < best_turret_d:
-                best_turret_d = dist
-                best_turret = epos
-        elif etype == EntityType.BUILDER_BOT:
-            if dist < best_builder_d:
-                best_builder_d = dist
-                best_builder = epos
-    if best_turret is not None:
-        return best_turret
-    return best_builder
+        if dist < best_d:
+            best_d = dist
+            best = epos
+    return best
 
 
 def defGun(bot, ct: Controller, *, homeOnly: bool = False) -> bool:

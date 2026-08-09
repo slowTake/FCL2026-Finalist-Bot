@@ -854,6 +854,25 @@ def _approachOreBlock(bot, ct: Controller, tile: Position) -> bool:
     return moveToward(bot, ct, best)
 
 
+def _harvesterOwnerAllowed(ct: Controller, owner_team) -> bool:
+    """True if a harvester owned by owner_team may be picked/relayed by us.
+
+    Always true for our own. For an enemy-owned harvester this is the single
+    choke point every picker reads — see main.STEAL_ENEMY_HARVESTERS and
+    CONTEXT.md's StealEnemyHarvesters section for the mechanic this gates: an
+    ally conveyor can pull output off an opposing team's harvester without its
+    ownership ever changing, so relaying one captures its titanium for the
+    cost of belts alone. Every consumer (checkOre, pickMaintainOre,
+    _pickRecheckOre) reads this one function, so the whole feature is a single
+    off-switch.
+    """
+    if owner_team == ct.get_team():
+        return True
+    from main import STEAL_ENEMY_HARVESTERS
+
+    return bool(STEAL_ENEMY_HARVESTERS)
+
+
 def pickMaintainOre(bot, ct: Controller) -> Position | None:
     """Prefer sticky site, else a reported orphan, else staggered empty/harvester/block."""
     _clearStickyIfAllyClaimed(bot, ct)
@@ -892,14 +911,20 @@ def pickMaintainOre(bot, ct: Controller) -> Position | None:
             bid = ct.get_tile_building_id(ore)
             if bid is None:
                 continue  # empties via pickEmptyOre
-            if ct.get_entity_type(bid) == EntityType.HARVESTER:
+            if ct.get_entity_type(bid) == EntityType.HARVESTER and _harvesterOwnerAllowed(
+                ct, ct.get_team(bid)
+            ):
                 consider(ore)
             elif _shouldClearAllyOreBlock(ct, ore):
                 consider(ore)
         else:
             entry = bot.hivemind.local_map.get((ore.x, ore.y), {})
             ent = entry.get("entity")
-            if ent and ent.get("type") == EntityType.HARVESTER:
+            if (
+                ent
+                and ent.get("type") == EntityType.HARVESTER
+                and _harvesterOwnerAllowed(ct, ent.get("team"))
+            ):
                 consider(ore)
             elif ent:
                 # Fog: possible ally block / other — keep old consider behavior
@@ -911,7 +936,9 @@ def pickMaintainOre(bot, ct: Controller) -> Position | None:
         bid = ct.get_tile_building_id(tile)
         if bid is None:
             continue
-        if ct.get_entity_type(bid) == EntityType.HARVESTER:
+        if ct.get_entity_type(bid) == EntityType.HARVESTER and _harvesterOwnerAllowed(
+            ct, ct.get_team(bid)
+        ):
             consider(tile)
         elif _shouldClearAllyOreBlock(ct, tile):
             consider(tile)
@@ -1338,6 +1365,12 @@ def checkOre(bot, ct: Controller, tile: Position) -> bool:
     mine = ct.get_team()
 
     if etype == EntityType.HARVESTER:
+        # team != mine here means an enemy-owned harvester — relaying it anyway
+        # is the steal mechanic (main.STEAL_ENEMY_HARVESTERS); see
+        # _harvesterOwnerAllowed. Disallowed → leave it alone, same as any
+        # other tile this function has nothing to do on.
+        if not _harvesterOwnerAllowed(ct, team):
+            return False
         bot.relayOrigin = tile
         bot.inRelay = True
         relayToCore(bot, ct)
@@ -1621,7 +1654,9 @@ def _pickRecheckOre(bot, ct: Controller) -> Position | None:
         bid = ct.get_tile_building_id(tile)
         if bid is None:
             consider(tile, kind="empty")
-        elif ct.get_entity_type(bid) == EntityType.HARVESTER:
+        elif ct.get_entity_type(bid) == EntityType.HARVESTER and _harvesterOwnerAllowed(
+            ct, ct.get_team(bid)
+        ):
             consider(tile, kind="harvester")
         elif _shouldClearAllyOreBlock(ct, tile):
             consider(tile, kind="blocked")
@@ -1634,7 +1669,9 @@ def _pickRecheckOre(bot, ct: Controller) -> Position | None:
             bid = ct.get_tile_building_id(ore)
             if bid is None:
                 consider(ore, kind="empty")
-            elif ct.get_entity_type(bid) == EntityType.HARVESTER:
+            elif ct.get_entity_type(bid) == EntityType.HARVESTER and _harvesterOwnerAllowed(
+                ct, ct.get_team(bid)
+            ):
                 consider(ore, kind="harvester")
             elif _shouldClearAllyOreBlock(ct, ore):
                 consider(ore, kind="blocked")
@@ -1646,7 +1683,9 @@ def _pickRecheckOre(bot, ct: Controller) -> Position | None:
             # this is the recheck path, so leaving stale memory permanently
             # disqualifying here would be the last resort that ever rescues it.
             ent = None
-        if ent and ent.get("type") == EntityType.HARVESTER:
+        if ent and ent.get("type") == EntityType.HARVESTER and _harvesterOwnerAllowed(
+            ct, ent.get("team")
+        ):
             consider(ore, kind="harvester")
         elif not ent:
             consider(ore, kind="empty")
