@@ -10,7 +10,7 @@ silently drift between copies.
 
 from __future__ import annotations
 
-from fcode import Controller, EntityType, Position
+from fcode import Controller, Direction, EntityType, Position
 
 # Chebyshev radius around the ally core that counts as "home": the guardian
 # leash, the near-core gate on defGun/defendHome/defSentinel, and the ore limit
@@ -24,6 +24,16 @@ BELT_TYPES = (EntityType.CONVEYOR, EntityType.SPLITTER)
 # Enemy buildings that shoot or throw. Not a threat *set* for every purpose:
 # builder.py's _ENEMY_THREAT_TYPES adds BUILDER_BOT on top of this.
 TURRET_TYPES = (EntityType.GUNNER, EntityType.SENTINEL, EntityType.LAUNCHER)
+
+# Not imported from pathing.CARDINALS/inBounds: pathing.py imports *from* this
+# module (see the module docstring), so pulling pathing's helpers in here would
+# create the exact cycle that ordering forbids. Both are a handful of lines that
+# never change — a cheap price to stay the bottom of the import graph.
+_CARDINALS = (Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST)
+
+
+def _inBounds(ct: Controller, pos: Position) -> bool:
+    return 0 <= pos.x < ct.get_map_width() and 0 <= pos.y < ct.get_map_height()
 
 
 def coreFootprint(core_pos: Position) -> list[Position]:
@@ -93,3 +103,48 @@ def tileEntity(
     if not cell:
         return None
     return cell.get("entity") or None
+
+
+def beltNeighbors(
+    ct: Controller, tile: Position, *, local_map: dict | None = None
+) -> list[tuple[Position, dict]]:
+    """(neighbor, entity) for every cardinally-adjacent CONVEYOR/SPLITTER, any team.
+
+    Ground truth via `tileEntity`, so it inherits the same vision/ledger fallback.
+    Team-agnostic on purpose — callers that care about ownership filter the
+    returned entities themselves; that is a business rule, not tile geometry.
+
+    Unlike `tileEntity`'s other call sites in this codebase, `tile` here is not
+    already known to be in-bounds (it can be any harvester tile from the
+    ledger) — a neighbor one step off the map edge would otherwise raise
+    `GameError` deep inside `ct.get_tile_building_id`/`is_in_vision`, so bounds
+    are checked here rather than pushed onto every caller.
+    """
+    out: list[tuple[Position, dict]] = []
+    for d in _CARDINALS:
+        n = tile.add(d)
+        if not _inBounds(ct, n):
+            continue
+        ent = tileEntity(ct, n, local_map=local_map)
+        if ent is not None and ent.get("type") in BELT_TYPES:
+            out.append((n, ent))
+    return out
+
+
+def harvesterClaimedByAlly(
+    ct: Controller, tile: Position, *, local_map: dict | None = None
+) -> bool:
+    """True if an ally CONVEYOR/SPLITTER already sits cardinally adjacent to tile.
+
+    The derived "we're already stealing/relaying this harvester" signal — no
+    store slot exists for it (all 16 are spoken for; see main.STEAL_ENEMY_HARVESTERS
+    and CONTEXT.md's StealEnemyHarvesters section), and this is exactly the
+    footprint `relayToCore` naturally leaves the moment a default commits to
+    relaying from it: its first belt tile lands cardinally adjacent to the
+    harvester. No new state, just a read through the existing ledger.
+    """
+    me = ct.get_team()
+    for _n, ent in beltNeighbors(ct, tile, local_map=local_map):
+        if ent.get("team") == me:
+            return True
+    return False

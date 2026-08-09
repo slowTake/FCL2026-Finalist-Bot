@@ -68,6 +68,25 @@ GUARDIAN_ECONOMY = True
 # relay — an ore at the leash edge is worked from an adjacent tile one step out.
 GUARDIAN_ECON_SLACK = 1
 
+# --- Steal enemy harvesters (False disables) ---
+# A default's ore-scan (pickMaintainOre / _pickRecheckOre / checkOre) normally
+# only ever relays a harvester it owns. With this on, an enemy-owned harvester
+# is treated exactly like one we're maintaining, minus the build step (it
+# already exists) — just relay it to our own core. The engine lets a conveyor
+# pull output off an opposing team's harvester without ever changing the
+# harvester's own team (see AGENT.md: "Resources can still be pushed onto an
+# opposing team's conveyor network or core"), so this captures its titanium
+# for the cost of belts alone. There is no store slot for "this harvester is
+# claimed" — all 16 are already spoken for — so the claim is derived instead:
+# geometry.harvesterClaimedByAlly reads True the moment our own belt lands
+# next to it, which is exactly what relayToCore does the instant a default
+# commits. That derived signal is also what offense.py's snipeHarvester/offGun
+# read to stop shooting a harvester we're actively stealing, and what
+# denyHarvesterSupply reads to go sever the enemy's own competing belt on it
+# instead. This one knob gates every consumer — logistics._harvesterOwnerAllowed
+# for the picking/relaying side, offense.denyHarvesterSupply for the supply cut.
+STEAL_ENEMY_HARVESTERS = True
+
 # --- Empty-ore pick (defaults) ---
 # False = nearest convenient (core then self). True = index-stagger slots.
 ORE_STAGGER = False
@@ -109,6 +128,19 @@ OPEN_BLOCKED_ROUTE = True
 # reopen and the downstream line delivers nothing meanwhile), pure waste when it does
 # not. Only starts are throttled; a cut already underway always runs to the barrier.
 DENY_CUT_COOLDOWN = 50
+
+# --- Undefended belt cut (≤0 disables the extra allowance) ---
+# A Mode B cut normally starts only while a gun is unaffordable — a gun beats a
+# cut in value whenever we can field one. But a belt with no enemy builder
+# within this Chebyshev radius has nobody able to heal it back (4 HP/turn for
+# 1 Ti against our 2 dmg for 2 Ti) or rebuild it once it's gone: the denial is
+# effectively permanent, so it's worth taking regardless of what else the bank
+# could buy. Read by offense._worthwhileCutTarget. Live vision only, not the
+# HiveMind ledger — a stale sighting could mark an abandoned belt "defended"
+# forever, or miss a builder that has since arrived; worst case on a wrong read
+# either way is falling back to the existing gun-affordability gate, not a
+# wasted cut. ≤0 falls back to that gate alone (today's behavior).
+UNDEFENDED_BELT_CHEBYSHEV = 5
 
 # --- Harasser ore denial (≤0 / None disables) ---
 # Barrier empty ore in the enemy's expansion ring: 3 Ti makes the tile unbuildable and
@@ -272,6 +304,12 @@ class Player:
         self.harassTarget: tuple[int, int] | None = None
         self.denyBeltTile: tuple[int, int] | None = None
         self.lastCutRound = -999
+        # Parallel sticky/cooldown pair for denyHarvesterSupply — kept fully
+        # independent of denyBeltTile/lastCutRound above so a generic belt cut
+        # (denyBelt) and a claimed-harvester supply cut can never collide on
+        # bookkeeping even if they'd pick the same tile.
+        self.supplyCutTile: tuple[int, int] | None = None
+        self.lastSupplyCutRound = -999
         self.scoutedOres: set[tuple[int, int]] = set()
         self.patrolIdx = 0
         self.harassOrbitIdx = 0

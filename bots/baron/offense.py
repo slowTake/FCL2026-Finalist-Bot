@@ -12,7 +12,14 @@ from guns import (
     placeGun,
     placeSentinel,
 )
-from geometry import BELT_TYPES, chebyshevToCore, coreFootprint, isAdjacent
+from geometry import (
+    BELT_TYPES,
+    beltNeighbors,
+    chebyshevToCore,
+    coreFootprint,
+    harvesterClaimedByAlly,
+    isAdjacent,
+)
 from logistics import moveToward, pathKnownBlocked
 from pathing import CARDINALS, inBounds, manhattan, walkPassable
 from walls import wallEnemyCore
@@ -292,9 +299,40 @@ def _nearestEnemyOfType(ct: Controller, etype: EntityType) -> Position | None:
     return best
 
 
+def _nearestUnclaimedEnemyHarvester(bot, ct: Controller) -> Position | None:
+    """Nearest visible enemy harvester, excluding one our own steal-relay claimed.
+
+    `harvesterClaimedByAlly` (geometry.py) reads True once our own belt lands
+    cardinally adjacent — see main.STEAL_ENEMY_HARVESTERS. A harvester we're
+    actively stealing is worth more alive than dead: shooting it down here
+    would throw away the belts we already paid for. `denyHarvesterSupply`
+    handles a claimed harvester instead, by cutting the enemy's own competing
+    belt on it rather than the harvester itself.
+    """
+    me = ct.get_team()
+    pos = ct.get_position()
+    local_map = bot.hivemind.local_map
+    best: Position | None = None
+    best_d = 10**9
+    for eid in ct.get_nearby_entities():
+        if ct.get_team(eid) == me:
+            continue
+        if ct.get_entity_type(eid) != EntityType.HARVESTER:
+            continue
+        epos = ct.get_position(eid)
+        if harvesterClaimedByAlly(ct, epos, local_map=local_map):
+            continue
+        d = manhattan(pos, epos)
+        if d < best_d:
+            best_d = d
+            best = epos
+    return best
+
+
 def snipeHarvester(bot, ct: Controller) -> bool:
-    """Opportunistic: place gun on nearest visible enemy harvester not ally-covered."""
-    target = _nearestEnemyOfType(ct, EntityType.HARVESTER)
+    """Opportunistic: place gun on nearest visible enemy harvester not ally-covered
+    or already claimed by our own steal-relay."""
+    target = _nearestUnclaimedEnemyHarvester(bot, ct)
     if target is None:
         return False
     if allyGunCovering(ct, target):
@@ -334,7 +372,10 @@ def offGun(bot, ct: Controller) -> bool:
         target = _nearestEnemyOfType(ct, etype)
         if target is None:
             continue
-        if etype == EntityType.HARVESTER and allyGunCovering(ct, target):
+        if etype == EntityType.HARVESTER and (
+            allyGunCovering(ct, target)
+            or harvesterClaimedByAlly(ct, target, local_map=bot.hivemind.local_map)
+        ):
             continue
         if placeGun(bot, ct, target):
             return True
@@ -456,7 +497,7 @@ def breakBeltDeadlock(bot, ct: Controller) -> bool:
 
     skipped = _skippedTargets(bot)
     dropped = False
-    for attr in ("denyBeltTile", "harassTarget"):
+    for attr in ("denyBeltTile", "harassTarget", "supplyCutTile"):
         target = getattr(bot, attr, None)
         if target is not None:
             skipped.add(target)
@@ -512,7 +553,7 @@ def _stepOff(ct: Controller) -> bool:
     return False
 
 
-def _cutInProgress(bot, ct: Controller) -> bool:
+def _cutInProgress(bot, ct: Controller, *, attr: str = "denyBeltTile") -> bool:
     """True while a belt cut is already underway and must not be interrupted.
 
     A cut is 20 HP at 2 dmg an attack — 10 shots, 20 Ti, 10 turns. Only the
@@ -530,8 +571,12 @@ def _cutInProgress(bot, ct: Controller) -> bool:
     bail-out for free: their builder restores 4 HP/turn for 1 Ti against our 2 dmg
     for 2 Ti, so once they have healed it back to full we are losing 4:1 and should
     walk away rather than grind.
+
+    `attr` names the sticky-target field on `bot` — defaults to `denyBeltTile`
+    (denyBelt's own cut). `denyHarvesterSupply` reuses this same mechanic under
+    `supplyCutTile` instead, so the two cuts never share or collide on state.
     """
-    sticky = getattr(bot, "denyBeltTile", None)
+    sticky = getattr(bot, attr, None)
     if sticky is None:
         return False
     tile = Position(sticky[0], sticky[1])
@@ -560,13 +605,75 @@ def _cutCooldownElapsed(bot, ct: Controller) -> bool:
     return ct.get_current_round() - last >= DENY_CUT_COOLDOWN
 
 
-def _cutAndBarrier(bot, ct: Controller) -> bool:
+def _enemyBuilderNear(ct: Controller, tile: Position, radius: int) -> bool:
+    """True if an enemy BUILDER_BOT is within Chebyshev radius of tile, in vision.
+
+    Live vision only, not the HiveMind ledger — a stale sighting could mark a
+    now-abandoned belt "defended" forever, and a builder that has since
+    arrived wouldn't show up until this unit's own vision covers that exact
+    tile again either way. Reading only what is currently visible means the
+    worst case of getting it wrong is falling back to the existing
+    gun-affordability gate, never committing to a cut on stale information.
+    """
+    me = ct.get_team()
+    for eid in ct.get_nearby_entities():
+        if ct.get_team(eid) == me:
+            continue
+        if ct.get_entity_type(eid) != EntityType.BUILDER_BOT:
+            continue
+        epos = ct.get_position(eid)
+        if max(abs(epos.x - tile.x), abs(epos.y - tile.y)) <= radius:
+            return True
+    return False
+
+
+def _worthwhileCutTarget(bot, ct: Controller) -> Position | None:
+    """The belt worth *starting* a Mode B cut on this turn, or None.
+
+    Two independent reasons to start: a gun is unaffordable (today's original
+    gate — a gun beats a cut whenever we can field one), or the target is
+    undefended (main.UNDEFENDED_BELT_CHEBYSHEV — nothing can heal or rebuild
+    it, so the denial is effectively permanent regardless of the bank).
+
+    Returns the same candidate `_cutAndBarrier`'s own default picker would
+    choose (`_enemyBeltsByDist` + `_dropSkipped` + `harasserRank` stagger), so
+    the undefended check and the tile that actually gets cut are guaranteed to
+    be the same one — checking a different tile than the one we commit to
+    would make the "undefended" reasoning meaningless.
+    """
+    candidate = _nth(_dropSkipped(bot, _enemyBeltsByDist(ct)), harasserRank(bot))
+    if candidate is None:
+        return None
+    if not _canAffordGunPlace(ct):
+        return candidate
+    from main import UNDEFENDED_BELT_CHEBYSHEV
+
+    radius = UNDEFENDED_BELT_CHEBYSHEV
+    if radius and radius > 0 and not _enemyBuilderNear(ct, candidate, radius):
+        return candidate
+    return None
+
+
+def _cutAndBarrier(
+    bot,
+    ct: Controller,
+    *,
+    attr: str = "denyBeltTile",
+    cooldownAttr: str = "lastCutRound",
+    pick=None,
+) -> bool:
     """Cut an enemy belt from an adjacent tile, then barrier it (guns gated).
 
     Staying adjacent is the point: the barrier can go down the moment the belt
     dies, with no move onto the tile and no step off afterwards.
+
+    `attr`/`cooldownAttr` name the sticky-target/last-start fields on `bot`,
+    and `pick` overrides the default nearest-enemy-belt target search — see
+    `denyHarvesterSupply`, which reuses this mechanic under its own
+    `supplyCutTile`/`lastSupplyCutRound` pair and a claimed-harvester-anchored
+    `pick`, fully independent of `denyBelt`'s own state.
     """
-    sticky = getattr(bot, "denyBeltTile", None)
+    sticky = getattr(bot, attr, None)
     tile: Position | None = None
     if sticky is not None:
         cand = Position(sticky[0], sticky[1])
@@ -574,17 +681,20 @@ def _cutAndBarrier(bot, ct: Controller) -> bool:
             if _enemyBeltAt(ct, cand) or ct.is_tile_empty(cand):
                 tile = cand
             else:
-                bot.denyBeltTile = None
+                setattr(bot, attr, None)
         else:
             tile = cand  # keep sticky while fogged / walking in
     if tile is None:
-        tile = _nth(_dropSkipped(bot, _enemyBeltsByDist(ct)), harasserRank(bot))
+        finder = pick if pick is not None else (
+            lambda: _nth(_dropSkipped(bot, _enemyBeltsByDist(ct)), harasserRank(bot))
+        )
+        tile = finder()
         if tile is None:
             return False
-        bot.denyBeltTile = (tile.x, tile.y)
+        setattr(bot, attr, (tile.x, tile.y))
         # Single stamp point: the cooldown spaces *starts*, so it is written where a
         # fresh target is claimed rather than chased across every exit path.
-        bot.lastCutRound = ct.get_current_round()
+        setattr(bot, cooldownAttr, ct.get_current_round())
 
     pos = ct.get_position()
     adjacent = isAdjacent(pos, tile)
@@ -592,20 +702,20 @@ def _cutAndBarrier(bot, ct: Controller) -> bool:
     # Belt cleared — plant the barrier from where we already stand
     if ct.is_in_vision(tile) and ct.is_tile_empty(tile):
         if _oreCloserToAlly(bot, ct, tile):
-            bot.denyBeltTile = None
+            setattr(bot, attr, None)
             return False
         if pos == tile:
             return _stepOff(ct)  # can't build on our own tile
         if adjacent:
             if ct.get_action_cooldown() == 0 and ct.can_build_barrier(tile):
                 ct.build_barrier(tile)
-                bot.denyBeltTile = None
+                setattr(bot, attr, None)
                 return True
             return False
         return _harassMove(bot, ct, tile)
 
     if not _enemyBeltAt(ct, tile):
-        bot.denyBeltTile = None
+        setattr(bot, attr, None)
         return False
 
     if ct.get_global_resources() < _FIRE_TI_COST:
@@ -631,6 +741,64 @@ def _cutAndBarrier(bot, ct: Controller) -> bool:
         return False
 
     return _harassMove(bot, ct, tile)
+
+
+def _claimedHarvesterSupplyTargets(bot, ct: Controller) -> list[Position]:
+    """Enemy belts cardinally touching a harvester our own relay already claimed.
+
+    Once claimed (geometry.harvesterClaimedByAlly — an ally belt already lands
+    next to it), an enemy belt still beside the harvester leaks its output
+    straight back into their network instead of ours: cut it so 100% of the
+    output routes to us. Nearest-self first; `_cutAndBarrier`'s `pick` wraps
+    this in `_nth(..., harasserRank(bot))` for the same target-stagger every
+    other harasser picker uses.
+    """
+    me = ct.get_team()
+    pos = ct.get_position()
+    local_map = bot.hivemind.local_map
+    out: list[Position] = []
+    for (x, y), cell in local_map.items():
+        ent = cell.get("entity")
+        if not ent or ent.get("type") != EntityType.HARVESTER or ent.get("team") == me:
+            continue
+        tile = Position(x, y)
+        if not harvesterClaimedByAlly(ct, tile, local_map=local_map):
+            continue
+        for n, belt_ent in beltNeighbors(ct, tile, local_map=local_map):
+            if belt_ent.get("team") != me:
+                out.append(n)
+                break  # one enemy belt per claimed harvester is enough per turn
+    out.sort(key=lambda p: manhattan(pos, p))
+    return _dropSkipped(bot, out)
+
+
+def denyHarvesterSupply(bot, ct: Controller) -> bool:
+    """Cut an enemy belt still feeding a harvester our own steal-relay claimed.
+
+    Reuses `_cutAndBarrier`'s fire-then-barrier mechanic under its own sticky
+    field (`bot.supplyCutTile`/`bot.lastSupplyCutRound`), so it can never
+    collide with `denyBelt` Mode B's `denyBeltTile` continuation lock or
+    `DENY_CUT_COOLDOWN` — the two cuts run fully independently, and if they
+    ever pick the same physical tile, whichever fires first destroys it; the
+    other's next check sees an empty tile and falls through cleanly (its own
+    barrier attempt, or a re-pick).
+
+    Unthrottled on purpose: this defends an asset we're already actively
+    capturing for free, not an opportunistic denial — there's no bank-based
+    start condition to weigh the way `denyBelt`'s `_canAffordGunPlace` gate
+    does for a generic cut.
+    """
+    from main import STEAL_ENEMY_HARVESTERS
+
+    if not STEAL_ENEMY_HARVESTERS:
+        return False
+    return _cutAndBarrier(
+        bot,
+        ct,
+        attr="supplyCutTile",
+        cooldownAttr="lastSupplyCutRound",
+        pick=lambda: _nth(_claimedHarvesterSupplyTargets(bot, ct), harasserRank(bot)),
+    )
 
 
 def _denyOreCandidates(bot, ct: Controller) -> list[Position]:
@@ -743,17 +911,26 @@ def denyBelt(bot, ct: Controller) -> bool:
     *start* condition (a gun is better value than a cut when we can afford one) and
     a wrong *continue* condition: each attack pushes the bank toward the threshold
     while one harvester delivery pushes it back over, so it used to flip mid-cut and
-    abandon the belt with the titanium already spent.
+    abandon the belt with the titanium already spent. Continuing is therefore never
+    reconsidered once started, regardless of affordability or the undefended check
+    below — only the decision to *start* reads either of them.
+
+    Starting also has a second, independent reason beyond "a gun is unaffordable":
+    a target with no enemy builder nearby (UNDEFENDED_BELT_CHEBYSHEV) has nobody
+    able to heal it back or rebuild it once it's gone, so the denial is effectively
+    permanent — worth taking regardless of what else the bank could buy. See
+    `_worthwhileCutTarget`.
     """
     # Mode A: adjacent build first
     if _tryForwardBarrier(bot, ct, adjacent_only=True):
         return True
-    # Mode B: finish what we started; otherwise start only while a gun is
-    # unaffordable and this harasser's cut cooldown has elapsed.
-    if _cutInProgress(bot, ct) or (
-        not _canAffordGunPlace(ct) and _cutCooldownElapsed(bot, ct)
-    ):
+    # Mode B: finish what we started, no reconsideration.
+    if _cutInProgress(bot, ct):
         if _cutAndBarrier(bot, ct):
+            return True
+    elif _cutCooldownElapsed(bot, ct):
+        target = _worthwhileCutTarget(bot, ct)
+        if target is not None and _cutAndBarrier(bot, ct, pick=lambda t=target: t):
             return True
     # Mode A: walk toward a forward pad
     return _tryForwardBarrier(bot, ct, adjacent_only=False)

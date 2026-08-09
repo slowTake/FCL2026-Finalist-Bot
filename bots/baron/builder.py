@@ -110,15 +110,20 @@
 # 1. buildHarvester — empty ore in vision / HiveMind → build;
 #        skip ore if visible enemy gunner is aiming at that tile
 # 2. maintainHarvester
-#    2a. checkOre — harvester → relayToCore; empty → build (same gunner-aim gate);
-#        ally block → destroy (skip gunner/sentinel if that ore is threatened);
-#        enemy gunner/sentinel/belt/launcher/barrier → nothing (yields the turn)
+#    2a. checkOre — harvester → relayToCore (team-blind by default: an
+#        enemy-owned harvester is relayed the same as our own, minus the build
+#        step — STEAL_ENEMY_HARVESTERS, see logistics._harvesterOwnerAllowed
+#        and CONTEXT.md's StealEnemyHarvesters); empty → build (same
+#        gunner-aim gate); ally block → destroy (skip gunner/sentinel if that
+#        ore is threatened); enemy gunner/sentinel/belt/launcher/barrier →
+#        nothing (yields the turn)
 #    2b. relayToCore — next belt tile under a visible gunner's LoS/arc → blacklist
 #        it (bot.relayThreatBlocked, reset in clearRelay) and replan from origin;
 #        abort only if that finds nothing. Else path → facing / clearWrongBelt →
 #        placeRelayBelt → watermark
-# 3. defGun — near core only; enemy builder/gunner/sentinel/launcher in vision → placeGun
-#        (gunners only — never sentinels)
+# 3. defGun — near core only; enemy gunner/sentinel/launcher in vision → placeGun
+#        (gunners only — never sentinels; a builder is never a placement target,
+#        though an already-placed gunner still opportunistically fires on one)
 # 4. defendHome — near core only; heal core if HP < 500 (no attack branch)
 # 5. healAlly — core → gunner/sentinel → harvester
 # 6. recheckOreNodes — clear sticky oreSite; prefer empty → ally-blocked → harvester
@@ -138,17 +143,26 @@
 #    Uncapped guardians never enter this path. Capped ones with odd excess rank
 #    always do, independent of the wave gate; even-excess capped slots fall to
 #    default instead (see runDefault).
-# 1. snipeHarvester — visible uncovered enemy harvester → placeGun
+# 1. snipeHarvester — visible uncovered enemy harvester → placeGun; skips one
+#        already claimed by our own steal-relay (geometry.harvesterClaimedByAlly
+#        — an ally belt already lands next to it), worth more alive than dead
+# 1b. denyHarvesterSupply — a claimed harvester with an enemy belt still
+#        cardinally adjacent → cut that belt (reuses denyBelt Mode B's
+#        fire-then-barrier mechanic under its own bot.supplyCutTile, fully
+#        independent of denyBelt's own state/cooldown) so 100% of the output
+#        routes to us instead of leaking back to their network. Unthrottled —
+#        defends an asset already being captured for free.
 # 2. offGun — placeGun/placeSentinel: core (only once bank ≥ CORE_PUSH_MIN_TI; harvesters
 #        are the cheaper kill until then) → gunner → sentinel → harvester → launcher;
-#        ≤1 ally gunner covering each enemy harvester
+#        ≤1 ally gunner covering each enemy harvester; harvester branch also skips
+#        one already claimed by our own steal-relay, same as snipeHarvester
 # 2b. wallCore — enemy core known → wallEnemyCore: barrier one empty tile of its
 #        perimeter, one action per call. Ungated by CORE_PUSH_MIN_TI (3 Ti, unthrottled,
 #        opportunistic — worth taking any time a harasser is in position).
 # 3. avoidFire — under enemy gunner LoS → step to safe tile toward goal
 #    0. breakBeltDeadlock — motionless (bot.stuck) ≥ HARASS_DEADLOCK_TURNS →
-#        blacklist sticky denyBeltTile / harassTarget into bot.skippedTargets and
-#        clear them. State-only, no turn cost. Needed because denyBelt's Mode B is
+#        blacklist sticky denyBeltTile / harassTarget / supplyCutTile into
+#        bot.skippedTargets and clear them. State-only, no turn cost. Needed because denyBelt's Mode B is
 #        gated off while a gun is affordable, so a funded harasser beside a belt
 #        correctly refuses to cut it (10 shots / 20 Ti for a 3 Ti conveyor) and then
 #        had no way to give the target up. bot.stuck now also trips on tight
@@ -174,9 +188,12 @@
 #        (3 Ti, unthrottled). Mode B: cut an enemy belt from an adjacent tile and
 #        barrier it in place (sticky via bot.denyBeltTile; falls back to mounting the
 #        belt if an adjacent shot is refused). Skips ore nearer our core.
-#        Mode B starts only while gun placement is unaffordable AND this harasser's
-#        DENY_CUT_COOLDOWN has elapsed; once started it runs to the barrier
-#        regardless of both (_cutInProgress), because a cut is 20 Ti / 10 turns and
+#        Mode B starts (once this harasser's DENY_CUT_COOLDOWN has elapsed) when
+#        either gun placement is unaffordable OR the target has no enemy builder
+#        within UNDEFENDED_BELT_CHEBYSHEV — undefended means nothing can heal or
+#        rebuild it, so the denial is effectively permanent regardless of the bank
+#        (_worthwhileCutTarget). Once started it runs to the barrier regardless of
+#        any of that (_cutInProgress), because a cut is 20 Ti / 10 turns and
 #        abandoning it half-way spends the Ti for nothing. A belt healed back to full
 #        HP stops counting as in-progress — that is the 4:1 heal-race bail-out.
 # 5. seekHarvester — local_map enemy harvesters / scout ore nodes (vision updates map)
@@ -229,6 +246,7 @@ from offense import (
     avoidFire,
     breakBeltDeadlock,
     denyBelt,
+    denyHarvesterSupply,
     denyOre,
     offGun,
     seekCore,
@@ -653,12 +671,21 @@ def runGuardian(bot, ct: Controller) -> None:
 
 
 def runHarasser(bot, ct: Controller) -> None:
-    """Harasser: snipe → offGun → wallCore → avoidFire → denyOre → denyBelt → seek → seekCore."""
+    """Harasser: snipe → denyHarvesterSupply → offGun → wallCore → avoidFire →
+    denyOre → denyBelt → seek → seekCore."""
     _resolveCores(bot, ct)
     bot.nearCoreEconomy = False
     # State-only; the selectors below re-pick this turn. Costs no turn.
     breakBeltDeadlock(bot, ct)
     if snipeHarvester(bot, ct):
+        return
+    # snipeHarvester/offGun both now skip a harvester our own steal-relay
+    # already claimed (geometry.harvesterClaimedByAlly) — no overlap with this
+    # step. Protecting an asset we're already capturing for free outranks a
+    # fresh opportunistic gun placement, and it's cheap (a belt cut, not a
+    # build), so it runs at the same tier as the other placeGun/attack-adjacent
+    # steps already ahead of avoidFire in this chain.
+    if denyHarvesterSupply(bot, ct):
         return
     if offGun(bot, ct):
         return
