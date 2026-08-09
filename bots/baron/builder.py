@@ -705,8 +705,8 @@ def runHarasser(bot, ct: Controller) -> None:
         return
     if offGun(bot, ct):
         return
-    if wallCore(bot, ct):
-        return
+    #if wallCore(bot, ct):
+    #    return
     if avoidFire(bot, ct):
         return
     # Above denyBelt: 3 Ti and no attrition to deny a whole future line beats 20 Ti of

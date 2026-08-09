@@ -518,12 +518,13 @@ def _tryForwardBarrier(bot, ct: Controller, *, adjacent_only: bool) -> bool:
     if not pads:
         return False
     pos = ct.get_position()
-    if ct.get_action_cooldown() == 0:
+    if ct.get_action_cooldown() == 0 and _denyBeltCooldownElapsed(bot, ct):
         for pad in pads:
             if not isAdjacent(pos, pad):
                 continue
             if ct.can_build_barrier(pad):
                 ct.build_barrier(pad)
+                bot.lastDenyBeltRound = ct.get_current_round()
                 return True
     if adjacent_only:
         return False
@@ -607,6 +608,16 @@ def _cutCooldownElapsed(bot, ct: Controller) -> bool:
         return True
     last = getattr(bot, "lastCutRound", -(10**9))
     return ct.get_current_round() - last >= DENY_CUT_COOLDOWN
+
+
+def _denyBeltCooldownElapsed(bot, ct: Controller) -> bool:
+    """True if this harasser may place a new Mode A forward barrier (≤0 disables)."""
+    from main import DENY_BELT_COOLDOWN
+
+    if DENY_BELT_COOLDOWN is None or DENY_BELT_COOLDOWN <= 0:
+        return True
+    last = getattr(bot, "lastDenyBeltRound", -(10**9))
+    return ct.get_current_round() - last >= DENY_BELT_COOLDOWN
 
 
 def _enemyBuilderNear(ct: Controller, tile: Position, radius: int) -> bool:

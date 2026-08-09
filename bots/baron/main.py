@@ -190,6 +190,15 @@ OPEN_BLOCKED_ROUTE = True
 # not. Only starts are throttled; a cut already underway always runs to the barrier.
 DENY_CUT_COOLDOWN = 50
 
+# --- Harasser forward-barrier throttle (≤0 disables) ---
+# Rounds a harasser waits between *placing* a new Mode A forward barrier
+# (_tryForwardBarrier). Unlike DENY_CUT_COOLDOWN (which only gates starting a
+# belt cut), Mode A barrier placement was completely unthrottled — a fresh
+# barrier could land every single turn. A barrier is ally-owned but still
+# blocks relayPassable/_RELAY_BLOCK_TYPES like an enemy one (pathing.py:20-27),
+# so an unthrottled harasser can repeatedly wall off a live relay corridor.
+DENY_BELT_COOLDOWN = 10
+
 # --- Undefended belt cut (≤0 disables the extra allowance) ---
 # A Mode B cut normally starts only while a gun is unaffordable — a gun beats a
 # cut in value whenever we can field one. But a belt with no enemy builder
@@ -370,6 +379,7 @@ class Player:
         self.harassTarget: tuple[int, int] | None = None
         self.denyBeltTile: tuple[int, int] | None = None
         self.lastCutRound = -999
+        self.lastDenyBeltRound = -999
         # Parallel sticky/cooldown pair for denyHarvesterSupply — kept fully
         # independent of denyBeltTile/lastCutRound above so a generic belt cut
         # (denyBelt) and a claimed-harvester supply cut can never collide on
