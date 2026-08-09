@@ -605,6 +605,55 @@ def _cutCooldownElapsed(bot, ct: Controller) -> bool:
     return ct.get_current_round() - last >= DENY_CUT_COOLDOWN
 
 
+def _enemyBuilderNear(ct: Controller, tile: Position, radius: int) -> bool:
+    """True if an enemy BUILDER_BOT is within Chebyshev radius of tile, in vision.
+
+    Live vision only, not the HiveMind ledger — a stale sighting could mark a
+    now-abandoned belt "defended" forever, and a builder that has since
+    arrived wouldn't show up until this unit's own vision covers that exact
+    tile again either way. Reading only what is currently visible means the
+    worst case of getting it wrong is falling back to the existing
+    gun-affordability gate, never committing to a cut on stale information.
+    """
+    me = ct.get_team()
+    for eid in ct.get_nearby_entities():
+        if ct.get_team(eid) == me:
+            continue
+        if ct.get_entity_type(eid) != EntityType.BUILDER_BOT:
+            continue
+        epos = ct.get_position(eid)
+        if max(abs(epos.x - tile.x), abs(epos.y - tile.y)) <= radius:
+            return True
+    return False
+
+
+def _worthwhileCutTarget(bot, ct: Controller) -> Position | None:
+    """The belt worth *starting* a Mode B cut on this turn, or None.
+
+    Two independent reasons to start: a gun is unaffordable (today's original
+    gate — a gun beats a cut whenever we can field one), or the target is
+    undefended (main.UNDEFENDED_BELT_CHEBYSHEV — nothing can heal or rebuild
+    it, so the denial is effectively permanent regardless of the bank).
+
+    Returns the same candidate `_cutAndBarrier`'s own default picker would
+    choose (`_enemyBeltsByDist` + `_dropSkipped` + `harasserRank` stagger), so
+    the undefended check and the tile that actually gets cut are guaranteed to
+    be the same one — checking a different tile than the one we commit to
+    would make the "undefended" reasoning meaningless.
+    """
+    candidate = _nth(_dropSkipped(bot, _enemyBeltsByDist(ct)), harasserRank(bot))
+    if candidate is None:
+        return None
+    if not _canAffordGunPlace(ct):
+        return candidate
+    from main import UNDEFENDED_BELT_CHEBYSHEV
+
+    radius = UNDEFENDED_BELT_CHEBYSHEV
+    if radius and radius > 0 and not _enemyBuilderNear(ct, candidate, radius):
+        return candidate
+    return None
+
+
 def _cutAndBarrier(
     bot,
     ct: Controller,
@@ -862,17 +911,26 @@ def denyBelt(bot, ct: Controller) -> bool:
     *start* condition (a gun is better value than a cut when we can afford one) and
     a wrong *continue* condition: each attack pushes the bank toward the threshold
     while one harvester delivery pushes it back over, so it used to flip mid-cut and
-    abandon the belt with the titanium already spent.
+    abandon the belt with the titanium already spent. Continuing is therefore never
+    reconsidered once started, regardless of affordability or the undefended check
+    below — only the decision to *start* reads either of them.
+
+    Starting also has a second, independent reason beyond "a gun is unaffordable":
+    a target with no enemy builder nearby (UNDEFENDED_BELT_CHEBYSHEV) has nobody
+    able to heal it back or rebuild it once it's gone, so the denial is effectively
+    permanent — worth taking regardless of what else the bank could buy. See
+    `_worthwhileCutTarget`.
     """
     # Mode A: adjacent build first
     if _tryForwardBarrier(bot, ct, adjacent_only=True):
         return True
-    # Mode B: finish what we started; otherwise start only while a gun is
-    # unaffordable and this harasser's cut cooldown has elapsed.
-    if _cutInProgress(bot, ct) or (
-        not _canAffordGunPlace(ct) and _cutCooldownElapsed(bot, ct)
-    ):
+    # Mode B: finish what we started, no reconsideration.
+    if _cutInProgress(bot, ct):
         if _cutAndBarrier(bot, ct):
+            return True
+    elif _cutCooldownElapsed(bot, ct):
+        target = _worthwhileCutTarget(bot, ct)
+        if target is not None and _cutAndBarrier(bot, ct, pick=lambda t=target: t):
             return True
     # Mode A: walk toward a forward pad
     return _tryForwardBarrier(bot, ct, adjacent_only=False)

@@ -188,9 +188,12 @@
 #        (3 Ti, unthrottled). Mode B: cut an enemy belt from an adjacent tile and
 #        barrier it in place (sticky via bot.denyBeltTile; falls back to mounting the
 #        belt if an adjacent shot is refused). Skips ore nearer our core.
-#        Mode B starts only while gun placement is unaffordable AND this harasser's
-#        DENY_CUT_COOLDOWN has elapsed; once started it runs to the barrier
-#        regardless of both (_cutInProgress), because a cut is 20 Ti / 10 turns and
+#        Mode B starts (once this harasser's DENY_CUT_COOLDOWN has elapsed) when
+#        either gun placement is unaffordable OR the target has no enemy builder
+#        within UNDEFENDED_BELT_CHEBYSHEV — undefended means nothing can heal or
+#        rebuild it, so the denial is effectively permanent regardless of the bank
+#        (_worthwhileCutTarget). Once started it runs to the barrier regardless of
+#        any of that (_cutInProgress), because a cut is 20 Ti / 10 turns and
 #        abandoning it half-way spends the Ti for nothing. A belt healed back to full
 #        HP stops counting as in-progress — that is the 4:1 heal-race bail-out.
 # 5. seekHarvester — local_map enemy harvesters / scout ore nodes (vision updates map)

@@ -129,6 +129,19 @@ OPEN_BLOCKED_ROUTE = True
 # not. Only starts are throttled; a cut already underway always runs to the barrier.
 DENY_CUT_COOLDOWN = 50
 
+# --- Undefended belt cut (≤0 disables the extra allowance) ---
+# A Mode B cut normally starts only while a gun is unaffordable — a gun beats a
+# cut in value whenever we can field one. But a belt with no enemy builder
+# within this Chebyshev radius has nobody able to heal it back (4 HP/turn for
+# 1 Ti against our 2 dmg for 2 Ti) or rebuild it once it's gone: the denial is
+# effectively permanent, so it's worth taking regardless of what else the bank
+# could buy. Read by offense._worthwhileCutTarget. Live vision only, not the
+# HiveMind ledger — a stale sighting could mark an abandoned belt "defended"
+# forever, or miss a builder that has since arrived; worst case on a wrong read
+# either way is falling back to the existing gun-affordability gate, not a
+# wasted cut. ≤0 falls back to that gate alone (today's behavior).
+UNDEFENDED_BELT_CHEBYSHEV = 5
+
 # --- Harasser ore denial (≤0 / None disables) ---
 # Barrier empty ore in the enemy's expansion ring: 3 Ti makes the tile unbuildable and
 # prevents a 20 Ti harvester plus its whole belt line; they pay 6-30 Ti to clear it.
