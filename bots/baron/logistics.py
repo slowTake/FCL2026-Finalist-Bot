@@ -2109,7 +2109,14 @@ def findBlockingDoor(
 
     `relay=True` plans with `relayPassable` instead of `walkPassable`, because a
     relay needs a *layable* corridor, which is stricter than a walkable one — a
-    belt cannot be laid where a builder can happily stand.
+    belt cannot be laid where a builder can happily stand. In relay mode `target`
+    is the ally core position, not an exact tile: the goal is core-adjacency
+    (`isCoreAdjacent`, the same test `pickRelayPath` itself uses), because the
+    core's 2x2 footprint has no single tile a route "arrives at". Passing the
+    relay's *origin* here instead — the far end the corridor was built *from* —
+    would search backward along belts that are already laid and already known
+    passable, finding a path with no door on it every time, since the actual
+    blockage sits forward, between here and the core.
 
     None means the blockage is something we will not open: terrain, the ally core,
     or an ally harvester. The caller falls through to blacklisting the node.
@@ -2135,10 +2142,16 @@ def findBlockingDoor(
             return False
         return walkPassable(ct, p, local_map=local_map)
 
+    is_goal = (
+        (lambda p: isCoreAdjacent(ct, p, target))
+        if relay
+        else (lambda p: p == target)
+    )
+
     path = astarFromSeeds(
         [pos],
         is_passable=ok,
-        is_goal=lambda p: p == target,
+        is_goal=is_goal,
         heuristic=lambda p: manhattan(p, target),
         max_iters=PATH_MAX_ITERS,
     )
@@ -2167,19 +2180,24 @@ def _clearBlockageState(bot) -> None:
     bot.stuck = 0
 
 
-def _blockedRouteTarget(bot) -> tuple[Position, bool] | None:
+def _blockedRouteTarget(bot, ct: Controller) -> tuple[Position, bool] | None:
     """What is sealed and how to plan for it: (target, relay_mode), or None.
 
     Walking comes first because it is the more common stall; a blocked relay only
     matters once the builder can actually stand where it needs to build.
+
+    The relay branch's target is the ally core, not `relayPathBlockedFrom` (the
+    relay's origin) — `findBlockingDoor(relay=True)` treats it as a core-adjacency
+    goal, not an exact tile; see that function's docstring for why the origin
+    itself is the wrong target to search toward.
     """
     site = bot.oreSite
     if site is not None and pathKnownBlocked(bot, site):
         return site, False
     if getattr(bot, "relayPathBlocked", False):
-        origin = getattr(bot, "relayPathBlockedFrom", None)
-        if origin is not None:
-            return Position(origin[0], origin[1]), True
+        core_pos = _allyCorePos(bot, ct)
+        if core_pos is not None:
+            return core_pos, True
     return None
 
 
@@ -2221,7 +2239,18 @@ def openBlockedRoute(bot, ct: Controller) -> bool:
     """
     from main import OPEN_BLOCKED_ROUTE, ORE_DEADLOCK_TURNS
 
-    if not OPEN_BLOCKED_ROUTE or bot.inRelay:
+    if not OPEN_BLOCKED_ROUTE:
+        return False
+    # The relay-blocked verdict (`relayPathBlocked`) can only ever be set while
+    # `bot.inRelay` is True — it's written by `pickRelayPath`, which only runs
+    # from inside `relayToCore`. A bare `bot.inRelay` bail here (the pre-fix
+    # behavior) therefore shut this whole function off in exactly the state the
+    # relay branch below exists to handle: "a relay sealed by our own gunner" per
+    # this function's own docstring. A relay reaching almost to the core and
+    # dying on a self-placed gunner, with no attempt to knock it down, was that
+    # gap — the walk-blocked branch still only makes sense outside a relay, so it
+    # stays gated.
+    if bot.inRelay and not getattr(bot, "relayPathBlocked", False):
         return False
 
     from guns import allyGunCovering, placeGun
@@ -2242,7 +2271,7 @@ def openBlockedRoute(bot, ct: Controller) -> bool:
         else:
             return placeGun(bot, ct, tile)
 
-    blocked = _blockedRouteTarget(bot)
+    blocked = _blockedRouteTarget(bot, ct)
     if blocked is None:
         return False
     target, relay_mode = blocked
