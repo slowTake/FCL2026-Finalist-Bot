@@ -238,6 +238,7 @@ from logistics import (
     healAlly,
     maintainHarvester,
     moveToward,
+    guardianLeash,
     moveTowardLeash,
     exploreFrontier,
     recheckOreNodes,
@@ -575,8 +576,13 @@ def _guardianLeashOk(bot, ct: Controller) -> bool:
     An ore sitting on the leash edge is built and relayed from a neighbouring
     tile, which is one step further out. Without the slack the leash step would
     march the guardian home every other turn and the relay would never finish.
+
+    The leash itself is dynamic (`guardianLeash`): wide while home is quiet,
+    tight once the core sees a threat. The slack rides on top of whichever is
+    current — it is a delta, not an absolute.
     """
-    if nearCore(bot, ct):
+    leash = guardianLeash(ct)
+    if nearCore(bot, ct, leash):
         return True
     if not guardianEconomyOn():
         return False
@@ -587,7 +593,7 @@ def _guardianLeashOk(bot, ct: Controller) -> bool:
     slack = GUARDIAN_ECON_SLACK or 0
     if slack <= 0:
         return False
-    reach = DEFEND_HOME_CHEBYSHEV + slack
+    reach = leash + slack
     return chebyshevToCore(ct.get_position(), bot.corePos) <= reach
 
 
@@ -653,7 +659,10 @@ def runGuardian(bot, ct: Controller) -> None:
             bot.oreSite = None
 
     if not _guardianLeashOk(bot, ct):
-        moveTowardLeash(bot, ct, bot.corePos)
+        # Recall target must be the *same* dynamic leash the test above used —
+        # recalling to a narrower radius than the test tolerates is exactly the
+        # over-pull GUARDIAN_ECON_SLACK exists to prevent.
+        moveTowardLeash(bot, ct, bot.corePos, radius=guardianLeash(ct))
         return
     # Cheapest answer first: a barrier in the gunner's line of fire (~3 Ti) costs
     # far less than fielding a gunner to kill it. Gunners only — see blockGunLine.

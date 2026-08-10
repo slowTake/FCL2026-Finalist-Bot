@@ -57,11 +57,20 @@ def chebyshevToCore(pos: Position, core_pos: Position) -> int:
     )
 
 
-def nearCore(bot, ct: Controller) -> bool:
-    """True while this unit is inside the home leash. False if home is unknown."""
+def nearCore(bot, ct: Controller, radius: int | None = None) -> bool:
+    """True while this unit is inside `radius` of home. False if home is unknown.
+
+    `radius` defaults to the static `DEFEND_HOME_CHEBYSHEV`. Callers that mean
+    "inside the guardian leash" pass `logistics.guardianLeash(ct)`, which varies
+    with whether the core is currently threatened; callers that mean "am I home
+    enough to act at all" leave it alone. Taking it as a parameter keeps this
+    module free of a `logistics` import (logistics already imports geometry).
+    """
     if bot.corePos is None:
         return False
-    return chebyshevToCore(ct.get_position(), bot.corePos) <= DEFEND_HOME_CHEBYSHEV
+    if radius is None:
+        radius = DEFEND_HOME_CHEBYSHEV
+    return chebyshevToCore(ct.get_position(), bot.corePos) <= radius
 
 
 def isAdjacent(a: Position, b: Position) -> bool:

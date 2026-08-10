@@ -272,10 +272,46 @@ def _pickOrphanRelay(bot, ct: Controller) -> Position | None:
 
 
 def relayEverComplete(ct: Controller) -> bool:
-    """True after the team has finished at least one inbound relay (slot 0)."""
-    from main import SLOT_RELAY_COMPLETE
+    """True after the team has finished at least one inbound relay (slot 0 bit 0).
 
-    return ct.read_store(SLOT_RELAY_COMPLETE) != 0
+    Masked, not `!= 0`: slot 0 also carries CORE_THREAT_BIT (see coreThreatened).
+    A bare truthiness test would read the threat bit as "a relay finished" and
+    flip the guardian's underAttack strictness on during the opening — exactly
+    what that gate exists to prevent.
+    """
+    from main import RELAY_COMPLETE_BIT, SLOT_RELAY_COMPLETE
+
+    return (ct.read_store(SLOT_RELAY_COMPLETE) & RELAY_COMPLETE_BIT) != 0
+
+
+def coreThreatened(ct: Controller) -> bool:
+    """True while the core can see an enemy turret/builder (slot 0 bit 1).
+
+    Written only by the core (`setCoreThreat` from `_run_core`), read by
+    guardians via `guardianLeash`. The core's vision is r²=36 (~6 tiles) against
+    a builder's ~4.5, and a builder's ledger is personal-vision only, so this is
+    the only way a roaming guardian learns home is being probed.
+    """
+    from main import CORE_THREAT_BIT, SLOT_RELAY_COMPLETE
+
+    return (ct.read_store(SLOT_RELAY_COMPLETE) & CORE_THREAT_BIT) != 0
+
+
+def setCoreThreat(ct: Controller, on: bool) -> None:
+    """Core-only: set/clear the threat bit without disturbing the relay bit."""
+    from main import CORE_THREAT_BIT, SLOT_RELAY_COMPLETE
+
+    val = ct.read_store(SLOT_RELAY_COMPLETE)
+    new = (val | CORE_THREAT_BIT) if on else (val & ~CORE_THREAT_BIT)
+    if new != val:
+        ct.write_store(SLOT_RELAY_COMPLETE, new)
+
+
+def guardianLeash(ct: Controller) -> int:
+    """Chebyshev radius a guardian may roam from core — tight while home is probed."""
+    from main import GUARDIAN_LEASH_TIGHT, GUARDIAN_LEASH_WIDE
+
+    return GUARDIAN_LEASH_TIGHT if coreThreatened(ct) else GUARDIAN_LEASH_WIDE
 
 
 def enemyTurretInVision(ct: Controller) -> bool:
@@ -319,9 +355,20 @@ def contestTurret(bot, ct: Controller) -> bool:
 
 
 def markRelayComplete(ct: Controller) -> None:
-    from main import SLOT_RELAY_COMPLETE
+    """Set slot 0's relay bit, preserving the core's threat bit.
 
-    ct.write_store(SLOT_RELAY_COMPLETE, 1)
+    Read-modify-write rather than the old bare `write_store(0, 1)`, which would
+    clobber CORE_THREAT_BIT. Store writes are buffered a full round, so if a
+    builder lands here on the same round the core writes the threat bit, one
+    clobbers the other — accepted, because both are self-healing: the core
+    rewrites the threat bit every turn, and this fires on every relay
+    completion, not just the first. Worst case is a one-round-stale flag.
+    """
+    from main import RELAY_COMPLETE_BIT, SLOT_RELAY_COMPLETE
+
+    val = ct.read_store(SLOT_RELAY_COMPLETE)
+    if not (val & RELAY_COMPLETE_BIT):
+        ct.write_store(SLOT_RELAY_COMPLETE, val | RELAY_COMPLETE_BIT)
 
 
 def isCoreAdjacent(

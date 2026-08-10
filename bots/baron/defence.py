@@ -24,7 +24,9 @@ from guns import (
 from pathing import CARDINALS, inBounds, manhattan, walkPassable
 
 
-def _pickDefGunTarget(ct: Controller, core_pos: Position | None) -> Position | None:
+def _pickDefGunTarget(
+    ct: Controller, core_pos: Position | None, max_cheb: int = DEFEND_HOME_CHEBYSHEV
+) -> Position | None:
     """Nearest enemy gunner/sentinel/launcher in vision — never a builder.
 
     `core_pos` set (guardians, via `homeOnly`) restricts targets to the leash: a
@@ -58,7 +60,7 @@ def _pickDefGunTarget(ct: Controller, core_pos: Position | None) -> Position | N
         epos = ct.get_position(eid)
         if (
             core_pos is not None
-            and chebyshevToCore(epos, core_pos) > DEFEND_HOME_CHEBYSHEV
+            and chebyshevToCore(epos, core_pos) > max_cheb
         ):
             continue
         if allyGunCovering(ct, epos):
@@ -76,11 +78,14 @@ def defGun(bot, ct: Controller, *, homeOnly: bool = False) -> bool:
     `homeOnly` forbids any action that would need the caller to leave the leash
     — guardians pass it, defaults do not.
     """
+    from logistics import guardianLeash
+
     if bot.inRelay or getattr(bot, "recheckingOre", False):
         return False
-    if not nearCore(bot, ct):
+    leash = guardianLeash(ct)
+    if not nearCore(bot, ct, leash):
         return False
-    target = _pickDefGunTarget(ct, bot.corePos if homeOnly else None)
+    target = _pickDefGunTarget(ct, bot.corePos if homeOnly else None, leash)
     if target is None:
         return False
     return placeGun(bot, ct, target)
@@ -293,31 +298,38 @@ def defSentinel(bot, ct: Controller) -> bool:
 
     if not DEF_SENTINEL or bot.corePos is None:
         return False
+    from logistics import guardianLeash
+
     if bot.inRelay or getattr(bot, "recheckingOre", False):
         return False
-    if not nearCore(bot, ct):
+    leash = guardianLeash(ct)
+    if not nearCore(bot, ct, leash):
         return False
     target = threateningTurret(bot, ct)
     if target is None:
         return False
     if allySentinelCovering(ct, target) or allyGunCovering(ct, target):
         return False  # already answered — don't stack turrets on one threat
-    return placeDefSentinel(
-        bot, ct, target, bot.corePos, DEFEND_HOME_CHEBYSHEV
-    )
+    return placeDefSentinel(bot, ct, target, bot.corePos, leash)
 
 
 def clearBarriers(bot, ct: Controller) -> bool:
     """Attack nearest enemy barrier inside the guardian leash.
 
     Barriers beyond the leash are ignored on purpose: walking out to one puts the
-    guardian outside Chebyshev 4, so `runGuardian`'s leash step marches it home
-    next turn and it ping-pongs forever without ever patrolling. Distant barriers
-    are the harassers' problem.
+    guardian outside the leash, so `runGuardian`'s leash step marches it home
+    next turn and it ping-pongs forever without ever patrolling. The bound is the
+    *current* leash (`guardianLeash`), which is wide while home is quiet — that
+    is what lets a guardian reach a barrier cutting one of our belt lines — and
+    snaps back to tight the moment the core sees a threat. Barriers beyond even
+    the wide leash are the harassers' problem.
     """
+    from logistics import guardianLeash
+
     me = ct.get_team()
     pos = ct.get_position()
     core = bot.corePos
+    leash = guardianLeash(ct)
     best: Position | None = None
     best_d = 10**9
     for eid in ct.get_nearby_entities():
@@ -326,7 +338,7 @@ def clearBarriers(bot, ct: Controller) -> bool:
         if ct.get_entity_type(eid) != EntityType.BARRIER:
             continue
         epos = ct.get_position(eid)
-        if core is not None and chebyshevToCore(epos, core) > DEFEND_HOME_CHEBYSHEV:
+        if core is not None and chebyshevToCore(epos, core) > leash:
             continue
         dist = abs(pos.x - epos.x) + abs(pos.y - epos.y)
         if dist < best_d:
@@ -599,7 +611,9 @@ def reconnectBelts(bot, ct: Controller) -> bool:
     if core is None or bot.inRelay or getattr(bot, "recheckingOre", False):
         return False
 
-    candidates = _danglingBeltEnds(bot, ct)
+    from logistics import guardianLeash
+
+    candidates = _danglingBeltEnds(bot, ct, max_dist=guardianLeash(ct))
     if not candidates:
         return False
     return _tryPatchDanglingBelts(bot, ct, candidates, core)

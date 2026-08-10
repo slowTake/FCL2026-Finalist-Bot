@@ -1,7 +1,10 @@
 """baron — multi-module bot. Policy at top; dispatch only below.
 
 Store slots (HiveMind v2):
-  0  SLOT_RELAY_COMPLETE   1 after first inbound relay finishes
+  0  SLOT_RELAY_COMPLETE   bit-packed: bit 0 = a relay has completed (written
+       by builders), bit 1 = CORE_THREAT_BIT, the core sees a turret/builder
+       (written only by the core). Readers must mask — no slot is free, so the
+       guardian-leash signal rides in slot 0's 31 unused bits.
   1–3 SLOT_ORPHAN_1/2/3    orphaned-harvester registry (logistics.py) — the
        last Player-free slots; nothing else may claim them
   4–15 HiveMind-owned — never write from Player
@@ -66,7 +69,22 @@ TURRET_MEMORY_TURNS = 20  # how stale a ledger sighting may be and still count
 GUARDIAN_ECONOMY = True
 # Extra Chebyshev slack on the guardian leash while it is committed to a node or
 # relay — an ore at the leash edge is worked from an adjacent tile one step out.
+# A delta, not an absolute: it rides on top of whatever the current leash is.
 GUARDIAN_ECON_SLACK = 1
+
+# --- Dynamic guardian leash ---
+# How far a guardian may roam from the core. WIDE while home is quiet, so it can
+# reach enemy barriers cutting our belts and repair relays further out;
+# TIGHT the moment the *core* sees an enemy turret or builder, which is the only
+# way a roaming guardian learns home is being probed (a builder's ledger is
+# personal-vision only, and its own vision is ~4.5 against the core's ~6).
+# The core writes CORE_THREAT_BIT; guardians read it via logistics.guardianLeash.
+GUARDIAN_LEASH_WIDE = 8
+GUARDIAN_LEASH_TIGHT = 4
+# Stay tight this long after the last sighting, so an enemy skirting the edge of
+# the core's vision can't make guardians oscillate between the two radii.
+# Mirrors TURRET_MEMORY_TURNS's shape and value.
+GUARDIAN_LEASH_HOLD_TURNS = 20
 
 # --- Opportunistic nearby-belt finish (≤0 disables) ---
 # Chebyshev radius, anchored on the acting bot's own tile (not the core), that
@@ -93,8 +111,14 @@ DANGLING_BELT_SELF_CHEBYSHEV = 3
 # right at that boundary was observed going completely undetected (its
 # distance² from the core was one over the core's own vision r²) for the
 # entire back half of a match, with no ally unit ever patrolling far enough
-# out to spot it and let defSentinel answer. Reaching further would need the
-# leash itself widened too — out of scope for this pass.
+# out to spot it and let defSentinel answer.
+#
+# Deliberately NOT raised alongside GUARDIAN_LEASH_WIDE(8). Patrol is idle
+# behaviour; the chores (clearBarriers / reconnectBelts) are what need the
+# roam. Left at 3 it now sits five tiles inside the wide leash instead of one,
+# i.e. strictly more margin than before, and it avoids pushing waypoints out
+# to 7 where they are far likelier to be walled and fall through to the corner
+# fallbacks. Raising it is a separate, independently-testable change.
 GUARDIAN_PATROL_OFFSET = 3
 
 # --- Relay merge (False disables) ---
@@ -338,6 +362,13 @@ SLOT_ORPHAN_2 = 2
 SLOT_ORPHAN_3 = 3
 SLOT_PACKED_CORES = 15
 
+# Slot 0 is bit-packed: no store slot is free (all 16 are allocated), but slot 0
+# only ever used 1 of its 32 bits. Bit 0 = a relay has completed (written by
+# builders); bit 1 = the core currently sees a threat (written only by the core).
+# Every reader must mask — see relayEverComplete / coreThreatened in logistics.
+RELAY_COMPLETE_BIT = 1
+CORE_THREAT_BIT = 2
+
 # --- Orphan relay registry (≤0 disables reporting/pickup) ---
 # How stale an orphan-registry entry (bots/baron/logistics.py) may be before a
 # reader treats it as unreadable and evicts it on next write. No claim/heartbeat
@@ -352,7 +383,8 @@ DEBUG = True
 from guns import gunnerLoop, sentinelLoop, topUpAmmo
 from hivemind import CoreState, HiveMind, unpack_cores
 from respawn import Respawn, SpawnSchedule
-from builder import runBuilderRoles
+from builder import _enemyUnitInVision, runBuilderRoles
+from logistics import setCoreThreat
 
 SPAWN_SCHEDULE = SpawnSchedule(
     max_builders_early=MAX_BUILDERS_EARLY,
@@ -368,6 +400,9 @@ class Player:
 
         self.corePos: Position | None = None
         self.enemyCorePos: Position | None = None
+        # Core-only: last round the core saw an enemy turret/builder in its own
+        # vision. Drives CORE_THREAT_BIT and hence the guardian leash.
+        self.coreThreatRound = -(10**9)
         self.oreSite: Position | None = None
         self.inRelay = False
         self.relayOrigin: Position | None = None
@@ -444,6 +479,18 @@ class Player:
             else RAIDER_AMMO_START_TURN
         )
         topUpAmmo(ct, local_map=self.hivemind.local_map, min_turn=min_turn)
+
+        # Guardian leash signal. The core is the right detector: its vision is
+        # r²=36 against a builder's r²=20, it is a singleton (so no store write
+        # contention with itself), and HiveMind.tick already enumerated
+        # get_nearby_entities() this turn, so the scan is effectively free.
+        # The hold window lives here, in core instance state, rather than
+        # costing store bits — Player persists across turns.
+        if _enemyUnitInVision(ct):
+            self.coreThreatRound = round_n
+        setCoreThreat(
+            ct, round_n - self.coreThreatRound <= GUARDIAN_LEASH_HOLD_TURNS
+        )
 
         enemy = self._resolveEnemyCore(ct)
         if enemy is not None and self.hivemind.map_id != 0:
