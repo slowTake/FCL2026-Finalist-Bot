@@ -127,9 +127,9 @@
 #        gunner-aim gate); ally block → destroy (skip gunner/sentinel if that
 #        ore is threatened); enemy gunner/sentinel/belt/launcher/barrier →
 #        nothing (yields the turn)
-#    2b. relayToCore — next belt tile under a visible gunner's LoS/arc → blacklist
-#        it (bot.relayThreatBlocked, reset in clearRelay) and replan from origin;
-#        abort only if that finds nothing. Else path → facing / clearBeltObstacle →
+#    2b. relayToCore — belts are placed/repaired straight through gunner fire now
+#        (killing one costs the enemy more than it costs us to rebuild/heal it —
+#        see _repairBeltIfDamaged). Path → facing / clearBeltObstacle →
 #        placeRelayBelt → watermark
 # 3. defGun — near core only; enemy gunner/sentinel/launcher in vision → placeGun
 #        (gunners only — never sentinels; a builder is never a placement target,
@@ -235,6 +235,7 @@ from logistics import (
     contestTurret,
     defendHome,
     enemyTurretInVision,
+    finishNearbyHarvester,
     healAlly,
     maintainHarvester,
     moveToward,
@@ -496,6 +497,10 @@ def _runDefaultHome(bot, ct: Controller) -> None:
     # sitting right next to us. Cheap, self-anchored — see finishNearbyBelt.
     if finishNearbyBelt(bot, ct):
         return
+    # Same idea, for a harvester nobody has started relaying yet — see
+    # finishNearbyHarvester.
+    if finishNearbyHarvester(bot, ct):
+        return
     if recheckOreNodes(bot, ct):
         return
     # Last resort: nothing to build or maintain. Only reachable when the ore pool is
@@ -540,6 +545,10 @@ def runDefault(bot, ct: Controller) -> None:
     # died — no on-death hook reports that to OrphanRelayRegistry) might be
     # sitting right next to us. Cheap, self-anchored — see finishNearbyBelt.
     if finishNearbyBelt(bot, ct):
+        return
+    # Same idea, for a harvester nobody has started relaying yet — see
+    # finishNearbyHarvester.
+    if finishNearbyHarvester(bot, ct):
         return
     if recheckOreNodes(bot, ct):
         return
@@ -722,18 +731,32 @@ def runGuardian(bot, ct: Controller) -> None:
     # next to a break reconnectBelts will never see. Cheap, opportunistic.
     if not underAttack and finishNearbyBelt(bot, ct):
         return
+    if not underAttack and finishNearbyHarvester(bot, ct):
+        return
     if not underAttack and _guardianEconomy(bot, ct):
         return
     patrolHome(bot, ct)
 
 
 def runHarasser(bot, ct: Controller) -> None:
-    """Harasser: leash → snipe → denyHarvesterSupply → offGun → wallCore →
-    avoidFire → denyOre → denyBelt → seek → seekCore."""
+    """Harasser: relay → leash → finishNearbyHarvester → snipe →
+    denyHarvesterSupply → offGun → wallCore → avoidFire → denyOre → denyBelt →
+    seek → seekCore."""
     _resolveCores(bot, ct)
     bot.nearCoreEconomy = False
     # State-only; the selectors below re-pick this turn. Costs no turn.
     breakBeltDeadlock(bot, ct)
+    # Committed to a relay (started here via finishNearbyHarvester, or handed
+    # off): finish it, ignoring the leash below — mirrors runDefault's own
+    # bot.inRelay bypass. The belt has to walk all the way back to *our* core,
+    # which is definitionally far outside the enemy-core leash, so the leash
+    # check must not fight it. avoidFire mirrors _dodgeWhileRelaying so a
+    # relaying harasser still dodges fire instead of tanking it.
+    if bot.inRelay:
+        if avoidFire(bot, ct, goal=bot.corePos):
+            return
+        maintainHarvester(bot, ct)
+        return
     if not _harassLeashOk(bot, ct):
         # Recall to the region within the leash rather than the literal core
         # tile — moveTowardLeash A*-paths around obstacles; seekCore's own
@@ -741,6 +764,11 @@ def runHarasser(bot, ct: Controller) -> None:
         from main import HARASS_LEASH_CHEBYSHEV
 
         moveTowardLeash(bot, ct, bot.enemyCorePos, radius=HARASS_LEASH_CHEBYSHEV)
+        return
+    # Prefer stealing a fresh, unclaimed enemy harvester over sniping it —
+    # directly resolves harassers destroying a harvester a steal-relay could
+    # have captured alive instead. See finishNearbyHarvester.
+    if finishNearbyHarvester(bot, ct):
         return
     if snipeHarvester(bot, ct):
         return

@@ -95,6 +95,14 @@ GUARDIAN_LEASH_HOLD_TURNS = 20
 # report it), not a search that should pull a builder off its own task.
 DANGLING_BELT_SELF_CHEBYSHEV = 3
 
+# --- Opportunistic nearby-harvester relay (≤0 disables) ---
+# Chebyshev radius, anchored on the acting bot's own tile, that
+# finishNearbyHarvester searches for an un-relayed harvester (ally or, if
+# STEAL_ENEMY_HARVESTERS, enemy) to start relaying. Same "cheap I'm-right-here
+# check, not a search" shape as DANGLING_BELT_SELF_CHEBYSHEV, kept as its own
+# knob since the false-positive risk profile differs (this one can commit a
+# builder to a brand-new multi-turn relay, not just patch one tile).
+NEARBY_HARVESTER_SELF_CHEBYSHEV = 3
 # --- Guardian patrol offset ---
 # How far patrolHome's mid-side waypoints sit from the core footprint. Was a
 # fixed 2 (defence.py's old _PATROL_OFFSET). Raised, but deliberately to 3, one
@@ -201,16 +209,6 @@ ORE_BLOCK_MEMORY_TURNS = 30
 # trusted belt entry can silently mark a broken relay complete, a materially
 # worse failure than misjudging one ore tile.
 RELAY_LEDGER_TRUST_TURNS = 30
-
-# --- Relay threat-abort escalation (≤0 disables) ---
-# How many consecutive threat-driven relay aborts from the same origin before
-# the node itself is blacklisted (skippedOres), not just this attempt's route.
-# Without this, clearRelay wipes relayThreatBlocked on every abort, so a relay
-# walled off by a firing line re-picks the same ore and rediscovers the same
-# dead-end tiles every lap — see CONTEXT.md's RelayToCore section ("Two known
-# limits"). Neither relayStuck nor bot.stuck catches this: the builder keeps
-# genuinely acting each lap, it's the node that's bad.
-RELAY_THREAT_ABORT_LIMIT = 2
 
 # --- Ore deadlock breaker (≤0 disables) ---
 # Turns a default builder may sit motionless outside a relay before it drops its
@@ -418,9 +416,6 @@ class Player:
         self.relayPath: list[Position] | None = None
         self.relayBuiltTo = -1
         self.relayStuck = 0
-        self.relayThreatBlocked: set[tuple[int, int]] = set()
-        self.threatAbortSite: tuple[int, int] | None = None
-        self.threatAbortCount = 0
         self.blockadeDoor: tuple[int, int] | None = None
         self.relayPathBlocked = False
         self.relayPathBlockedFrom: tuple[int, int] | None = None

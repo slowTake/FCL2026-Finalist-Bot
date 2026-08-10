@@ -439,8 +439,6 @@ def _danglingBeltEnds(
     Conveyors only. A splitter rotates its output among three directions, so
     "the way it points" does not identify a break.
     """
-    from logistics import tileThreatenedByGunner
-
     core = bot.corePos
     if core is None:
         return []
@@ -477,8 +475,6 @@ def _danglingBeltEnds(
         # (unless the caller has already decided proximity isn't a useful signal
         # here — see respect_owner above).
         if respect_owner and _allyBuilderNear(ct, target):
-            continue
-        if tileThreatenedByGunner(ct, target):
             continue
         out.append((chebyshevToCore(belt, core), manhattan(pos, target), belt, target))
     out.sort(key=lambda t: (t[0], t[1]))
