@@ -8,8 +8,10 @@ from geometry import (
     BELT_TYPES,
     DEFEND_HOME_CHEBYSHEV,
     TURRET_TYPES,
+    beltNeighbors,
     chebyshevToCore,
     coreFootprint,
+    harvesterClaimedByAlly,
     isAdjacent,
     nearCore,
     tileEntity,
@@ -51,43 +53,12 @@ def clearRelay(bot) -> None:
     bot.relayPath = None
     bot.relayBuiltTo = -1
     bot.relayStuck = 0
-    # Threat blacklist is scoped to one relay attempt: a tile is blocked because a
-    # gunner covered it *then*, and that gunner may be gone by the next relay.
-    bot.relayThreatBlocked = set()
+    bot.beltFireTile = None
+    bot.beltFireTurns = 0
 
 
 def abortRelay(bot) -> None:
     clearRelay(bot)
-
-
-def _escalateThreatAbort(bot, site: Position) -> None:
-    """Blacklist `site` into skippedOres after repeated threat-driven aborts.
-
-    A relay walled off by a firing line replans from relayOrigin and finds no
-    route, aborts, and — because clearRelay wipes relayThreatBlocked — the
-    next attempt from the same origin rediscovers the identical dead end.
-    bot.stuck/relayStuck don't catch this: the builder keeps genuinely
-    moving/acting each lap, it's the *node* that's bad, not the builder. See
-    CONTEXT.md's RelayToCore section ("Two known limits") — this is that
-    section's own suggested fix.
-    """
-    from main import RELAY_THREAT_ABORT_LIMIT
-
-    if RELAY_THREAT_ABORT_LIMIT is None or RELAY_THREAT_ABORT_LIMIT <= 0:
-        return
-    key = (site.x, site.y)
-    if getattr(bot, "threatAbortSite", None) == key:
-        bot.threatAbortCount = getattr(bot, "threatAbortCount", 0) + 1
-    else:
-        bot.threatAbortSite = key
-        bot.threatAbortCount = 1
-    if bot.threatAbortCount >= RELAY_THREAT_ABORT_LIMIT:
-        if not hasattr(bot, "skippedOres"):
-            bot.skippedOres = set()
-        bot.skippedOres.add(key)
-        bot.oreSite = None
-        bot.threatAbortSite = None
-        bot.threatAbortCount = 0
 
 
 # ------------------------------------------------------------------
@@ -220,8 +191,6 @@ def _reportAndAbort(bot, ct: Controller) -> None:
     """
     if bot.relayOrigin is not None:
         reportOrphanRelay(bot, ct, bot.relayOrigin)
-        if bot.relayThreatBlocked:
-            _escalateThreatAbort(bot, bot.relayOrigin)
     abortRelay(bot)
 
 
@@ -1056,7 +1025,7 @@ def _allyBeltAt(ct: Controller, tile: Position) -> bool:
 
     Team-checked counterpart to `bid_is_belt`, which is team-blind. Used to keep
     the merge-or-follow path off enemy belts, so those still fall through to
-    `clearWrongBelt`'s fire-on-it branch.
+    `clearBeltObstacle`'s fire-on-it branch.
     """
     bid = ct.get_tile_building_id(tile)
     if bid is None:
@@ -1206,7 +1175,7 @@ def neededBeltFacing(
     crow-flies guess — `facingIntoCore` used unconditionally here would aim
     at the core anchor regardless of which existing belt the path actually
     merged into, producing exactly the belt-pointing-at-nothing/torn-out-by-
-    `clearWrongBelt` cycle `_reconnectFacing`'s own docstring describes from
+    `clearBeltObstacle` cycle `_reconnectFacing`'s own docstring describes from
     the one other place this codebase tried a crow-flies fallback.
 
     **If `tile` is itself already an ally CONVEYOR whose own current facing
@@ -1218,7 +1187,7 @@ def neededBeltFacing(
     Recomputing a fresh neighbor-based facing for such a tile can point it at
     a neighbor that is only "provably connected" *through `tile`'s own
     current facing* — accepting that would invert the pair into a 2-tile
-    cycle, destroying a working ally belt via `clearWrongBelt` and severing
+    cycle, destroying a working ally belt via `clearBeltObstacle` and severing
     everything downstream of it from the core. Checking self-connectivity
     first closes that: an empty `tile` (the normal, first-build case) has no
     facing to read (`_beltDirectionAt` returns `None`), so this only ever
@@ -1303,15 +1272,34 @@ def beltFacingOk(
     return ent.get("direction") == needed
 
 
-def clearWrongBelt(bot, ct: Controller, tile: Position) -> str:
-    """Clear wrong-facing belt. Returns acted|waiting|clear|failed."""
+# Obstacle types this clears from a relay lane: a wrong-facing belt (destroy/
+# fire and rebuild), or a barrier sitting square in the lane (ours or theirs).
+# Any other building (harvester, core, gunner/sentinel/launcher) is not a
+# candidate here — relayToCore replans around those instead.
+_BELT_OBSTACLE_TYPES = BELT_TYPES + (EntityType.BARRIER,)
+
+
+# Turns a builder may stand-and-fire the same enemy belt tile before giving up.
+# A heal-racing enemy builder (HEAL_AMOUNT=4/turn) outheals our fire
+# (BUILDER_BOT_ATTACK_DAMAGE=2/turn) 2:1, so without a cap this branch fires
+# forever and never returns "failed" — see clearBeltObstacle's fire-on-it branch.
+_BELT_FIRE_TURN_LIMIT = 3
+
+
+def clearBeltObstacle(bot, ct: Controller, tile: Position) -> str:
+    """Clear a wrong-facing belt or a barrier blocking the relay lane.
+
+    Returns acted|waiting|clear|failed.
+    """
     if not ct.is_in_vision(tile):
         return "waiting"
     bid = ct.get_tile_building_id(tile)
     if bid is None:
+        bot.beltFireTile = None
+        bot.beltFireTurns = 0
         return "clear"
     etype = ct.get_entity_type(bid)
-    if etype not in BELT_TYPES:
+    if etype not in _BELT_OBSTACLE_TYPES:
         return "failed"
     pos = ct.get_position()
     ally = ct.get_team(bid) == ct.get_team()
@@ -1339,7 +1327,26 @@ def clearWrongBelt(bot, ct: Controller, tile: Position) -> str:
 
     # Enemy: stand-and-fire from adjacent (builder fires own tile only for belts
     # on the work tile — move onto tile if needed next turns after clear attempt).
+    #
+    # Capped at _BELT_FIRE_TURN_LIMIT turns on the same tile: a heal-racing
+    # enemy builder can keep this belt standing indefinitely (see the constant's
+    # docstring above), and unlike offense.py's _cutInProgress — which only ever
+    # has to decide whether to *start* a cut, so it can just check HP-vs-max —
+    # this branch is already mid-fire every time it's reached, with no "before
+    # the cut" moment to gate. A flat turn count is the simplest thing that
+    # forces a "failed" out of this loop either way, so relayToCore's
+    # relayStuck 3-strike counter (logistics.py ~1592-1594) can see it and
+    # reroute via _reportAndAbort instead of firing forever.
+    key = (tile.x, tile.y)
+    if getattr(bot, "beltFireTile", None) != key:
+        bot.beltFireTile = key
+        bot.beltFireTurns = 0
     if ct.get_action_cooldown() == 0 and ct.can_fire(tile):
+        if bot.beltFireTurns >= _BELT_FIRE_TURN_LIMIT:
+            bot.beltFireTile = None
+            bot.beltFireTurns = 0
+            return "failed"
+        bot.beltFireTurns += 1
         ct.fire(tile)
         return "acted"
     return "waiting"
@@ -1353,10 +1360,33 @@ def placeRelayBelt(ct: Controller, tile: Position, facing: Direction) -> str:
         return "failed"
     if ct.get_action_cooldown() != 0:
         return "waiting"
+    # Ti-starved, not stuck: the shared bank can't afford a conveyor right
+    # now but will recover, so treat this like any other "waiting" turn
+    # instead of counting it toward relayStuck — the caller already holds
+    # position adjacent to tile on a waiting turn, so this is exactly the
+    # "wait in the vicinity until Ti arrives" fallback.
+    if ct.get_global_resources() < ct.get_conveyor_cost():
+        return "waiting"
     if ct.can_build_conveyor(tile, facing):
         ct.build_conveyor(tile, facing)
         return "placed"
     return "failed"
+
+
+def _repairBeltIfDamaged(ct: Controller, tile: Position) -> bool:
+    """Heal an ally belt at tile if adjacent, damaged, and affordable.
+
+    `ct.can_heal` already validates adjacency, action cooldown, Ti
+    affordability, and "at least one damaged friendly entity on the tile" —
+    the same precondition healAlly relies on — so no separate HP bookkeeping
+    is needed here. A belt is now cheap to keep topped up (HEAL_AMOUNT=4/turn
+    for 1 Ti against GUNNER_DAMAGE=7/turn), so this is worth trying anywhere a
+    belt was just confirmed correctly placed, not just reactively.
+    """
+    if not ct.can_heal(tile):
+        return False
+    ct.heal(tile)
+    return True
 
 
 def extendRelayWatermark(
@@ -1410,14 +1440,11 @@ def pickRelayPath(
             return False
         return _mergeCandidateNeighbor(bot, ct, p, core_pos, cache=merge_cache) is not None
 
-    threat_blocked = getattr(bot, "relayThreatBlocked", None) or None
-
     def ok(p: Position) -> bool:
         return relayPassable(
             ct,
             p,
             ore_blocked=ore_blocked,
-            threat_blocked=threat_blocked,
             local_map=local_map,
         )
 
@@ -1446,7 +1473,6 @@ def pickRelayPath(
             is_goal=is_goal,
             heuristic_to=core_pos,
             ore_blocked=ore_blocked,
-            threat_blocked=threat_blocked,
             local_map=local_map,
             max_iters=PATH_MAX_ITERS,
         )
@@ -1526,31 +1552,33 @@ def relayToCore(bot, ct: Controller) -> None:
     needed = neededBeltFacing(bot, ct, path, idx, core_pos)
     pos = ct.get_position()
 
-    # Don't spend titanium on a tile a visible enemy gunner is covering. Route
-    # around it rather than dropping the relay: blacklist the tile for the rest of
-    # this attempt and replan from the origin. Belts already laid sit behind the
-    # threat and stay valid — a path that retraces them costs nothing, because
-    # extendRelayWatermark resumes at the first gap or wrong-facing tile. Abort is
-    # kept as the fallback for when no clear route exists at all.
-    if tileThreatenedByGunner(ct, tile):
-        bot.relayThreatBlocked.add((tile.x, tile.y))
-        new_path = pickRelayPath(bot, ct, bot.relayOrigin, core_pos)
-        if new_path is None:
-            _reportAndAbort(bot, ct)
-            return
-        if _isEnemyCoreAdjacent(ct, new_path[-1], enemy_core):
-            abortRelay(bot)
-            return
-        bot.relayPath = new_path
-        bot.relayBuiltTo = extendRelayWatermark(bot, ct, new_path, core_pos, -1)
-        return
+    # A gunner covering this tile is no longer a reason to route around it —
+    # killing a belt now costs the enemy more than it costs us to place or
+    # repair one (GUNNER_DAMAGE=7/turn vs HEAL_AMOUNT=4/turn for 1 Ti;
+    # CONVEYOR_BASE_COST=3 to rebuild outright vs GUNNER_AMMO_COST=4/shot to
+    # keep shooting it), so belts are placed straight through gunner fire the
+    # same as any other empty tile. See _repairBeltIfDamaged for the other
+    # half of this: healing partial damage before it's destroyed.
 
-    # Non-belt building blocking — replan
+    # Barrier blocking — clear it (destroy ours, fire down theirs) instead of
+    # abandoning the planned lane. Any other non-belt building still replans.
     if ct.is_in_vision(tile):
         block_id = ct.get_tile_building_id(tile)
         if block_id is not None:
             etype = ct.get_entity_type(block_id)
-            if etype not in BELT_TYPES:
+            if etype == EntityType.BARRIER:
+                result = clearBeltObstacle(bot, ct, tile)
+                if result == "acted":
+                    return
+                if result == "failed":
+                    bot.relayStuck = getattr(bot, "relayStuck", 0) + 1
+                    if bot.relayStuck >= 3:
+                        _reportAndAbort(bot, ct)
+                    return
+                if result == "waiting":
+                    return
+                # clear — fall through to place
+            elif etype not in BELT_TYPES:
                 bot.relayPath = None
                 bot.relayBuiltTo = -1
                 return
@@ -1580,13 +1608,14 @@ def relayToCore(bot, ct: Controller) -> None:
             # (finishNearbyBelt / reconnectBelts), which is already anchored for
             # exactly that.
             if _allyBeltAt(ct, tile):
+                _repairBeltIfDamaged(ct, tile)
                 markRelayComplete(ct)
                 if bot.relayOrigin is not None:
                     clearOrphanRelay(ct, bot.relayOrigin)
                 clearRelay(bot)
                 bot.oreSite = None
                 return
-            result = clearWrongBelt(bot, ct, tile)
+            result = clearBeltObstacle(bot, ct, tile)
             if result == "acted":
                 return
             if result == "failed":
@@ -1600,6 +1629,7 @@ def relayToCore(bot, ct: Controller) -> None:
 
     if beltFacingOk(bot, ct, tile, needed, local_map=bot.hivemind.local_map):
         bot.relayBuiltTo = idx
+        _repairBeltIfDamaged(ct, tile)
         return
 
     # Need empty tile to place — step off if standing on it
@@ -1760,6 +1790,97 @@ def checkOre(bot, ct: Controller, tile: Position) -> bool:
         # Enemy occupancy — gun placement deferred
         return False
 
+    return False
+
+
+def _repairNearbyBeltSegment(bot, ct: Controller, harvesterTile: Position) -> bool:
+    """Heal a damaged ally segment at/around harvesterTile if reachable this turn.
+
+    Checks the harvester itself and its cardinally-adjacent ally belts
+    (`beltNeighbors`) for actual damage (`get_hp` &lt; `get_max_hp`) before doing
+    anything — this is a repair action, not a search, so it never walks a
+    builder toward a segment that turns out to be fine. Heals immediately if
+    already adjacent to a damaged one, else takes one step toward the nearest.
+    """
+    local_map = bot.hivemind.local_map
+    me = ct.get_team()
+    targets = [harvesterTile] + [
+        n for n, ent in beltNeighbors(ct, harvesterTile, local_map=local_map)
+        if ent.get("team") == me
+    ]
+    damaged: list[Position] = []
+    for t in targets:
+        if not ct.is_in_vision(t):
+            continue
+        bid = ct.get_tile_building_id(t)
+        if bid is None or ct.get_team(bid) != me:
+            continue
+        if ct.get_hp(bid) >= ct.get_max_hp(bid):
+            continue
+        damaged.append(t)
+    if not damaged:
+        return False
+    pos = ct.get_position()
+    for t in damaged:
+        if isAdjacent(pos, t) and _repairBeltIfDamaged(ct, t):
+            return True
+    return moveToward(bot, ct, damaged[0])
+
+
+def finishNearbyHarvester(bot, ct: Controller) -> bool:
+    """Opportunistically start or repair a relay for an un/under-relayed
+    harvester near this bot's own tile.
+
+    Twin of finishNearbyBelt (defence.py) for harvesters instead of dangling
+    belt ends: no claim, no reporting, any builder that happens to be near
+    just acts. Exists because the HiveMind ledger is per-bot, not team-shared
+    (see CONTEXT.md) — a builder otherwise only ever works a harvester its own
+    vision has touched, and only once its own sticky claim frees up. This lets
+    ANY passing builder within a small radius kick off (or top up) a relay the
+    moment it notices one, instead of waiting for the formal economy loop to
+    happen to pick that exact tile.
+
+    `harvesterClaimedByAlly` False (no ally belt touches it yet) → commit
+    fresh, exactly like checkOre's own harvester branch — this is the core
+    fix. True (someone's relay, in progress or complete) → don't take it over;
+    just try `_repairNearbyBeltSegment` instead.
+    """
+    if bot.corePos is None or bot.inRelay or getattr(bot, "recheckingOre", False):
+        return False
+
+    from main import NEARBY_HARVESTER_SELF_CHEBYSHEV
+
+    if NEARBY_HARVESTER_SELF_CHEBYSHEV is None or NEARBY_HARVESTER_SELF_CHEBYSHEV <= 0:
+        return False
+
+    core = bot.corePos
+    pos = ct.get_position()
+    skipped = getattr(bot, "skippedOres", set())
+    local_map = bot.hivemind.local_map
+    candidates: list[tuple[int, int, Position]] = []
+    for (x, y), cell in local_map.items():
+        ent = cell.get("entity")
+        if not ent or ent.get("type") != EntityType.HARVESTER:
+            continue
+        if (x, y) in skipped:
+            continue
+        if not _harvesterOwnerAllowed(ct, ent.get("team")):
+            continue
+        tile = Position(x, y)
+        if max(abs(tile.x - pos.x), abs(tile.y - pos.y)) > NEARBY_HARVESTER_SELF_CHEBYSHEV:
+            continue
+        if not _allowOreSite(bot, tile):
+            continue
+        candidates.append((chebyshevToCore(tile, core), manhattan(pos, tile), tile))
+    candidates.sort()
+
+    for _d, _m, tile in candidates:
+        if harvesterClaimedByAlly(ct, tile, local_map=local_map):
+            if _repairNearbyBeltSegment(bot, ct, tile):
+                return True
+            continue
+        bot.oreSite = tile
+        return checkOre(bot, ct, tile)
     return False
 
 
@@ -1951,6 +2072,7 @@ def healAlly(bot, ct: Controller) -> bool:
         EntityType.GUNNER,
         EntityType.SENTINEL,
         EntityType.HARVESTER,
+        EntityType.CONVEYOR,
     )
     for want in priority:
         for d in CARDINALS:

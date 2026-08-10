@@ -439,8 +439,6 @@ def _danglingBeltEnds(
     Conveyors only. A splitter rotates its output among three directions, so
     "the way it points" does not identify a break.
     """
-    from logistics import tileThreatenedByGunner
-
     core = bot.corePos
     if core is None:
         return []
@@ -470,15 +468,13 @@ def _danglingBeltEnds(
         if _isBeltOrCore(bot, ct, target, core):
             continue
         # Layable only. A belt aimed at a wall or a building is wrong-facing,
-        # which is clearWrongBelt's problem, not a cut line.
+        # which is clearBeltObstacle's problem, not a cut line.
         if not _layableTile(ct, target):
             continue
         # A default mid-relay has a legitimately dangling head — leave it alone
         # (unless the caller has already decided proximity isn't a useful signal
         # here — see respect_owner above).
         if respect_owner and _allyBuilderNear(ct, target):
-            continue
-        if tileThreatenedByGunner(ct, target):
             continue
         out.append((chebyshevToCore(belt, core), manhattan(pos, target), belt, target))
     out.sort(key=lambda t: (t[0], t[1]))
@@ -518,7 +514,7 @@ def _reconnectFacing(
     belt it produced pointed at another empty tile, so it became a dangling end
     itself next turn and the guardian marched a line of belts at the core one per
     turn — and because those belts agree with no route, whatever `relayToCore`
-    later planned disagreed and `clearWrongBelt` tore them out again. Where the
+    later planned disagreed and `clearBeltObstacle` tore them out again. Where the
     hop cannot be proven by one of the three lookaheads above, build nothing:
     `maintainHarvester` → `relayToCore` owns that repair and has an actual path
     to work from.
