@@ -2,9 +2,10 @@
 
 Store slots (HiveMind v2):
   0  SLOT_RELAY_COMPLETE   bit-packed: bit 0 = a relay has completed (written
-       by builders), bit 1 = CORE_THREAT_BIT, the core sees a turret/builder
-       (written only by the core). Readers must mask — no slot is free, so the
-       guardian-leash signal rides in slot 0's 31 unused bits.
+       by builders), bit 1 = CORE_THREAT_BIT, the core sees an enemy turret
+       (gunner/sentinel/launcher — not a bare builder; written only by the
+       core). Readers must mask — no slot is free, so the guardian-leash
+       signal rides in slot 0's 31 unused bits.
   1–3 SLOT_ORPHAN_1/2/3    orphaned-harvester registry (logistics.py) — the
        last Player-free slots; nothing else may claim them
   4–15 HiveMind-owned — never write from Player
@@ -230,7 +231,7 @@ HARASS_DEADLOCK_TURNS = 8
 # threats against). Keeps snipeHarvester/offGun/denyOre/denyBelt/seekHarvester
 # from reaching far-out enemy harvesters that a steal-relay could claim alive
 # instead of the harasser destroying them.
-HARASS_LEASH_CHEBYSHEV = 8
+HARASS_LEASH_CHEBYSHEV = 7
 
 # --- Blocked-route breaker (False disables) ---
 # When A* proves the ore claim unreachable, replan with enemy barriers passable to
@@ -371,7 +372,8 @@ SLOT_PACKED_CORES = 15
 
 # Slot 0 is bit-packed: no store slot is free (all 16 are allocated), but slot 0
 # only ever used 1 of its 32 bits. Bit 0 = a relay has completed (written by
-# builders); bit 1 = the core currently sees a threat (written only by the core).
+# builders); bit 1 = the core currently sees an enemy turret (gunner/sentinel/
+# launcher — a bare builder doesn't count; written only by the core).
 # Every reader must mask — see relayEverComplete / coreThreatened in logistics.
 RELAY_COMPLETE_BIT = 1
 CORE_THREAT_BIT = 2
@@ -390,8 +392,8 @@ DEBUG = True
 from guns import gunnerLoop, sentinelLoop, topUpAmmo
 from hivemind import CoreState, HiveMind, unpack_cores
 from respawn import Respawn, SpawnSchedule
-from builder import _enemyUnitInVision, runBuilderRoles
-from logistics import setCoreThreat
+from builder import runBuilderRoles
+from logistics import enemyTurretInVision, setCoreThreat
 
 SPAWN_SCHEDULE = SpawnSchedule(
     max_builders_early=MAX_BUILDERS_EARLY,
@@ -490,7 +492,12 @@ class Player:
         # get_nearby_entities() this turn, so the scan is effectively free.
         # The hold window lives here, in core instance state, rather than
         # costing store bits — Player persists across turns.
-        if _enemyUnitInVision(ct):
+        #
+        # Turret-only (enemyTurretInVision: gunner/sentinel/launcher), not
+        # _enemyUnitInVision's turret-or-builder — an enemy builder scouting
+        # past the core isn't a threat the guardian leash needs to tighten
+        # for; only something that can actually shell the core should do that.
+        if enemyTurretInVision(ct):
             self.coreThreatRound = round_n
         setCoreThreat(
             ct, round_n - self.coreThreatRound <= GUARDIAN_LEASH_HOLD_TURNS

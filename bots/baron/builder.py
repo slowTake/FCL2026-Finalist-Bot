@@ -487,6 +487,8 @@ def _runDefaultHome(bot, ct: Controller) -> None:
     #    return
     if healAlly(bot, ct):
         return
+    if finishNearbyBelt(bot, ct):
+        return
     if buildHarvester(bot, ct):
         return
     if maintainHarvester(bot, ct):
@@ -495,8 +497,7 @@ def _runDefaultHome(bot, ct: Controller) -> None:
     # ally belt end (most commonly a relay abandoned mid-build by a builder that
     # died — no on-death hook reports that to OrphanRelayRegistry) might be
     # sitting right next to us. Cheap, self-anchored — see finishNearbyBelt.
-    if finishNearbyBelt(bot, ct):
-        return
+
     # Same idea, for a harvester nobody has started relaying yet — see
     # finishNearbyHarvester.
     if finishNearbyHarvester(bot, ct):

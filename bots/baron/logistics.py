@@ -878,8 +878,26 @@ def _allyOreBlock(ct: Controller, tile: Position) -> EntityType | None:
     return etype
 
 
-def _shouldClearAllyOreBlock(ct: Controller, tile: Position) -> bool:
-    """Clear ally ore blockers unless gunner/sentinel and that ore is threatened."""
+def _shouldClearAllyOreBlock(
+    ct: Controller, tile: Position, *, bot=None
+) -> bool:
+    """Clear ally ore blockers unless gunner/sentinel and that ore is threatened.
+
+    A **barrier** on the enemy's side of the midline (`bot` supplied, and
+    `manhattan(tile, ally_core) > manhattan(tile, enemy_core)`) is left alone.
+    That's the exact test `offense.denyOre` uses to decide a tile is worth
+    denying in the first place — a barrier sitting there is presumptively a
+    live denial, not stray clutter. Without this, a default/guardian running
+    low on nearby ore (`_allowOreSite` has no leash outside `nearCoreEconomy`,
+    so nothing stops it reaching this far) would destroy it to build a
+    harvester, while the harasser's `denyOre` — which has no notion that
+    another ally wants the tile — immediately re-picks the same now-empty
+    tile as its best candidate and rebuilds the barrier. Two of our own units
+    then fight over one tile forever: place, destroy, place, on repeat, for
+    no gain on either side. Gunner/sentinel/launcher blockers are unaffected
+    — those are a different, more deliberate placement mistake worth
+    reclaiming regardless of side.
+    """
     etype = _allyOreBlock(ct, tile)
     if etype is None:
         return False
@@ -887,6 +905,15 @@ def _shouldClearAllyOreBlock(ct: Controller, tile: Position) -> bool:
         ct, tile
     ):
         return False
+    if etype == EntityType.BARRIER and bot is not None:
+        core = bot.corePos
+        enemy = getattr(bot, "enemyCorePos", None)
+        if (
+            core is not None
+            and enemy is not None
+            and manhattan(tile, core) > manhattan(tile, enemy)
+        ):
+            return False
     return True
 
 
@@ -976,7 +1003,7 @@ def pickMaintainOre(bot, ct: Controller) -> Position | None:
                 ct, ct.get_team(bid)
             ):
                 consider(ore)
-            elif _shouldClearAllyOreBlock(ct, ore):
+            elif _shouldClearAllyOreBlock(ct, ore, bot=bot):
                 consider(ore)
         else:
             entry = bot.hivemind.local_map.get((ore.x, ore.y), {})
@@ -1001,7 +1028,7 @@ def pickMaintainOre(bot, ct: Controller) -> Position | None:
             ct, ct.get_team(bid)
         ):
             consider(tile)
-        elif _shouldClearAllyOreBlock(ct, tile):
+        elif _shouldClearAllyOreBlock(ct, tile, bot=bot):
             consider(tile)
 
     empty = pickEmptyOre(bot, ct)
@@ -1485,6 +1512,33 @@ def pickRelayPath(
     return path
 
 
+def _replanRelayOrAbort(
+    bot, ct: Controller, core_pos: Position, enemy_core: Position | None
+) -> None:
+    """Replan from `relayOrigin` around whatever just blocked the lane.
+
+    Shared by `relayToCore`'s barrier-clear-exhausted branch and its
+    non-belt-building branch — both reach the same "something is sitting on
+    the planned lane and isn't going away on its own" situation, just via
+    different obstacles. `pickRelayPath` failing here is the relay's own
+    "no route exists" verdict (see its docstring); `_reportAndAbort` is what
+    eventually reaches `openBlockedRoute`'s door search, the actual last
+    resort that demolishes an ally turret to clear a genuine choke. Always
+    terminal for the turn — callers return right after calling this.
+    """
+    new_path = pickRelayPath(bot, ct, bot.relayOrigin, core_pos)
+    if new_path is None:
+        bot.relayPath = None
+        _reportAndAbort(bot, ct)
+        return
+    if _isEnemyCoreAdjacent(ct, new_path[-1], enemy_core):
+        bot.relayPath = None
+        abortRelay(bot)
+        return
+    bot.relayPath = new_path
+    bot.relayBuiltTo = extendRelayWatermark(bot, ct, new_path, core_pos, -1)
+
+
 def relayToCore(bot, ct: Controller) -> None:
     """Orchestrator: path → facing check → clear/place → move (ally core only)."""
     core_pos = _allyCorePos(bot, ct)
@@ -1561,7 +1615,9 @@ def relayToCore(bot, ct: Controller) -> None:
     # half of this: healing partial damage before it's destroyed.
 
     # Barrier blocking — clear it (destroy ours, fire down theirs) instead of
-    # abandoning the planned lane. Any other non-belt building still replans.
+    # abandoning the planned lane. Any other non-belt building — our own
+    # gunner/sentinel/launcher (a guardian dropping defence mid-relay), an
+    # ally/enemy harvester, or an enemy turret — replans around it instead.
     if ct.is_in_vision(tile):
         block_id = ct.get_tile_building_id(tile)
         if block_id is not None:
@@ -1570,17 +1626,38 @@ def relayToCore(bot, ct: Controller) -> None:
                 result = clearBeltObstacle(bot, ct, tile)
                 if result == "acted":
                     return
-                if result == "failed":
-                    bot.relayStuck = getattr(bot, "relayStuck", 0) + 1
-                    if bot.relayStuck >= 3:
-                        _reportAndAbort(bot, ct)
-                    return
                 if result == "waiting":
                     return
-                # clear — fall through to place
+                if result == "failed":
+                    bot.relayStuck = getattr(bot, "relayStuck", 0) + 1
+                    if bot.relayStuck < 3:
+                        return
+                    # 3 failed clear attempts — most commonly a heal-racing
+                    # enemy barrier (clearBeltObstacle's own fire branch is
+                    # already capped, but a barrier that gets rebuilt between
+                    # attempts has the same effect) — stop burning turns
+                    # trying to clear it and route around it instead of
+                    # aborting the whole relay. Mirrors the non-belt-building
+                    # branch below; see `_replanRelayOrAbort`.
+                    bot.relayStuck = 0
+                    _replanRelayOrAbort(bot, ct, core_pos, enemy_core)
+                    return
+                # "clear" — fall through to place
             elif etype not in BELT_TYPES:
-                bot.relayPath = None
-                bot.relayBuiltTo = -1
+                # relayPassable already excludes these from a fresh plan, so
+                # replan immediately instead of nulling the path and waiting a
+                # full turn: on any map where a route around exists this finds
+                # it the same turn and keeps building. Nulling and returning
+                # here used to leave it to next turn's relayToCore call to
+                # notice `bot.relayPath is None` and replan on its own — but
+                # if *that* replan also failed (or never got a chance to run
+                # before something else cleared relayOrigin), the outcome
+                # looked identical to "stop the relay" instead of "path around
+                # it". Only a genuine choke (no route exists at all) still
+                # falls through to `_reportAndAbort`, which is what eventually
+                # reaches `openBlockedRoute`'s door search — the last resort
+                # that demolishes an ally turret to clear the lane.
+                _replanRelayOrAbort(bot, ct, core_pos, enemy_core)
                 return
 
     if ct.is_in_vision(tile) and bid_is_belt(ct, tile):
@@ -1778,7 +1855,7 @@ def checkOre(bot, ct: Controller, tile: Position) -> bool:
 
     if etype in _ORE_BLOCK_CLEAR:
         if team == mine:
-            if not _shouldClearAllyOreBlock(ct, tile):
+            if not _shouldClearAllyOreBlock(ct, tile, bot=bot):
                 return False
             pos = ct.get_position()
             if isAdjacent(pos, tile):
@@ -2147,7 +2224,7 @@ def _pickRecheckOre(bot, ct: Controller) -> Position | None:
             ct, ct.get_team(bid)
         ):
             consider(tile, kind="harvester")
-        elif _shouldClearAllyOreBlock(ct, tile):
+        elif _shouldClearAllyOreBlock(ct, tile, bot=bot):
             consider(tile, kind="blocked")
 
     for ore in knownOreTiles(bot):
@@ -2162,7 +2239,7 @@ def _pickRecheckOre(bot, ct: Controller) -> Position | None:
                 ct, ct.get_team(bid)
             ):
                 consider(ore, kind="harvester")
-            elif _shouldClearAllyOreBlock(ct, ore):
+            elif _shouldClearAllyOreBlock(ct, ore, bot=bot):
                 consider(ore, kind="blocked")
             continue
         entry = bot.hivemind.local_map.get(key_xy, {})
