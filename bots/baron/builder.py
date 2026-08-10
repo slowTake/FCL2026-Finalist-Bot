@@ -64,7 +64,7 @@
 #        nearer the core already holding a belt/core, or (2-tile gap) that neighbour
 #        layable with the tile beyond it reconnecting. Otherwise the break is skipped
 #        entirely — no crow-flies guess, which used to march a line of belts at the
-#        core one per turn and get torn out again by clearWrongBelt. Ore-anchored
+#        core one per turn and get torn out again by clearBeltObstacle. Ore-anchored
 #        repair cannot reach these: a guardian's _allowOreSite confines it to leash
 #        ore, so a break near the core owned by a harvester further out is
 #        unclaimable. Above economy because a cut line yields zero while a new
@@ -129,7 +129,7 @@
 #        nothing (yields the turn)
 #    2b. relayToCore — next belt tile under a visible gunner's LoS/arc → blacklist
 #        it (bot.relayThreatBlocked, reset in clearRelay) and replan from origin;
-#        abort only if that finds nothing. Else path → facing / clearWrongBelt →
+#        abort only if that finds nothing. Else path → facing / clearBeltObstacle →
 #        placeRelayBelt → watermark
 # 3. defGun — near core only; enemy gunner/sentinel/launcher in vision → placeGun
 #        (gunners only — never sentinels; a builder is never a placement target,

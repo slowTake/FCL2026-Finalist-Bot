@@ -1056,7 +1056,7 @@ def _allyBeltAt(ct: Controller, tile: Position) -> bool:
 
     Team-checked counterpart to `bid_is_belt`, which is team-blind. Used to keep
     the merge-or-follow path off enemy belts, so those still fall through to
-    `clearWrongBelt`'s fire-on-it branch.
+    `clearBeltObstacle`'s fire-on-it branch.
     """
     bid = ct.get_tile_building_id(tile)
     if bid is None:
@@ -1206,7 +1206,7 @@ def neededBeltFacing(
     crow-flies guess — `facingIntoCore` used unconditionally here would aim
     at the core anchor regardless of which existing belt the path actually
     merged into, producing exactly the belt-pointing-at-nothing/torn-out-by-
-    `clearWrongBelt` cycle `_reconnectFacing`'s own docstring describes from
+    `clearBeltObstacle` cycle `_reconnectFacing`'s own docstring describes from
     the one other place this codebase tried a crow-flies fallback.
 
     **If `tile` is itself already an ally CONVEYOR whose own current facing
@@ -1218,7 +1218,7 @@ def neededBeltFacing(
     Recomputing a fresh neighbor-based facing for such a tile can point it at
     a neighbor that is only "provably connected" *through `tile`'s own
     current facing* — accepting that would invert the pair into a 2-tile
-    cycle, destroying a working ally belt via `clearWrongBelt` and severing
+    cycle, destroying a working ally belt via `clearBeltObstacle` and severing
     everything downstream of it from the core. Checking self-connectivity
     first closes that: an empty `tile` (the normal, first-build case) has no
     facing to read (`_beltDirectionAt` returns `None`), so this only ever
@@ -1303,15 +1303,25 @@ def beltFacingOk(
     return ent.get("direction") == needed
 
 
-def clearWrongBelt(bot, ct: Controller, tile: Position) -> str:
-    """Clear wrong-facing belt. Returns acted|waiting|clear|failed."""
+# Obstacle types this clears from a relay lane: a wrong-facing belt (destroy/
+# fire and rebuild), or a barrier sitting square in the lane (ours or theirs).
+# Any other building (harvester, core, gunner/sentinel/launcher) is not a
+# candidate here — relayToCore replans around those instead.
+_BELT_OBSTACLE_TYPES = BELT_TYPES + (EntityType.BARRIER,)
+
+
+def clearBeltObstacle(bot, ct: Controller, tile: Position) -> str:
+    """Clear a wrong-facing belt or a barrier blocking the relay lane.
+
+    Returns acted|waiting|clear|failed.
+    """
     if not ct.is_in_vision(tile):
         return "waiting"
     bid = ct.get_tile_building_id(tile)
     if bid is None:
         return "clear"
     etype = ct.get_entity_type(bid)
-    if etype not in BELT_TYPES:
+    if etype not in _BELT_OBSTACLE_TYPES:
         return "failed"
     pos = ct.get_position()
     ally = ct.get_team(bid) == ct.get_team()
@@ -1352,6 +1362,13 @@ def placeRelayBelt(ct: Controller, tile: Position, facing: Direction) -> str:
     if ct.get_tile_building_id(tile) is not None:
         return "failed"
     if ct.get_action_cooldown() != 0:
+        return "waiting"
+    # Ti-starved, not stuck: the shared bank can't afford a conveyor right
+    # now but will recover, so treat this like any other "waiting" turn
+    # instead of counting it toward relayStuck — the caller already holds
+    # position adjacent to tile on a waiting turn, so this is exactly the
+    # "wait in the vicinity until Ti arrives" fallback.
+    if ct.get_global_resources() < ct.get_conveyor_cost():
         return "waiting"
     if ct.can_build_conveyor(tile, facing):
         ct.build_conveyor(tile, facing)
@@ -1545,12 +1562,25 @@ def relayToCore(bot, ct: Controller) -> None:
         bot.relayBuiltTo = extendRelayWatermark(bot, ct, new_path, core_pos, -1)
         return
 
-    # Non-belt building blocking — replan
+    # Barrier blocking — clear it (destroy ours, fire down theirs) instead of
+    # abandoning the planned lane. Any other non-belt building still replans.
     if ct.is_in_vision(tile):
         block_id = ct.get_tile_building_id(tile)
         if block_id is not None:
             etype = ct.get_entity_type(block_id)
-            if etype not in BELT_TYPES:
+            if etype == EntityType.BARRIER:
+                result = clearBeltObstacle(bot, ct, tile)
+                if result == "acted":
+                    return
+                if result == "failed":
+                    bot.relayStuck = getattr(bot, "relayStuck", 0) + 1
+                    if bot.relayStuck >= 3:
+                        _reportAndAbort(bot, ct)
+                    return
+                if result == "waiting":
+                    return
+                # clear — fall through to place
+            elif etype not in BELT_TYPES:
                 bot.relayPath = None
                 bot.relayBuiltTo = -1
                 return
@@ -1586,7 +1616,7 @@ def relayToCore(bot, ct: Controller) -> None:
                 clearRelay(bot)
                 bot.oreSite = None
                 return
-            result = clearWrongBelt(bot, ct, tile)
+            result = clearBeltObstacle(bot, ct, tile)
             if result == "acted":
                 return
             if result == "failed":
