@@ -1,4 +1,4 @@
-from fcode import Team
+from fcode import Position, Team
 
 # =====================================================================
 # ACTIVE COMPETITION MAP POOL (Current Ladder Rotation - 15 Maps)
@@ -90,3 +90,28 @@ ORE_LOCATIONS = {
     14: [(12, 0), (0, 2), (18, 3), (10, 4), (13, 6), (14, 6), (15, 6), (16, 6), (14, 7), (18, 7), (11, 8), (8, 9), (10, 9), (9, 10), (8, 11), (12, 11), (13, 11), (16, 11), (7, 12), (10, 12), (11, 12), (15, 12), (14, 13), (13, 14), (15, 14), (12, 15), (5, 16), (9, 16), (7, 17), (8, 17), (9, 17), (10, 17), (13, 19), (5, 20), (23, 21), (11, 23)],
     15: [(4, 1), (0, 2), (3, 2), (24, 3), (1, 5), (15, 5), (1, 6), (10, 6), (23, 6), (2, 8), (25, 8), (20, 9), (0, 10), (7, 11), (2, 12), (23, 12), (2, 13), (23, 13), (18, 14), (25, 15), (5, 16), (0, 17), (23, 17), (2, 19), (15, 19), (24, 19), (10, 20), (24, 20), (1, 22), (22, 23), (25, 23), (21, 24)],
 }
+
+
+def oreSideBuckets(
+    map_id: int, core_pos: Position, target_pos: Position
+) -> tuple[list[Position], list[Position]]:
+    """Split this map's static ore tiles into two sides of the core->target axis.
+
+    `target_pos` is the enemy core (or map-center fallback, same as respawn's
+    `goal`) — the perpendicular component of each ore tile relative to that
+    axis buckets it "left"/"right" of the approach direction. Maps are
+    ~180deg-point-symmetric (team starts at diagonally opposite corners, see
+    builder.py's enemy-core-guess fallback), not left/right-mirrored, so the
+    split axis must come from map geometry, not a hardcoded compass direction.
+    """
+    ore = ORE_LOCATIONS.get(map_id, ())
+    if not ore:
+        return [], []
+    dx, dy = target_pos.x - core_pos.x, target_pos.y - core_pos.y
+    nx, ny = -dy, dx  # perpendicular to the core->target axis
+    left: list[Position] = []
+    right: list[Position] = []
+    for ox, oy in ore:
+        side = (ox - core_pos.x) * nx + (oy - core_pos.y) * ny
+        (left if side >= 0 else right).append(Position(ox, oy))
+    return left, right

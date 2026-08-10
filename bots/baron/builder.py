@@ -248,6 +248,7 @@ from defence import (
     clearBarriers,
     defGun,
     defSentinel,
+    finishNearbyBelt,
     maintainGunLineBlock,
     patrolHome,
     reconnectBelts,
@@ -488,6 +489,12 @@ def _runDefaultHome(bot, ct: Controller) -> None:
         return
     if maintainHarvester(bot, ct):
         return
+    # Opportunistic: no ore/relay of our own to work this turn, but a dangling
+    # ally belt end (most commonly a relay abandoned mid-build by a builder that
+    # died — no on-death hook reports that to OrphanRelayRegistry) might be
+    # sitting right next to us. Cheap, self-anchored — see finishNearbyBelt.
+    if finishNearbyBelt(bot, ct):
+        return
     if recheckOreNodes(bot, ct):
         return
     # Last resort: nothing to build or maintain. Only reachable when the ore pool is
@@ -526,6 +533,12 @@ def runDefault(bot, ct: Controller) -> None:
     if defendHome(bot, ct):
         return
     if healAlly(bot, ct):
+        return
+    # Opportunistic: no ore/relay of our own to work this turn, but a dangling
+    # ally belt end (most commonly a relay abandoned mid-build by a builder that
+    # died — no on-death hook reports that to OrphanRelayRegistry) might be
+    # sitting right next to us. Cheap, self-anchored — see finishNearbyBelt.
+    if finishNearbyBelt(bot, ct):
         return
     if recheckOreNodes(bot, ct):
         return
@@ -680,6 +693,12 @@ def runGuardian(bot, ct: Controller) -> None:
     # Above the economy: a cut belt zeroes a whole line's throughput, while a new
     # harvester is only incremental. Repair beats build.
     if not underAttack and reconnectBelts(bot, ct):
+        return
+    # Self-anchored fallback: reconnectBelts only looks near the core, but a
+    # guardian working an ore/relay under GUARDIAN_ECON_SLACK (or simply
+    # patrolling somewhere a dangling tail happens to sit) can be standing right
+    # next to a break reconnectBelts will never see. Cheap, opportunistic.
+    if not underAttack and finishNearbyBelt(bot, ct):
         return
     if not underAttack and _guardianEconomy(bot, ct):
         return

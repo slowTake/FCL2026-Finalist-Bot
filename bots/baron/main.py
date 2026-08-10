@@ -68,6 +68,15 @@ GUARDIAN_ECONOMY = True
 # relay — an ore at the leash edge is worked from an adjacent tile one step out.
 GUARDIAN_ECON_SLACK = 1
 
+# --- Opportunistic nearby-belt finish (≤0 disables) ---
+# Chebyshev radius, anchored on the acting bot's own tile (not the core), that
+# finishNearbyBelt searches for a dangling ally belt end to patch. Deliberately
+# small and self-anchored, unlike reconnectBelts' core-anchored
+# DEFEND_HOME_CHEBYSHEV: this is a cheap "I'm right here" check for a relay tail
+# abandoned mid-build (most commonly its builder died with no on-death hook to
+# report it), not a search that should pull a builder off its own task.
+DANGLING_BELT_SELF_CHEBYSHEV = 3
+
 # --- Guardian patrol offset ---
 # How far patrolHome's mid-side waypoints sit from the core footprint. Was a
 # fixed 2 (defence.py's old _PATROL_OFFSET). Raised, but deliberately to 3, one
@@ -135,6 +144,13 @@ STEAL_ENEMY_HARVESTERS = True
 # False = nearest convenient (core then self). True = index-stagger slots.
 ORE_STAGGER = False
 
+# --- Ore-pick priority blend (self-distance vs core-distance) ---
+# _oreConvenienceKey blends these instead of a strict core-first lexicographic
+# sort, which let core-distance veto a much closer pick outright and slowed
+# down how fast a fresh harvester actually starts producing.
+ORE_PICK_SELF_WEIGHT = 2
+ORE_PICK_CORE_WEIGHT = 1
+
 # --- Ore-block ledger memory (≤0 disables the age bound) ---
 # How stale a remembered enemy blocker (most commonly a denyOre barrier) on an
 # ore tile may be and still disqualify it in pickEmptyOre/_pickRecheckOre.
@@ -161,6 +177,16 @@ ORE_BLOCK_MEMORY_TURNS = 30
 # trusted belt entry can silently mark a broken relay complete, a materially
 # worse failure than misjudging one ore tile.
 RELAY_LEDGER_TRUST_TURNS = 30
+
+# --- Relay threat-abort escalation (≤0 disables) ---
+# How many consecutive threat-driven relay aborts from the same origin before
+# the node itself is blacklisted (skippedOres), not just this attempt's route.
+# Without this, clearRelay wipes relayThreatBlocked on every abort, so a relay
+# walled off by a firing line re-picks the same ore and rediscovers the same
+# dead-end tiles every lap — see CONTEXT.md's RelayToCore section ("Two known
+# limits"). Neither relayStuck nor bot.stuck catches this: the builder keeps
+# genuinely acting each lap, it's the node that's bad.
+RELAY_THREAT_ABORT_LIMIT = 2
 
 # --- Ore deadlock breaker (≤0 disables) ---
 # Turns a default builder may sit motionless outside a relay before it drops its
@@ -349,6 +375,8 @@ class Player:
         self.relayBuiltTo = -1
         self.relayStuck = 0
         self.relayThreatBlocked: set[tuple[int, int]] = set()
+        self.threatAbortSite: tuple[int, int] | None = None
+        self.threatAbortCount = 0
         self.blockadeDoor: tuple[int, int] | None = None
         self.relayPathBlocked = False
         self.relayPathBlockedFrom: tuple[int, int] | None = None

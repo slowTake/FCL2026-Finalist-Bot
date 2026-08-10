@@ -60,6 +60,36 @@ def abortRelay(bot) -> None:
     clearRelay(bot)
 
 
+def _escalateThreatAbort(bot, site: Position) -> None:
+    """Blacklist `site` into skippedOres after repeated threat-driven aborts.
+
+    A relay walled off by a firing line replans from relayOrigin and finds no
+    route, aborts, and — because clearRelay wipes relayThreatBlocked — the
+    next attempt from the same origin rediscovers the identical dead end.
+    bot.stuck/relayStuck don't catch this: the builder keeps genuinely
+    moving/acting each lap, it's the *node* that's bad, not the builder. See
+    CONTEXT.md's RelayToCore section ("Two known limits") — this is that
+    section's own suggested fix.
+    """
+    from main import RELAY_THREAT_ABORT_LIMIT
+
+    if RELAY_THREAT_ABORT_LIMIT is None or RELAY_THREAT_ABORT_LIMIT <= 0:
+        return
+    key = (site.x, site.y)
+    if getattr(bot, "threatAbortSite", None) == key:
+        bot.threatAbortCount = getattr(bot, "threatAbortCount", 0) + 1
+    else:
+        bot.threatAbortSite = key
+        bot.threatAbortCount = 1
+    if bot.threatAbortCount >= RELAY_THREAT_ABORT_LIMIT:
+        if not hasattr(bot, "skippedOres"):
+            bot.skippedOres = set()
+        bot.skippedOres.add(key)
+        bot.oreSite = None
+        bot.threatAbortSite = None
+        bot.threatAbortCount = 0
+
+
 # ------------------------------------------------------------------
 # Orphan relay registry — store slots 1-3 (main.SLOT_ORPHAN_1/2/3)
 # ------------------------------------------------------------------
@@ -190,6 +220,8 @@ def _reportAndAbort(bot, ct: Controller) -> None:
     """
     if bot.relayOrigin is not None:
         reportOrphanRelay(bot, ct, bot.relayOrigin)
+        if bot.relayThreatBlocked:
+            _escalateThreatAbort(bot, bot.relayOrigin)
     abortRelay(bot)
 
 
@@ -611,10 +643,23 @@ def _oreStaggerKey(ore: Position, core: Position | None) -> tuple:
 def _oreConvenienceKey(
     ore: Position, core: Position | None, self_pos: Position
 ) -> tuple:
-    """Near core (defendable), then near builder (reachable), then x/y."""
-    if core is not None:
-        return (manhattan(ore, core), manhattan(ore, self_pos), ore.x, ore.y)
-    return (manhattan(ore, self_pos), ore.x, ore.y)
+    """Blend of near-builder (fast to reach) and near-core (defendable).
+
+    Previously a strict lexicographic (core_dist, self_dist, ...) sort — core
+    distance always won outright, so a builder would walk past ore right next
+    to it to reach ore merely closer to the core, slowing down how fast a
+    fresh harvester actually starts producing. The weighted-sum blend keeps
+    core proximity as a real factor (still breaks close ties toward the more
+    defendable option) without letting it override a much closer pick.
+    """
+    from main import ORE_PICK_CORE_WEIGHT, ORE_PICK_SELF_WEIGHT
+
+    self_d = manhattan(ore, self_pos)
+    if core is None:
+        return (self_d, ore.x, ore.y)
+    core_d = manhattan(ore, core)
+    score = ORE_PICK_SELF_WEIGHT * self_d + ORE_PICK_CORE_WEIGHT * core_d
+    return (score, ore.x, ore.y)
 
 
 def _clearStickyIfAllyClaimed(bot, ct: Controller) -> None:
@@ -959,6 +1004,21 @@ def pickMaintainOre(bot, ct: Controller) -> Position | None:
 # ------------------------------------------------------------------
 
 
+def _allyBeltAt(ct: Controller, tile: Position) -> bool:
+    """True if a *live-visible* ally belt occupies tile.
+
+    Team-checked counterpart to `bid_is_belt`, which is team-blind. Used to keep
+    the merge-or-follow path off enemy belts, so those still fall through to
+    `clearWrongBelt`'s fire-on-it branch.
+    """
+    bid = ct.get_tile_building_id(tile)
+    if bid is None:
+        return False
+    return (
+        ct.get_entity_type(bid) in BELT_TYPES and ct.get_team(bid) == ct.get_team()
+    )
+
+
 def _beltDirectionAt(bot, ct: Controller, tile: Position) -> Direction | None:
     """Facing of the ally CONVEYOR at tile, vision first then ledger.
 
@@ -1028,7 +1088,10 @@ def _relayReachesCore(
     cur = tile
     seen: set[tuple[int, int]] = set()
     result = False
-    for _ in range(max_hops):
+    # max_hops + 1 iterations = max_hops actual steps: the footprint test runs at
+    # the top, before any step, so `range(max_hops)` only ever walked max_hops-1
+    # tiles and the knob silently meant one less hop than it says.
+    for _ in range(max_hops + 1):
         if any(cur.x == t.x and cur.y == t.y for t in coreFootprint(core_pos)):
             result = True
             break
@@ -1055,14 +1118,10 @@ def _mergeCandidateNeighbor(
     Shared by the relay-path merge goal and the final-segment facing proof —
     both need the exact same answer, so there is only one place that answers
     it. Excludes the core footprint itself (isCoreAdjacent already owns that
-    case) and any neighbor another ally builder is currently near
-    (`_allyBuilderNear`, the same guard `_danglingBeltEnds` uses — that
-    builder's relay-in-progress head may still reroute out from under a merge).
+    case).
 
-    Order matters for cost: `_relayReachesCore` is checked first because it's
-    memoized per `pickRelayPath` call and cheap on a repeat visit; the
-    unmemoized `_allyBuilderNear` unit scan only runs once that's already
-    passed, since `is_goal` calls this on every node A* expands.
+    `_relayReachesCore` is memoized per `pickRelayPath` call, which matters
+    because `is_goal` calls this on every node A* expands.
     """
     from defence import _allyBuilderNear, _isBeltOrCore
 
@@ -1075,6 +1134,12 @@ def _mergeCandidateNeighbor(
             continue
         if not _isBeltOrCore(bot, ct, near, core_pos):
             continue
+        # No `_allyBuilderNear` guard here: it rejects on *any* other ally builder
+        # within Chebyshev 2, and the thing it protects — a builder's
+        # not-yet-committed relay head — by definition does not reach the core,
+        # so the connectivity proof immediately above already excludes it. The
+        # proximity heuristic only added false negatives, concentrated near the
+        # core where ally builders congregate.
         if not _relayReachesCore(bot, ct, near, core_pos, cache=cache):
             continue
         if _allyBuilderNear(ct, near):
@@ -1445,6 +1510,35 @@ def relayToCore(bot, ct: Controller) -> None:
 
     if ct.is_in_vision(tile) and bid_is_belt(ct, tile):
         if not beltFacingOk(bot, ct, tile, needed, local_map=bot.hivemind.local_map):
+            # An ally belt already sits here facing its own way. Treat that as
+            # the relay's terminus rather than an obstacle: path[idx-1] is built
+            # and already faces into this tile (neededBeltFacing's travelFacing),
+            # so our output flows in here and onward under this belt's own
+            # facing — a merge, for free.
+            #
+            # Never rewrite it to our route's direction. That *diverts* whatever
+            # this line already carried into ours and starves everything
+            # downstream of the crossing, which nothing in the codebase detects:
+            # _danglingBeltEnds only ever sees a line that dangles, never one
+            # that was quietly re-pointed.
+            #
+            # No connectivity proof here on purpose. It can't be established
+            # cheaply — pickRelayPath's merge goal already tried and failed at
+            # plan time (a builder's ledger is personal-vision only, so it knows
+            # nothing about the near-core run it never walked) — and measuring
+            # the alternatives showed both cost more than they saved: walking the
+            # chain to verify ran ~9% worse on Ti/turn, since it abandons the
+            # relay mid-air to go wandering. If this belt turns out to be a dead
+            # line, extending it is the dangling-end repair's job
+            # (finishNearbyBelt / reconnectBelts), which is already anchored for
+            # exactly that.
+            if _allyBeltAt(ct, tile):
+                markRelayComplete(ct)
+                if bot.relayOrigin is not None:
+                    clearOrphanRelay(ct, bot.relayOrigin)
+                clearRelay(bot)
+                bot.oreSite = None
+                return
             result = clearWrongBelt(bot, ct, tile)
             if result == "acted":
                 return

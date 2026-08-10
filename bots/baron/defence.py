@@ -393,13 +393,36 @@ def _allyBuilderNear(ct: Controller, tile: Position) -> bool:
     return False
 
 
-def _danglingBeltEnds(bot, ct: Controller) -> list[tuple[Position, Position]]:
-    """Ally conveyors inside the leash whose output tile leads nowhere.
+def _danglingBeltEnds(
+    bot,
+    ct: Controller,
+    *,
+    anchor: Position | None = None,
+    max_dist: int | None = None,
+    respect_owner: bool = True,
+) -> list[tuple[Position, Position]]:
+    """Ally conveyors within `max_dist` of `anchor` whose output tile leads nowhere.
 
-    Returns `(belt, output)` pairs, nearest-core first — the most downstream break
-    reconnects the most line. Detection reads the HiveMind ledger, not own vision,
-    for the same reason `threateningTurret` does: a guardian on its patrol ring
-    cannot see the whole near-core belt run at sqrt(20).
+    `anchor`/`max_dist` default to the core / `DEFEND_HOME_CHEBYSHEV` — reconnectBelts'
+    near-core patrol repair. Pass `anchor=ct.get_position()` with a smaller radius for
+    an opportunistic "finish a belt I happen to be standing next to" search instead
+    (see `finishNearbyBelt`) — the candidates are still sorted nearest-core-first
+    either way, since the most downstream break reconnects the most line regardless
+    of why we're looking.
+
+    `respect_owner=False` skips the `_allyBuilderNear` exclusion below. That check
+    means "any *other* ally builder nearby" (not "the specific owner"), so it's a
+    reasonable cheap proxy when the search is scanning broadly (reconnectBelts, core-
+    anchored) but becomes a bystander-effect trap for a self-anchored opportunistic
+    search: several idle units converging on the same known gap each see *each
+    other* nearby and defer, and nobody ever acts, even though none of them is
+    actually the relay's owner. finishNearbyBelt passes False for exactly this
+    reason — the facing proof in `_reconnectFacing` is the real safety net there,
+    not proximity to other units.
+
+    Returns `(belt, output)` pairs. Detection reads the HiveMind ledger, not own
+    vision, for the same reason `threateningTurret` does: a guardian on its patrol
+    ring cannot see the whole near-core belt run at sqrt(20).
 
     Conveyors only. A splitter rotates its output among three directions, so
     "the way it points" does not identify a break.
@@ -409,6 +432,10 @@ def _danglingBeltEnds(bot, ct: Controller) -> list[tuple[Position, Position]]:
     core = bot.corePos
     if core is None:
         return []
+    if anchor is None:
+        anchor = core
+    if max_dist is None:
+        max_dist = DEFEND_HOME_CHEBYSHEV
     me = ct.get_team()
     pos = ct.get_position()
     out: list[tuple[int, int, Position, Position]] = []
@@ -422,8 +449,7 @@ def _danglingBeltEnds(bot, ct: Controller) -> list[tuple[Position, Position]]:
         if facing is None or facing == Direction.CENTRE:
             continue
         belt = Position(x, y)
-        d = chebyshevToCore(belt, core)
-        if d > DEFEND_HOME_CHEBYSHEV:
+        if max(abs(belt.x - anchor.x), abs(belt.y - anchor.y)) > max_dist:
             continue
         target = belt.add(facing)
         if not inBounds(ct, target):
@@ -435,12 +461,14 @@ def _danglingBeltEnds(bot, ct: Controller) -> list[tuple[Position, Position]]:
         # which is clearWrongBelt's problem, not a cut line.
         if not _layableTile(ct, target):
             continue
-        # A default mid-relay has a legitimately dangling head — leave it alone.
-        if _allyBuilderNear(ct, target):
+        # A default mid-relay has a legitimately dangling head — leave it alone
+        # (unless the caller has already decided proximity isn't a useful signal
+        # here — see respect_owner above).
+        if respect_owner and _allyBuilderNear(ct, target):
             continue
         if tileThreatenedByGunner(ct, target):
             continue
-        out.append((d, manhattan(pos, target), belt, target))
+        out.append((chebyshevToCore(belt, core), manhattan(pos, target), belt, target))
     out.sort(key=lambda t: (t[0], t[1]))
     return [(belt, target) for _d, _m, belt, target in out]
 
@@ -450,34 +478,55 @@ def _reconnectFacing(
 ) -> Direction | None:
     """Provable next hop for a patch belt, or None when it cannot be proven.
 
-    Two lookaheads, both of which *see* the far side of the gap:
+    Three lookaheads, all of which *see* the far side of the gap:
 
-    * **1 tile** — a cardinal neighbour closer to the core already holds a belt or
-      the core footprint. Face it; the gap closes exactly.
-    * **2 tiles** — that neighbour is empty but layable, and the tile beyond it in
-      the same direction reconnects. Face it anyway: we are filling the first of
-      two, and the second is patched on a later turn from the same evidence.
+    * **Core footprint** — a cardinal neighbour is one of the core's 4 footprint
+      tiles. Face it unconditionally; the core is always the correct terminus
+      regardless of Chebyshev distance. Needed because a tile diagonally against
+      a footprint corner has *two* cardinal neighbours tied at the same Chebyshev
+      distance as itself — neither is ever "strictly closer," so the plain
+      distance check below can never fire there, and a belt approaching the core
+      diagonally (routine for A*-laid relays) would otherwise never get patched.
+    * **1 tile, radial** — a cardinal neighbour strictly closer to the core
+      already holds an ally belt. Face it; the gap closes exactly.
+    * **1 tile, off-axis** — a cardinal neighbour holds an ally belt that isn't
+      locally closer to the core (a merge onto a line approaching from another
+      angle, not straight toward us) but is *provably* connected via
+      `_relayReachesCore`'s own forward-walk of stored facings — the same proof
+      `logistics.pickRelayPath`'s merge goal already trusts. Plain Chebyshev
+      distance can't tell a genuine non-radial merge from a random unconnected
+      belt; the forward-walk can.
+    * **2 tiles** — the radial neighbour is empty but layable, and the tile
+      beyond it in the same direction reconnects. Face it anyway: we are filling
+      the first of two, and the second is patched on a later turn from the same
+      evidence.
 
-    **There is deliberately no fallback.** `facingIntoCore` used to fill this role,
-    which is a crow-flies heading at the core anchor with no route behind it. The
+    **There is deliberately no crow-flies fallback.** `facingIntoCore` used to
+    fill this role — a heading at the core anchor with no route behind it. The
     belt it produced pointed at another empty tile, so it became a dangling end
     itself next turn and the guardian marched a line of belts at the core one per
-    turn — and because those belts agree with no route, whatever `relayToCore` later
-    planned disagreed and `clearWrongBelt` tore them out again. Where the hop cannot
-    be proven, build nothing: `maintainHarvester` → `relayToCore` owns that repair
-    and has an actual path to work from.
+    turn — and because those belts agree with no route, whatever `relayToCore`
+    later planned disagreed and `clearWrongBelt` tore them out again. Where the
+    hop cannot be proven by one of the three lookaheads above, build nothing:
+    `maintainHarvester` → `relayToCore` owns that repair and has an actual path
+    to work from.
     """
-    from logistics import travelFacing
+    from logistics import _relayReachesCore, travelFacing
 
+    footprint = coreFootprint(core)
     here = chebyshevToCore(target, core)
 
     for d in CARDINALS:
         near = target.add(d)
         if not inBounds(ct, near):
             continue
-        if chebyshevToCore(near, core) >= here:
-            continue
-        if _isBeltOrCore(bot, ct, near, core):
+        if any(near.x == f.x and near.y == f.y for f in footprint):
+            return travelFacing(target, near)
+        if chebyshevToCore(near, core) < here and _isBeltOrCore(bot, ct, near, core):
+            return travelFacing(target, near)
+        if _isBeltOrCore(bot, ct, near, core) and _relayReachesCore(
+            bot, ct, near, core
+        ):
             return travelFacing(target, near)
 
     for d in CARDINALS:
@@ -495,35 +544,21 @@ def _reconnectFacing(
     return None
 
 
-def reconnectBelts(bot, ct: Controller) -> bool:
-    """Patch a cut belt line near the core back toward the core, one tile a turn.
+def _tryPatchDanglingBelts(
+    bot,
+    ct: Controller,
+    candidates: list[tuple[Position, Position]],
+    core: Position,
+) -> bool:
+    """Shared placement/walk logic for a dangling-belt-end candidate list.
 
-    Guardian-only idle work, gated with the economy on `not underAttack`. Exists
-    because the normal repair path is *ore-anchored*: `maintainHarvester` re-enters
-    `relayToCore` and the watermark rebuilds from the first gap, but a guardian's
-    `_allowOreSite` confines it to ore inside the leash. A break near the core that
-    belongs to a harvester outside the leash is therefore unreachable — the guardian
-    can never claim the ore that would carry it there. Anchoring on the belt instead
-    of the ore is the whole point.
-
-    Greedy and deliberately unplanned: no A*, so a blocked coreward tile cannot be
-    routed around. Candidates are tried in order and a failed placement falls through
-    to the next rather than retrying, so it cannot thrash. Multi-tile gaps are walked
-    one tile per turn and only while each step stays layable.
+    Resolves the facing before committing to anything, including the walk: a break
+    whose next hop cannot be proven is not ours to fix, so it must not draw the
+    bot toward it either. Candidates are tried in order and a failed placement
+    falls through to the next rather than retrying, so it cannot thrash.
     """
     from logistics import moveToward, placeRelayBelt
 
-    core = bot.corePos
-    if core is None or bot.inRelay or getattr(bot, "recheckingOre", False):
-        return False
-
-    candidates = _danglingBeltEnds(bot, ct)
-    if not candidates:
-        return False
-
-    # Resolve the facing before committing to anything, including the walk: a break
-    # whose next hop cannot be proven is not ours to fix, so it must not draw the
-    # guardian across the leash either.
     actionable: list[tuple[Position, Direction]] = []
     for _belt, target in candidates:
         facing = _reconnectFacing(bot, ct, target, core)
@@ -542,6 +577,75 @@ def reconnectBelts(bot, ct: Controller) -> bool:
 
     # Nothing adjacent to act on — walk to the most downstream provable break.
     return moveToward(bot, ct, actionable[0][0])
+
+
+def reconnectBelts(bot, ct: Controller) -> bool:
+    """Patch a cut belt line near the core back toward the core, one tile a turn.
+
+    Guardian-only idle work, gated with the economy on `not underAttack`. Exists
+    because the normal repair path is *ore-anchored*: `maintainHarvester` re-enters
+    `relayToCore` and the watermark rebuilds from the first gap, but a guardian's
+    `_allowOreSite` confines it to ore inside the leash. A break near the core that
+    belongs to a harvester outside the leash is therefore unreachable — the guardian
+    can never claim the ore that would carry it there. Anchoring on the belt instead
+    of the ore is the whole point.
+
+    Greedy and deliberately unplanned: no A*, so a blocked coreward tile cannot be
+    routed around. Candidates are tried in order and a failed placement falls through
+    to the next rather than retrying, so it cannot thrash. Multi-tile gaps are walked
+    one tile per turn and only while each step stays layable.
+    """
+    core = bot.corePos
+    if core is None or bot.inRelay or getattr(bot, "recheckingOre", False):
+        return False
+
+    candidates = _danglingBeltEnds(bot, ct)
+    if not candidates:
+        return False
+    return _tryPatchDanglingBelts(bot, ct, candidates, core)
+
+
+def finishNearbyBelt(bot, ct: Controller) -> bool:
+    """Opportunistically finish a dangling ally belt end near this bot's own tile.
+
+    `reconnectBelts`/`_danglingBeltEnds` are core-leash-anchored — guardian patrol
+    duty near the core only, regardless of where the guardian itself is standing.
+    This is the self-anchored counterpart: any builder (guardian or default) that
+    happens to be next to an abandoned relay tail can finish it, no matter how far
+    that tail is from the core.
+
+    Exists because a relay that dies mid-build (destroyed builder, no on-death hook
+    anywhere in this bot — see main.py's per-entity `run` dispatch) never reaches
+    one of relayToCore's own abort sites, so it never reports to
+    `OrphanRelayRegistry` either — nothing else will ever revisit it unless another
+    unit happens to notice the dangling end itself. Small fixed radius
+    (`DANGLING_BELT_SELF_CHEBYSHEV`) on purpose: this is a cheap "I'm right here"
+    check, not a search — it must never pull a builder off its own task chasing a
+    belt tile it merely glimpsed from a distance.
+
+    Same facing-proof as `reconnectBelts` (`_reconnectFacing`, core-relative, no
+    crow-flies guessing) and no A* — deliberately opportunistic, not a substitute
+    for `relayToCore`'s own planned repair. Passes `respect_owner=False` to
+    `_danglingBeltEnds`: several idle units converging on the same known gap
+    (exactly the scenario this function exists for) would otherwise each see
+    *each other* nearby and defer, and nobody would ever act.
+    """
+    from main import DANGLING_BELT_SELF_CHEBYSHEV
+
+    core = bot.corePos
+    if core is None or bot.inRelay or getattr(bot, "recheckingOre", False):
+        return False
+
+    candidates = _danglingBeltEnds(
+        bot,
+        ct,
+        anchor=ct.get_position(),
+        max_dist=DANGLING_BELT_SELF_CHEBYSHEV,
+        respect_owner=False,
+    )
+    if not candidates:
+        return False
+    return _tryPatchDanglingBelts(bot, ct, candidates, core)
 
 
 def _patrolWaypoints(bot, ct: Controller) -> list[Position]:

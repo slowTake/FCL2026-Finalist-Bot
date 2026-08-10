@@ -137,8 +137,32 @@ class Respawn:
             return
 
         core_pos = ct.get_position()
+
+        # Predict the about-to-spawn builder's index and, if it'll be a
+        # default (idx % 5 in (3, 4), builder.py's role split), bias the
+        # spawn tile toward whichever ore side this alternation slot owns,
+        # instead of the shared goal — otherwise every default exits the core
+        # toward the same side, so one ore cluster draws multiple builders
+        # while an equally-close cluster on the other side sits unclaimed.
+        # spawn_builder reads slot 4 *before* incrementing (hivemind.py:211),
+        # so the next spawn's index is one past the current value.
+        predicted_idx = ct.read_store(4) + 1
+        spawn_goal = goal
+        if predicted_idx % 5 in (3, 4) and hivemind.map_id:
+            from features import oreSideBuckets
+
+            left, right = oreSideBuckets(hivemind.map_id, core_pos, goal)
+            side_pool = left if (predicted_idx // 5) % 2 == 0 else right
+            if not side_pool:
+                side_pool = right or left
+            if side_pool:
+                spawn_goal = min(
+                    side_pool,
+                    key=lambda o: abs(o.x - core_pos.x) + abs(o.y - core_pos.y),
+                )
+
         sites = _apronSites(ct, core_pos)
-        sites.sort(key=lambda p: abs(p.x - goal.x) + abs(p.y - goal.y))
+        sites.sort(key=lambda p: abs(p.x - spawn_goal.x) + abs(p.y - spawn_goal.y))
         safe_sites, all_sites = _safeSites(ct, sites)
 
         cardinal_sites = [core_pos.add(d) for d in CARDINALS]
