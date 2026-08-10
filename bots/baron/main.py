@@ -225,6 +225,15 @@ ORE_DEADLOCK_TURNS = 8
 # to give up on it. ≤0 disables.
 HARASS_DEADLOCK_TURNS = 8
 
+# --- Harasser leash (≤0 disables) ---
+# Chebyshev radius around the *enemy* core a harasser may roam, mirroring
+# GUARDIAN_LEASH_WIDE's shape but anchored on the opposite core and fixed
+# (no threat-based tight/wide toggle — a harasser has no "home" to sense
+# threats against). Keeps snipeHarvester/offGun/denyOre/denyBelt/seekHarvester
+# from reaching far-out enemy harvesters that a steal-relay could claim alive
+# instead of the harasser destroying them.
+HARASS_LEASH_CHEBYSHEV = 8
+
 # --- Blocked-route breaker (False disables) ---
 # When A* proves the ore claim unreachable, replan with enemy barriers passable to
 # find which one seals the lane, and answer it with a gunner: 3 shots / 6 Ti and ~3

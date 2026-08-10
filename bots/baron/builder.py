@@ -597,6 +597,19 @@ def _guardianLeashOk(bot, ct: Controller) -> bool:
     return chebyshevToCore(ct.get_position(), bot.corePos) <= reach
 
 
+def _harassLeashOk(bot, ct: Controller) -> bool:
+    """True while inside HARASS_LEASH_CHEBYSHEV of the enemy core, or the enemy
+    core isn't known yet (nothing to leash to — same fallback shape offGun
+    uses for `enemy_core is not None`)."""
+    from main import HARASS_LEASH_CHEBYSHEV
+
+    if bot.enemyCorePos is None:
+        return True
+    if HARASS_LEASH_CHEBYSHEV is None or HARASS_LEASH_CHEBYSHEV <= 0:
+        return True
+    return chebyshevToCore(ct.get_position(), bot.enemyCorePos) <= HARASS_LEASH_CHEBYSHEV
+
+
 def _guardianEconomy(bot, ct: Controller) -> bool:
     """Idle-time economy inside the leash: build harvesters, finish relays."""
     if not guardianEconomyOn():
@@ -715,12 +728,20 @@ def runGuardian(bot, ct: Controller) -> None:
 
 
 def runHarasser(bot, ct: Controller) -> None:
-    """Harasser: snipe → denyHarvesterSupply → offGun → wallCore → avoidFire →
-    denyOre → denyBelt → seek → seekCore."""
+    """Harasser: leash → snipe → denyHarvesterSupply → offGun → wallCore →
+    avoidFire → denyOre → denyBelt → seek → seekCore."""
     _resolveCores(bot, ct)
     bot.nearCoreEconomy = False
     # State-only; the selectors below re-pick this turn. Costs no turn.
     breakBeltDeadlock(bot, ct)
+    if not _harassLeashOk(bot, ct):
+        # Recall to the region within the leash rather than the literal core
+        # tile — moveTowardLeash A*-paths around obstacles; seekCore's own
+        # moveToward fallback has no such avoidance.
+        from main import HARASS_LEASH_CHEBYSHEV
+
+        moveTowardLeash(bot, ct, bot.enemyCorePos, radius=HARASS_LEASH_CHEBYSHEV)
+        return
     if snipeHarvester(bot, ct):
         return
     # snipeHarvester/offGun both now skip a harvester our own steal-relay
