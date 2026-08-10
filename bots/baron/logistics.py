@@ -1981,6 +1981,7 @@ def healAlly(bot, ct: Controller) -> bool:
         EntityType.GUNNER,
         EntityType.SENTINEL,
         EntityType.HARVESTER,
+        EntityType.CONVEYOR,
     )
     for want in priority:
         for d in CARDINALS:

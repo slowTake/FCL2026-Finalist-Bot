@@ -482,8 +482,8 @@ def _runDefaultHome(bot, ct: Controller) -> None:
 
     if defGun(bot, ct):
         return
-    if defendHome(bot, ct):
-        return
+    #if defendHome(bot, ct):
+    #    return
     if healAlly(bot, ct):
         return
     if buildHarvester(bot, ct):
