@@ -739,24 +739,23 @@ def runGuardian(bot, ct: Controller) -> None:
 
 
 def runHarasser(bot, ct: Controller) -> None:
-    """Harasser: relay → leash → finishNearbyHarvester → snipe →
-    denyHarvesterSupply → offGun → wallCore → avoidFire → denyOre → denyBelt →
-    seek → seekCore."""
+    """Harasser: leash → snipe → denyHarvesterSupply → offGun → wallCore →
+    avoidFire → denyOre → denyBelt → seek → seekCore.
+
+    Used to start a steal-relay via `finishNearbyHarvester` (belting a nearby
+    un-relayed harvester, ally or enemy, all the way back to our own core) and
+    commit to finishing it once `bot.inRelay` — mirroring `runDefault`'s own
+    bot.inRelay bypass. Removed: a harasser is, by construction, deep in or
+    near enemy territory, so that belt line is long, runs straight through
+    enemy fire the whole way, and is expensive relative to what it protects —
+    worst right at the opening, when a harasser committing to it immediately
+    on spawn tied the unit down instead of harassing. Steal-relays from
+    `runDefault`/`runGuardian` (near-core economy, short lines) are unaffected.
+    """
     _resolveCores(bot, ct)
     bot.nearCoreEconomy = False
     # State-only; the selectors below re-pick this turn. Costs no turn.
     breakBeltDeadlock(bot, ct)
-    # Committed to a relay (started here via finishNearbyHarvester, or handed
-    # off): finish it, ignoring the leash below — mirrors runDefault's own
-    # bot.inRelay bypass. The belt has to walk all the way back to *our* core,
-    # which is definitionally far outside the enemy-core leash, so the leash
-    # check must not fight it. avoidFire mirrors _dodgeWhileRelaying so a
-    # relaying harasser still dodges fire instead of tanking it.
-    if bot.inRelay:
-        if avoidFire(bot, ct, goal=bot.corePos):
-            return
-        maintainHarvester(bot, ct)
-        return
     if not _harassLeashOk(bot, ct):
         # Recall to the region within the leash rather than the literal core
         # tile — moveTowardLeash A*-paths around obstacles; seekCore's own
@@ -764,11 +763,6 @@ def runHarasser(bot, ct: Controller) -> None:
         from main import HARASS_LEASH_CHEBYSHEV
 
         moveTowardLeash(bot, ct, bot.enemyCorePos, radius=HARASS_LEASH_CHEBYSHEV)
-        return
-    # Prefer stealing a fresh, unclaimed enemy harvester over sniping it —
-    # directly resolves harassers destroying a harvester a steal-relay could
-    # have captured alive instead. See finishNearbyHarvester.
-    if finishNearbyHarvester(bot, ct):
         return
     if snipeHarvester(bot, ct):
         return
