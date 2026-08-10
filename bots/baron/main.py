@@ -37,6 +37,17 @@ BUILDER_TARGET_BY_TI: list[tuple[int, int]] = [
     (1000, 7),
 ]
 
+# Rounds after game start before the crew may grow past MAX_BUILDERS_EARLY
+# (≤0 disables). The bank-tier target above is otherwise a pure stock check —
+# passive income alone (10 Ti/4 rounds) crosses the 1000 Ti / 7-builder tier
+# at turn 200 on the nose regardless of whether there's any unclaimed ore left
+# to justify two more units, and since nothing paces the spawns themselves,
+# both land back-to-back the moment the bracket is crossed. This clamps the
+# target back to MAX_BUILDERS_EARLY until the delay elapses; the bank tiers
+# still gate everything past that point exactly as before — this only holds
+# the door shut a while longer, it doesn't replace the bank check.
+BUILDER_GROWTH_DELAY_TURNS = 80
+
 # --- Guardian cap (≤0 / None disables) ---
 # Guardian slots are idx % 5 in (0, 1) — 2 per 5 spawns. Guardians past this rank
 # dispatch as non-guardians instead. Inert while MAX_BUILDERS is 10: guardians at a
@@ -399,6 +410,7 @@ SPAWN_SCHEDULE = SpawnSchedule(
     max_builders_early=MAX_BUILDERS_EARLY,
     max_builders=MAX_BUILDERS,
     builder_target_by_ti=tuple(BUILDER_TARGET_BY_TI),
+    growth_delay_turns=BUILDER_GROWTH_DELAY_TURNS,
 )
 
 
