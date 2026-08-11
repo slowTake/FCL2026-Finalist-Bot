@@ -1283,7 +1283,7 @@ _BELT_OBSTACLE_TYPES = BELT_TYPES + (EntityType.BARRIER,)
 # A heal-racing enemy builder (HEAL_AMOUNT=4/turn) outheals our fire
 # (BUILDER_BOT_ATTACK_DAMAGE=2/turn) 2:1, so without a cap this branch fires
 # forever and never returns "failed" — see clearBeltObstacle's fire-on-it branch.
-_BELT_FIRE_TURN_LIMIT = 3
+_BELT_FIRE_TURN_LIMIT = 11
 
 
 def clearBeltObstacle(bot, ct: Controller, tile: Position) -> str:
