@@ -59,6 +59,12 @@
 #    completes (relayEverComplete, slot 0) — before there is any economy an enemy
 #    builder in vision must not keep a guardian off ore.
 # 6. clearBarriers — fire / move to nearest enemy barrier inside the leash only
+# 6a. buildHarvesterOnClearedBarrier — runs ahead of clearBarriers itself: if the
+#        barrier clearBarriers just killed sat on ore (bot.guardianOreBarrier, set
+#        by clearBarriers while firing), build a harvester on it before wandering
+#        off to the next barrier. Ti-starved holds position for up to
+#        GUARDIAN_ORE_WAIT_TURNS turns (main.py) rather than giving up outright,
+#        then forgets the tile so clearBarriers can move on.
 # 7. reconnectBelts — ally conveyor inside the leash aiming at a layable empty
 #        tile → build the patch belt. Facing must be *proven*: a neighbour one step
 #        nearer the core already holding a belt/core, or (2-tile gap) that neighbour
@@ -246,6 +252,7 @@ from logistics import (
     relayEverComplete,
 )
 from defence import (
+    _buildHarvesterOnClearedBarrier,
     blockGunLine,
     clearBarriers,
     defGun,
@@ -658,11 +665,12 @@ def _relayNearlyComplete(bot) -> bool:
 
 def runGuardian(bot, ct: Controller) -> None:
     """Guardian: leash → react → defGun → defSentinel → avoidFire → defendHome
-    → healAlly → clearBarriers → reconnectBelts → economy (clearBarriers and
-    economy only while nothing hostile is in vision; reconnectBelts/
-    finishNearbyBelt run regardless but drop their walk-to-a-distant-break
-    fallback while hostile, keeping only the zero-movement adjacent patch)
-    → patrol."""
+    → healAlly → buildHarvesterOnClearedBarrier → clearBarriers → reconnectBelts
+    → economy (clearBarriers and economy only while nothing hostile is in
+    vision; buildHarvesterOnClearedBarrier/reconnectBelts/finishNearbyBelt run
+    regardless but drop their walk-to-a-distant-break fallback (n/a for the
+    harvester step, which never walks) while hostile, keeping only the
+    zero-movement adjacent action) → patrol."""
     _resolveCores(bot, ct)
     bot.nearCoreEconomy = False
     if bot.corePos is None:
@@ -719,6 +727,14 @@ def runGuardian(bot, ct: Controller) -> None:
     if defendHome(bot, ct):
         return
     if healAlly(bot, ct):
+        return
+    # Ahead of clearBarriers itself: if a barrier this guardian already killed
+    # sat on ore, claim it before wandering off to the next barrier. Zero
+    # movement (only acts while still adjacent) and a single build/wait action,
+    # so — like reconnectBelts' adjacent-patch case below — it's safe to run
+    # even with something hostile in vision; it can't pull the guardian
+    # anywhere it isn't already standing.
+    if _buildHarvesterOnClearedBarrier(bot, ct):
         return
     # Barrier clearing is a chore, not a response: 30 HP at 2 dmg is 15 turns and
     # 30 Ti to remove a 3 Ti barrier, so it must never run while anything hostile

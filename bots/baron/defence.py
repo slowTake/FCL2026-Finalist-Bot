@@ -350,6 +350,12 @@ def clearBarriers(bot, ct: Controller) -> bool:
 
     if isAdjacent(pos, best):
         if ct.get_action_cooldown() == 0 and ct.can_fire(best):
+            # Remember it if it's sitting on ore — _buildHarvesterOnClearedBarrier
+            # picks this up once the barrier's HP actually runs out. Set on every
+            # firing turn (idempotent, same tile) rather than only once so a
+            # guardian that gets reassigned mid-clear still has it recorded.
+            if ct.get_tile_env(best) == Environment.ORE_TITANIUM:
+                bot.guardianOreBarrier = best
             ct.fire(best)
             return True
         return False
@@ -357,6 +363,74 @@ def clearBarriers(bot, ct: Controller) -> bool:
     from logistics import moveToward
 
     return moveToward(bot, ct, best)
+
+
+def _buildHarvesterOnClearedBarrier(bot, ct: Controller) -> bool:
+    """Build a harvester on ore this guardian's own clearBarriers just uncovered.
+
+    `bot.guardianOreBarrier` is set by `clearBarriers` while it's actively
+    firing on a barrier sitting on `Environment.ORE_TITANIUM`. Runs ahead of
+    `clearBarriers` in `runGuardian` so the guardian claims the tile the turn
+    after the barrier dies instead of immediately wandering off to the next
+    barrier — it's still standing right there for free.
+
+    Ti-starved holds position (returns True, consuming the turn) for up to
+    `main.GUARDIAN_ORE_WAIT_TURNS` turns rather than giving up on the first
+    empty bank — see that constant's docstring — then forgets the tile so
+    `clearBarriers` is free to move on.
+
+    Deliberately narrow: only acts while still adjacent to the remembered
+    tile. If the guardian got pulled elsewhere (combat, a closer barrier) in
+    the meantime this just quietly does nothing rather than walking back —
+    unlike a belt gap, a single missed ore tile is not worth breaking
+    position over, and a later pass (this guardian's own patrol, or any
+    other builder's normal ore search) will pick it up regardless.
+    """
+    tile = getattr(bot, "guardianOreBarrier", None)
+    if tile is None:
+        return False
+
+    # get_tile_env/get_tile_building_id both raise outside vision — same guard
+    # _layableTile uses. A guardian pulled elsewhere by combat before this step
+    # runs (avoidFire/defendHome/healAlly all sit above it) can lose vision of
+    # its own remembered tile; don't crash, and don't forget it either — it's
+    # cheap to just wait for vision to come back around.
+    if not ct.is_in_vision(tile):
+        return False
+
+    # Not ore (shouldn't happen) or something else already sits there —
+    # forget it either way, nothing left for this helper to do.
+    if ct.get_tile_env(tile) != Environment.ORE_TITANIUM:
+        bot.guardianOreBarrier = None
+        bot.guardianOreWaitTurns = 0
+        return False
+
+    bid = ct.get_tile_building_id(tile)
+    if bid is not None:
+        # Barrier (or whatever is there) hasn't actually died yet — keep
+        # waiting without spending guardianOreWaitTurns, that budget is for
+        # the Ti-starved case below, not "still fighting the barrier."
+        return False
+
+    if not isAdjacent(ct.get_position(), tile):
+        return False
+
+    from main import GUARDIAN_ORE_WAIT_TURNS
+
+    if ct.get_global_resources() < ct.get_harvester_cost():
+        bot.guardianOreWaitTurns = getattr(bot, "guardianOreWaitTurns", 0) + 1
+        if bot.guardianOreWaitTurns > GUARDIAN_ORE_WAIT_TURNS:
+            bot.guardianOreBarrier = None
+            bot.guardianOreWaitTurns = 0
+            return False
+        return True  # hold position; Ti may still arrive next turn
+
+    if ct.get_action_cooldown() == 0 and ct.can_build_harvester(tile):
+        ct.build_harvester(tile)
+        bot.guardianOreBarrier = None
+        bot.guardianOreWaitTurns = 0
+        return True
+    return False
 
 
 def _isBeltOrCore(bot, ct: Controller, tile: Position, core: Position) -> bool:

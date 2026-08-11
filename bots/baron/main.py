@@ -107,6 +107,14 @@ GUARDIAN_LEASH_HOLD_TURNS = 20
 # report it), not a search that should pull a builder off its own task.
 DANGLING_BELT_SELF_CHEBYSHEV = 3
 
+# --- Guardian: build on ore uncovered by clearBarriers ---
+# Consecutive Ti-starved turns a guardian holds position on an ore tile it just
+# cleared a barrier off of before giving up on it. Waits rather than abandoning
+# outright — the shared bank is usually just temporarily short, not permanently
+# — but caps it so a guardian can't camp one tile forever if Ti never arrives;
+# once it gives up, clearBarriers is free to move it on to the next barrier.
+GUARDIAN_ORE_WAIT_TURNS = 3
+
 # --- Opportunistic nearby-harvester relay (≤0 disables) ---
 # Chebyshev radius, anchored on the acting bot's own tile, that
 # finishNearbyHarvester searches for an un-relayed harvester (ally or, if
@@ -476,6 +484,11 @@ class Player:
         # rather than relying solely on the reactive re-place that only
         # triggers once the gunner has already landed another hit through it.
         self.gunLineBlockTile: tuple[int, int] | None = None
+        # Ore tile a guardian's own clearBarriers just uncovered (the barrier it
+        # killed sat on Environment.ORE_TITANIUM) — set by clearBarriers, consumed
+        # by defence._buildHarvesterOnClearedBarrier. See GUARDIAN_ORE_WAIT_TURNS.
+        self.guardianOreBarrier: Position | None = None
+        self.guardianOreWaitTurns = 0
 
     def run(self, ct: Controller) -> None:
         self.hivemind.tick(ct)
