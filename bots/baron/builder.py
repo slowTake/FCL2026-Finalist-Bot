@@ -658,8 +658,11 @@ def _relayNearlyComplete(bot) -> bool:
 
 def runGuardian(bot, ct: Controller) -> None:
     """Guardian: leash → react → defGun → defSentinel → avoidFire → defendHome
-    → healAlly → clearBarriers → reconnectBelts → economy (last three only while
-    nothing hostile is in vision) → patrol."""
+    → healAlly → clearBarriers → reconnectBelts → economy (clearBarriers and
+    economy only while nothing hostile is in vision; reconnectBelts/
+    finishNearbyBelt run regardless but drop their walk-to-a-distant-break
+    fallback while hostile, keeping only the zero-movement adjacent patch)
+    → patrol."""
     _resolveCores(bot, ct)
     bot.nearCoreEconomy = False
     if bot.corePos is None:
@@ -723,14 +726,20 @@ def runGuardian(bot, ct: Controller) -> None:
     if not underAttack and clearBarriers(bot, ct):
         return
     # Above the economy: a cut belt zeroes a whole line's throughput, while a new
-    # harvester is only incremental. Repair beats build.
-    if not underAttack and reconnectBelts(bot, ct):
+    # harvester is only incremental. Repair beats build. Called unconditionally
+    # (not gated on `not underAttack`): the adjacent-patch case inside these is a
+    # single build action and no movement, so it's safe even with something
+    # hostile in vision — it doesn't pull the guardian out of position, and
+    # delaying it lets an enemy actively shooting the belt keep taxing Ti on the
+    # same cut turn after turn. Only the "walk to a distant break" fallback
+    # inside `_tryPatchDanglingBelts` still backs off while under attack.
+    if reconnectBelts(bot, ct, allow_walk=not underAttack):
         return
     # Self-anchored fallback: reconnectBelts only looks near the core, but a
     # guardian working an ore/relay under GUARDIAN_ECON_SLACK (or simply
     # patrolling somewhere a dangling tail happens to sit) can be standing right
     # next to a break reconnectBelts will never see. Cheap, opportunistic.
-    if not underAttack and finishNearbyBelt(bot, ct):
+    if finishNearbyBelt(bot, ct, allow_walk=not underAttack):
         return
     if not underAttack and finishNearbyHarvester(bot, ct):
         return
