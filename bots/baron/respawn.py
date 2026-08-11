@@ -12,7 +12,7 @@ from fcode import (
     Position,
 )
 
-from geometry import coreFootprint
+from geometry import coreFootprint, manhattanToCore
 from pathing import CARDINALS, inBounds
 
 
@@ -169,10 +169,15 @@ class Respawn:
             if not side_pool:
                 side_pool = right or left
             if side_pool:
-                spawn_goal = min(
-                    side_pool,
-                    key=lambda o: abs(o.x - core_pos.x) + abs(o.y - core_pos.y),
-                )
+                # manhattanToCore, not raw distance to core_pos (the core's
+                # top-left/min-corner anchor tile) — the anchor is one specific
+                # corner of the 2x2 footprint, so raw distance is biased by up
+                # to 2 tiles depending which corner a team's core happens to
+                # occupy. On a mirrored map that bias flips per team: the same
+                # pitfall fixed in logistics.py's ore pickers (see
+                # geometry.manhattanToCore's docstring), just here for which
+                # ore a fresh default's spawn tile gets biased toward.
+                spawn_goal = min(side_pool, key=lambda o: manhattanToCore(o, core_pos))
 
         sites = _apronSites(ct, core_pos)
         sites.sort(key=lambda p: abs(p.x - spawn_goal.x) + abs(p.y - spawn_goal.y))

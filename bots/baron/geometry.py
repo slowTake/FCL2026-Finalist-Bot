@@ -57,6 +57,24 @@ def chebyshevToCore(pos: Position, core_pos: Position) -> int:
     )
 
 
+def manhattanToCore(pos: Position, core_pos: Position) -> int:
+    """Manhattan distance from pos to the *nearest* core footprint tile.
+
+    Measuring to the anchor alone would read one tile too far from the east and
+    south sides of the 2x2 — the same pitfall chebyshevToCore exists to avoid,
+    but the manhattan-distance ore pickers (logistics._oreConvenienceKey,
+    pickMaintainOre, _pickRecheckOre, _oreStaggerKey; offense._oreCloserToAlly
+    and denyOre) never got the equivalent treatment. On a point-mirrored map
+    this raw single-tile bias flips which of two mirror-equivalent ore nodes
+    reads as "closer" depending on which corner of its 2x2 a team's core anchor
+    happens to occupy — the mirror match then sends one team's builders into a
+    contested node the other team ignores.
+    """
+    return min(
+        abs(pos.x - t.x) + abs(pos.y - t.y) for t in coreFootprint(core_pos)
+    )
+
+
 def nearCore(bot, ct: Controller, radius: int | None = None) -> bool:
     """True while this unit is inside `radius` of home. False if home is unknown.
 
