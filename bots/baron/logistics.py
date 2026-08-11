@@ -2114,7 +2114,7 @@ def defendHome(bot, ct: Controller) -> bool:
             continue
         if ct.get_team(bid) != ct.get_team():
             continue
-        if ct.get_hp(bid) >= 500:
+        if ct.get_hp(bid) >= 400:
             return False
         pos = ct.get_position()
         # Heal any adjacent core footprint tile
