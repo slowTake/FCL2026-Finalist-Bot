@@ -17,7 +17,9 @@ Two things survive, plus one arrival:
     which was never guardian-specific to begin with. `reconnectBelts`, its
     core-leash-anchored sibling, is dropped: with no leash there is nothing it
     could reach that `finishNearbyBelt` and `logistics.adoptDanglingBelt` cannot.
-  * `_isBeltOrCore` / `_allyBuilderNear` stay because `logistics` imports them.
+  * `_isBeltOrCore` stays because `logistics` imports it. `_allyBuilderNear` stays
+    for `_danglingBeltEnds`'s own use only — `logistics._mergeCandidateNeighbor` no
+    longer calls it (see baron `CONTEXT.md` on the relay-merge guard removal).
 """
 
 from __future__ import annotations

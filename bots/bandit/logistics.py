@@ -1149,7 +1149,7 @@ def _mergeCandidateNeighbor(
     `_relayReachesCore` is memoized per `pickRelayPath` call, which matters
     because `is_goal` calls this on every node A* expands.
     """
-    from defence import _allyBuilderNear, _isBeltOrCore
+    from defence import _isBeltOrCore
 
     footprint = coreFootprint(core_pos)
     for d in CARDINALS:
@@ -1163,12 +1163,10 @@ def _mergeCandidateNeighbor(
         # No `_allyBuilderNear` guard here: it rejects on *any* other ally builder
         # within Chebyshev 2, and the thing it protects — a builder's
         # not-yet-committed relay head — by definition does not reach the core,
-        # so the connectivity proof immediately above already excludes it. The
+        # so the connectivity proof immediately below already excludes it. The
         # proximity heuristic only added false negatives, concentrated near the
         # core where ally builders congregate.
         if not _relayReachesCore(bot, ct, near, core_pos, cache=cache):
-            continue
-        if _allyBuilderNear(ct, near):
             continue
         return near
     return None
