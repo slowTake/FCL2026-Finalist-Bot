@@ -165,9 +165,30 @@ class Respawn:
             from features import oreSideBuckets
 
             left, right = oreSideBuckets(hivemind.map_id, core_pos, goal)
-            side_pool = left if (predicted_idx // 5) % 2 == 0 else right
+
+            # Rank the two buckets by distance to home, not by which one
+            # oreSideBuckets happened to call "left" — "left"/"right" come from
+            # a fixed 90deg-CCW rotation of *this* core's own core->enemy
+            # vector, which has no notion of which side is actually nearer
+            # home. On a map where both cores share a coordinate (e.g. heart:
+            # both at y=9), that rotation's handedness is a function of which
+            # side of the map a team's core sits on — so it deterministically
+            # handed the *same* team the richer/nearer bucket first, every
+            # match, regardless of which side genuinely was nearer. Distance-
+            # ranking instead makes "group 0 goes first" mean the same thing
+            # (closer, faster to reach) for both teams.
+            def _nearestInPool(pool: list[Position]) -> int:
+                return min(
+                    (manhattanToCore(o, core_pos) for o in pool), default=10**9
+                )
+
+            near_pool, far_pool = (
+                (left, right) if _nearestInPool(left) <= _nearestInPool(right)
+                else (right, left)
+            )
+            side_pool = near_pool if (predicted_idx // 5) % 2 == 0 else far_pool
             if not side_pool:
-                side_pool = right or left
+                side_pool = far_pool or near_pool
             if side_pool:
                 # manhattanToCore, not raw distance to core_pos (the core's
                 # top-left/min-corner anchor tile) — the anchor is one specific
