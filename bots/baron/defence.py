@@ -714,6 +714,55 @@ def _tryPatchDanglingBelts(
     return moveToward(bot, ct, actionable[0][0])
 
 
+def _adjacentToCoreFootprint(core: Position, tile: Position) -> bool:
+    """True if `tile` cardinally touches any of the core's 4 footprint tiles."""
+    return any(isAdjacent(tile, foot) for foot in coreFootprint(core))
+
+
+def patchAdjacentCoreBelt(bot, ct: Controller) -> bool:
+    """Zero-movement belt patch for a gap that borders the core itself.
+
+    `defendHome` returns True every turn it heals (core HP under threshold),
+    which starves `reconnectBelts` — parked well below it in `runGuardian` —
+    for as long as the core stays damaged. That is fine for an ordinary break
+    out on the leash (healing the core outranks it), but a gap sitting right
+    against the core's own footprint is different: it is usually the very
+    last tile a shelled-out corridor is missing, it costs one build action to
+    close, and — restricted to targets already cardinally adjacent to this
+    guardian — fixing it here never pulls the guardian off the core to do so.
+    So this runs ahead of `defendHome`, not below it: a guardian mid-repair
+    still takes the one free turn to plug a belt gap right beside it before
+    going back to healing next turn.
+
+    Deliberately narrow on both axes. `_adjacentToCoreFootprint` requires the
+    gap to actually touch the core — a break one tile further out is still
+    `reconnectBelts`'s job, healed-core-or-not, since walking to it would
+    trade position for it. `isAdjacent(pos, target)` requires the guardian to
+    already be standing next to the gap — this never walks, so it can never
+    be the reason a guardian leaves its healing post. Facing is proven the
+    same way as `reconnectBelts` (`_reconnectFacing`, no crow-flies guess);
+    trivially so here, since a target adjacent to the footprint always has a
+    footprint tile among its own cardinal neighbours.
+    """
+    core = bot.corePos
+    if core is None or bot.inRelay or getattr(bot, "recheckingOre", False):
+        return False
+    pos = ct.get_position()
+    from logistics import placeRelayBelt
+
+    for _belt, target in _danglingBeltEnds(bot, ct, anchor=core, max_dist=2):
+        if not isAdjacent(pos, target):
+            continue
+        if not _adjacentToCoreFootprint(core, target):
+            continue
+        facing = _reconnectFacing(bot, ct, target, core)
+        if facing is None:
+            continue
+        if placeRelayBelt(ct, target, facing) == "placed":
+            return True
+    return False
+
+
 def reconnectBelts(bot, ct: Controller, *, allow_walk: bool = True) -> bool:
     """Patch a cut belt line near the core back toward the core, one tile a turn.
 
