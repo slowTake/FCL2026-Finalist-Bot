@@ -107,6 +107,18 @@ GUARDIAN_LEASH_HOLD_TURNS = 20
 # report it), not a search that should pull a builder off its own task.
 DANGLING_BELT_SELF_CHEBYSHEV = 3
 
+# --- Harvester line verification (≤0 disables) ---
+# How long a builder waits between verification passes, and how long one of its
+# own harvesters stays "recently verified" before it is eligible again.
+# logistics.verifyHomeHarvester re-walks a harvester's belt line with
+# bot.relayVerify set, which forces vision-only proof — the only way to notice a
+# belt destroyed out of sight, since a ghost entry in local_map otherwise reads
+# as still-built for RELAY_LEDGER_TRUST_TURNS(30). Deliberately longer than that
+# window (so a pass can't be fooled by the very staleness it exists to catch)
+# but short enough that a cut line is found within a few dozen turns. Raise it
+# if verification trips start displacing real economy.
+HARVESTER_VERIFY_INTERVAL_TURNS = 40
+
 # --- Guardian: build on ore uncovered by clearBarriers ---
 # Consecutive Ti-starved turns a guardian holds position on an ore tile it just
 # cleared a barrier off of before giving up on it. Waits rather than abandoning
@@ -438,6 +450,13 @@ class Player:
         self.relayPath: list[Position] | None = None
         self.relayBuiltTo = -1
         self.relayStuck = 0
+        # Set only for a verifyHomeHarvester pass: makes beltFacingOk refuse the
+        # ledger fallback so the line is proven by eye, not by memory. Cleared by
+        # clearRelay so it can never leak into an ordinary relay.
+        self.relayVerify = False
+        self.lastHarvesterVerifyRound = -999
+        # (x, y) -> round this builder last verified that harvester's line.
+        self.verifiedHarvesters: dict[tuple[int, int], int] = {}
         self.blockadeDoor: tuple[int, int] | None = None
         self.relayPathBlocked = False
         self.relayPathBlockedFrom: tuple[int, int] | None = None

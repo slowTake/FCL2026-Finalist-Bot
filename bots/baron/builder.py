@@ -142,6 +142,14 @@
 #        though an already-placed gunner still opportunistically fires on one)
 # 4. defendHome — near core only; heal core if HP < 500 (no attack branch)
 # 5. healAlly — core → gunner/sentinel → harvester
+# 5b. verifyHomeHarvester — every HARVESTER_VERIFY_INTERVAL_TURNS, re-walk the
+#        belt line of our nearest-core harvester with bot.relayVerify set, which
+#        forces beltFacingOk to prove each tile by vision instead of accepting a
+#        ≤RELAY_LEDGER_TRUST_TURNS-old ledger entry. Without it a belt destroyed
+#        out of sight lingers in local_map as a ghost, relayToCore declares the
+#        line complete without looking, and the builder drops to exploreFrontier
+#        and circles mid-map forever. Sits below every real-work step, so it only
+#        ever spends a turn that was going to be a wander anyway.
 # 6. recheckOreNodes — clear sticky oreSite; prefer empty → ally-blocked → harvester
 # 7. exploreFrontier(outward=False) — last resort, no ore anywhere to claim. Walks to
 #        the nearest tile absent from local_map that borders known space, preferring
@@ -250,6 +258,7 @@ from logistics import (
     exploreFrontier,
     recheckOreNodes,
     relayEverComplete,
+    verifyHomeHarvester,
 )
 from defence import (
     _buildHarvesterOnClearedBarrier,
@@ -557,6 +566,12 @@ def runDefault(bot, ct: Controller) -> None:
     # Same idea, for a harvester nobody has started relaying yet — see
     # finishNearbyHarvester.
     if finishNearbyHarvester(bot, ct):
+        return
+    # Below every real-work step, above the last-resort ones: this only fires on
+    # a builder that would otherwise fall through to exploreFrontier's aimless
+    # wander, which is exactly the builder that should be going home to check on
+    # an old harvester whose line may have been cut behind our back.
+    if verifyHomeHarvester(bot, ct):
         return
     if recheckOreNodes(bot, ct):
         return

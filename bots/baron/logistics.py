@@ -55,6 +55,10 @@ def clearRelay(bot) -> None:
     bot.relayStuck = 0
     bot.beltFireTile = None
     bot.beltFireTurns = 0
+    # Vision-only proof is a property of one verification pass, never of the
+    # builder — leaking it into the next relay would make every ordinary build
+    # re-walk its own corridor. See verifyHomeHarvester.
+    bot.relayVerify = False
 
 
 def abortRelay(bot) -> None:
@@ -1258,7 +1262,13 @@ def _beltLedgerStale(bot, entry: dict) -> bool:
 
 
 def beltFacingOk(
-    bot, ct: Controller, pos: Position, needed: Direction, *, local_map: dict | None = None
+    bot,
+    ct: Controller,
+    pos: Position,
+    needed: Direction,
+    *,
+    local_map: dict | None = None,
+    require_vision: bool = False,
 ) -> bool:
     """True if pos already holds a belt facing `needed` — vision first, ledger fallback.
 
@@ -1276,6 +1286,14 @@ def beltFacingOk(
     Team-checked on both branches: an enemy belt whose facing happens to
     match `needed` must never read as "already built" for our own relay —
     that would mark the segment complete without ever laying a tile of ours.
+
+    `require_vision=True` drops the ledger fallback entirely: an out-of-vision
+    tile reads "unproven" rather than "built". `_update_local_vision` only
+    deletes an `entity` when a unit *regains vision* of that exact tile, so a
+    belt destroyed behind our back lingers as a ghost and the fallback above
+    would mark a severed corridor complete without a single tile being looked
+    at. A verification pass (`verifyHomeHarvester`) sets this so the builder
+    physically re-walks the line and confirms it, tile by tile.
     """
     me = ct.get_team()
     if ct.is_in_vision(pos):
@@ -1288,7 +1306,7 @@ def beltFacingOk(
             return ct.get_direction(bid) == needed
         except Exception:
             return False
-    if local_map is None:
+    if require_vision or local_map is None:
         return False
     entry = local_map.get((pos.x, pos.y))
     if not entry or _beltLedgerStale(bot, entry):
@@ -1422,6 +1440,8 @@ def extendRelayWatermark(
     path: list[Position],
     core_pos: Position,
     built_to: int,
+    *,
+    require_vision: bool = False,
 ) -> int:
     """Raise watermark through contiguous correct-facing belts, vision or ledger.
 
@@ -1430,12 +1450,23 @@ def extendRelayWatermark(
     fallback `beltFacingOk` now carries — see its docstring. Still stops at
     the first tile that fails either check (wrong facing, empty, or a stale/
     absent ledger entry), same as before.
+
+    `require_vision` forwards to `beltFacingOk`, turning that fallback off for
+    a verification pass so the watermark can only advance over tiles this
+    builder has actually seen this trip.
     """
     i = built_to + 1
     while i < len(path):
         tile = path[i]
         needed = neededBeltFacing(bot, ct, path, i, core_pos)
-        if not beltFacingOk(bot, ct, tile, needed, local_map=bot.hivemind.local_map):
+        if not beltFacingOk(
+            bot,
+            ct,
+            tile,
+            needed,
+            local_map=bot.hivemind.local_map,
+            require_vision=require_vision,
+        ):
             break
         built_to = i
         i += 1
@@ -1550,6 +1581,9 @@ def relayToCore(bot, ct: Controller) -> None:
     if bot.relayOrigin is None:
         bot.relayOrigin = bot.oreSite or ct.get_position()
     bot.inRelay = True
+    # A verification pass proves the line with its own eyes — no ledger
+    # shortcuts anywhere the "already built" verdict is reached.
+    verify = getattr(bot, "relayVerify", False)
 
     path = bot.relayPath
     if path is not None:
@@ -1558,7 +1592,7 @@ def relayToCore(bot, ct: Controller) -> None:
             abortRelay(bot)
             return
         bot.relayBuiltTo = extendRelayWatermark(
-            bot, ct, path, core_pos, bot.relayBuiltTo
+            bot, ct, path, core_pos, bot.relayBuiltTo, require_vision=verify
         )
 
     if path is None:
@@ -1573,7 +1607,9 @@ def relayToCore(bot, ct: Controller) -> None:
             bot.relayPath = None
             abortRelay(bot)
             return
-        bot.relayBuiltTo = extendRelayWatermark(bot, ct, path, core_pos, -1)
+        bot.relayBuiltTo = extendRelayWatermark(
+            bot, ct, path, core_pos, -1, require_vision=verify
+        )
 
     work_from = bot.relayBuiltTo + 1
     if work_from >= len(path):
@@ -1589,7 +1625,14 @@ def relayToCore(bot, ct: Controller) -> None:
     while idx < len(path):
         tile = path[idx]
         needed = neededBeltFacing(bot, ct, path, idx, core_pos)
-        if beltFacingOk(bot, ct, tile, needed, local_map=bot.hivemind.local_map):
+        if beltFacingOk(
+            bot,
+            ct,
+            tile,
+            needed,
+            local_map=bot.hivemind.local_map,
+            require_vision=verify,
+        ):
             bot.relayBuiltTo = idx
             idx += 1
             continue
@@ -1979,6 +2022,105 @@ def maintainHarvester(bot, ct: Controller) -> bool:
     if acted and not bot.inRelay and bot.oreSite is None:
         return False
     return acted
+
+
+def _pickVerifyHarvester(bot, ct: Controller, core: Position) -> Position | None:
+    """Nearest-core ally harvester this builder hasn't re-verified lately.
+
+    Ledger-sourced on purpose: the whole point is to reach harvesters the
+    builder can no longer see. Same `(chebyshevToCore, manhattan-to-self)`
+    ordering and same `_allowOreSite`/`skippedOres` gates every other picker in
+    this file uses, so a guardian's leash and a builder's own give-ups keep
+    working here for free.
+    """
+    from main import HARVESTER_VERIFY_INTERVAL_TURNS
+
+    me = ct.get_team()
+    pos = ct.get_position()
+    round_n = ct.get_current_round()
+    skipped = getattr(bot, "skippedOres", set())
+    verified = getattr(bot, "verifiedHarvesters", {})
+    best: Position | None = None
+    best_key = None
+    for (x, y), cell in bot.hivemind.local_map.items():
+        ent = cell.get("entity")
+        if not ent or ent.get("team") != me:
+            continue
+        if ent.get("type") != EntityType.HARVESTER:
+            continue
+        if (x, y) in skipped:
+            continue
+        if round_n - verified.get((x, y), -(10**9)) < HARVESTER_VERIFY_INTERVAL_TURNS:
+            continue
+        tile = Position(x, y)
+        if not _allowOreSite(bot, tile):
+            continue
+        # Someone is already standing on it working — leave it to them.
+        if allyBuilderNearOre(ct, tile):
+            continue
+        key = (chebyshevToCore(tile, core), manhattan(tile, pos))
+        if best_key is None or key < best_key:
+            best_key = key
+            best = tile
+    return best
+
+
+def verifyHomeHarvester(bot, ct: Controller) -> bool:
+    """Re-walk an ally harvester's belt line to prove it still feeds the core.
+
+    Exists because nothing else ever asks the question. `pickMaintainOre`
+    already ranks ally harvesters nearest-core-first, so a cut home harvester
+    is usually a builder's *top* candidate — but `relayToCore` then declares it
+    complete without looking, because `beltFacingOk`'s ledger fallback accepts
+    a remembered facing for up to `RELAY_LEDGER_TRUST_TURNS`, and a belt
+    destroyed out of vision lingers in `local_map` as a ghost. The builder is
+    told the line is fine, returns False, and the chain drops it all the way to
+    `exploreFrontier` — a nearest-unknown walk that reads as aimless circling
+    mid-map, repeated identically every turn.
+
+    The fix is `bot.relayVerify`, which turns that fallback off for this pass
+    only: the watermark can then advance only over tiles actually seen, so the
+    builder walks its own line home and lays a belt wherever a real gap is.
+    An intact line costs one traversal (and tops up damaged belts on the way
+    via `relayToCore`'s own `_repairBeltIfDamaged`); a cut one gets repaired.
+
+    Sits below every real-work step in `runDefault`, so it only ever fires on a
+    builder that would otherwise be wandering, and never displaces active
+    economy. Returns `bot.inRelay`, matching `checkOre`'s convention: a line
+    proven intact within this same turn reports False so the chain continues
+    rather than burning the turn on nothing.
+    """
+    if bot.inRelay or getattr(bot, "recheckingOre", False):
+        return False
+    core = bot.corePos
+    if core is None:
+        return False
+
+    from main import HARVESTER_VERIFY_INTERVAL_TURNS
+
+    if HARVESTER_VERIFY_INTERVAL_TURNS <= 0:
+        return False
+    round_n = ct.get_current_round()
+    last = getattr(bot, "lastHarvesterVerifyRound", -(10**9))
+    if round_n - last < HARVESTER_VERIFY_INTERVAL_TURNS:
+        return False
+
+    tile = _pickVerifyHarvester(bot, ct, core)
+    if tile is None:
+        return False
+
+    bot.lastHarvesterVerifyRound = round_n
+    if not hasattr(bot, "verifiedHarvesters"):
+        bot.verifiedHarvesters = {}
+    bot.verifiedHarvesters[(tile.x, tile.y)] = round_n
+    bot.oreSite = tile
+    bot.relayOrigin = tile
+    bot.relayPath = None
+    bot.relayBuiltTo = -1
+    bot.inRelay = True
+    bot.relayVerify = True
+    relayToCore(bot, ct)
+    return bot.inRelay
 
 
 ORE_RECHECK_CLEAR_INTERVAL = 50
