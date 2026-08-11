@@ -10,6 +10,7 @@ from geometry import (
     TURRET_TYPES,
     chebyshevToCore,
     coreFootprint,
+    harvesterClaimedByAlly,
     isAdjacent,
     nearCore,
     tileEntity,
@@ -349,6 +350,12 @@ def clearBarriers(bot, ct: Controller) -> bool:
 
     if isAdjacent(pos, best):
         if ct.get_action_cooldown() == 0 and ct.can_fire(best):
+            # Remember it if it's sitting on ore — _buildHarvesterOnClearedBarrier
+            # picks this up once the barrier's HP actually runs out. Set on every
+            # firing turn (idempotent, same tile) rather than only once so a
+            # guardian that gets reassigned mid-clear still has it recorded.
+            if ct.get_tile_env(best) == Environment.ORE_TITANIUM:
+                bot.guardianOreBarrier = best
             ct.fire(best)
             return True
         return False
@@ -356,6 +363,74 @@ def clearBarriers(bot, ct: Controller) -> bool:
     from logistics import moveToward
 
     return moveToward(bot, ct, best)
+
+
+def _buildHarvesterOnClearedBarrier(bot, ct: Controller) -> bool:
+    """Build a harvester on ore this guardian's own clearBarriers just uncovered.
+
+    `bot.guardianOreBarrier` is set by `clearBarriers` while it's actively
+    firing on a barrier sitting on `Environment.ORE_TITANIUM`. Runs ahead of
+    `clearBarriers` in `runGuardian` so the guardian claims the tile the turn
+    after the barrier dies instead of immediately wandering off to the next
+    barrier — it's still standing right there for free.
+
+    Ti-starved holds position (returns True, consuming the turn) for up to
+    `main.GUARDIAN_ORE_WAIT_TURNS` turns rather than giving up on the first
+    empty bank — see that constant's docstring — then forgets the tile so
+    `clearBarriers` is free to move on.
+
+    Deliberately narrow: only acts while still adjacent to the remembered
+    tile. If the guardian got pulled elsewhere (combat, a closer barrier) in
+    the meantime this just quietly does nothing rather than walking back —
+    unlike a belt gap, a single missed ore tile is not worth breaking
+    position over, and a later pass (this guardian's own patrol, or any
+    other builder's normal ore search) will pick it up regardless.
+    """
+    tile = getattr(bot, "guardianOreBarrier", None)
+    if tile is None:
+        return False
+
+    # get_tile_env/get_tile_building_id both raise outside vision — same guard
+    # _layableTile uses. A guardian pulled elsewhere by combat before this step
+    # runs (avoidFire/defendHome/healAlly all sit above it) can lose vision of
+    # its own remembered tile; don't crash, and don't forget it either — it's
+    # cheap to just wait for vision to come back around.
+    if not ct.is_in_vision(tile):
+        return False
+
+    # Not ore (shouldn't happen) or something else already sits there —
+    # forget it either way, nothing left for this helper to do.
+    if ct.get_tile_env(tile) != Environment.ORE_TITANIUM:
+        bot.guardianOreBarrier = None
+        bot.guardianOreWaitTurns = 0
+        return False
+
+    bid = ct.get_tile_building_id(tile)
+    if bid is not None:
+        # Barrier (or whatever is there) hasn't actually died yet — keep
+        # waiting without spending guardianOreWaitTurns, that budget is for
+        # the Ti-starved case below, not "still fighting the barrier."
+        return False
+
+    if not isAdjacent(ct.get_position(), tile):
+        return False
+
+    from main import GUARDIAN_ORE_WAIT_TURNS
+
+    if ct.get_global_resources() < ct.get_harvester_cost():
+        bot.guardianOreWaitTurns = getattr(bot, "guardianOreWaitTurns", 0) + 1
+        if bot.guardianOreWaitTurns > GUARDIAN_ORE_WAIT_TURNS:
+            bot.guardianOreBarrier = None
+            bot.guardianOreWaitTurns = 0
+            return False
+        return True  # hold position; Ti may still arrive next turn
+
+    if ct.get_action_cooldown() == 0 and ct.can_build_harvester(tile):
+        ct.build_harvester(tile)
+        bot.guardianOreBarrier = None
+        bot.guardianOreWaitTurns = 0
+        return True
+    return False
 
 
 def _isBeltOrCore(bot, ct: Controller, tile: Position, core: Position) -> bool:
@@ -412,8 +487,9 @@ def _danglingBeltEnds(
     anchor: Position | None = None,
     max_dist: int | None = None,
     respect_owner: bool = True,
+    include_harvesters: bool = True,
 ) -> list[tuple[Position, Position]]:
-    """Ally conveyors within `max_dist` of `anchor` whose output tile leads nowhere.
+    """Ally conveyors (and harvesters) within `max_dist` of `anchor` with a dead end.
 
     `anchor`/`max_dist` default to the core / `DEFEND_HOME_CHEBYSHEV` — reconnectBelts'
     near-core patrol repair. Pass `anchor=ct.get_position()` with a smaller radius for
@@ -432,12 +508,24 @@ def _danglingBeltEnds(
     reason — the facing proof in `_reconnectFacing` is the real safety net there,
     not proximity to other units.
 
-    Returns `(belt, output)` pairs. Detection reads the HiveMind ledger, not own
+    Returns `(source, target)` pairs. Detection reads the HiveMind ledger, not own
     vision, for the same reason `threateningTurret` does: a guardian on its patrol
     ring cannot see the whole near-core belt run at sqrt(20).
 
-    Conveyors only. A splitter rotates its output among three directions, so
-    "the way it points" does not identify a break.
+    Conveyors only for the belt branch. A splitter rotates its output among
+    three directions, so "the way it points" does not identify a break.
+
+    `include_harvesters=True` adds a second source kind: an ally harvester has
+    no facing at all (`ct.get_direction` raises `GameError` on one), so instead
+    of one `facing`-derived target it contributes up to 4 cardinal-neighbor
+    candidates, skipped entirely once `harvesterClaimedByAlly` says an ally belt
+    already touches it — that harvester belongs to `finishNearbyHarvester`/
+    `relayToCore` from here, not this cheap patch. This still can't scoop up a
+    genuinely fresh, never-relayed harvester: `_reconnectFacing` only returns a
+    facing when it can prove a hop toward the core or an existing connected
+    belt within 1-2 tiles, so a harvester with nothing nearby to prove against
+    simply produces no actionable candidate, same as a conveyor pointed into
+    the void would.
     """
     core = bot.corePos
     if core is None:
@@ -477,8 +565,36 @@ def _danglingBeltEnds(
         if respect_owner and _allyBuilderNear(ct, target):
             continue
         out.append((chebyshevToCore(belt, core), manhattan(pos, target), belt, target))
+
+    if include_harvesters:
+        for (x, y), cell in bot.hivemind.local_map.items():
+            ent = cell.get("entity")
+            if not ent or ent.get("team") != me:
+                continue
+            if ent.get("type") != EntityType.HARVESTER:
+                continue
+            harv = Position(x, y)
+            if max(abs(harv.x - anchor.x), abs(harv.y - anchor.y)) > max_dist:
+                continue
+            # Already claimed — finishNearbyHarvester/relayToCore own it now.
+            if harvesterClaimedByAlly(ct, harv, local_map=bot.hivemind.local_map):
+                continue
+            for d in CARDINALS:
+                target = harv.add(d)
+                if not inBounds(ct, target):
+                    continue
+                if _isBeltOrCore(bot, ct, target, core):
+                    continue
+                if not _layableTile(ct, target):
+                    continue
+                if respect_owner and _allyBuilderNear(ct, target):
+                    continue
+                out.append(
+                    (chebyshevToCore(harv, core), manhattan(pos, target), harv, target)
+                )
+
     out.sort(key=lambda t: (t[0], t[1]))
-    return [(belt, target) for _d, _m, belt, target in out]
+    return [(source, target) for _d, _m, source, target in out]
 
 
 def _reconnectFacing(
@@ -557,6 +673,8 @@ def _tryPatchDanglingBelts(
     ct: Controller,
     candidates: list[tuple[Position, Position]],
     core: Position,
+    *,
+    allow_walk: bool = True,
 ) -> bool:
     """Shared placement/walk logic for a dangling-belt-end candidate list.
 
@@ -564,6 +682,13 @@ def _tryPatchDanglingBelts(
     whose next hop cannot be proven is not ours to fix, so it must not draw the
     bot toward it either. Candidates are tried in order and a failed placement
     falls through to the next rather than retrying, so it cannot thrash.
+
+    `allow_walk=False` keeps the "place if already adjacent" pass (a single
+    build action, no movement — safe on any turn) but skips the trailing walk.
+    Callers pass this while something hostile is in vision: closing a gap that
+    is already free to patch shouldn't wait on the enemy leaving, but marching
+    toward a *distant* break to chase it is a real repositioning risk and stays
+    off the table until the coast is clear.
     """
     from logistics import moveToward, placeRelayBelt
 
@@ -583,25 +708,34 @@ def _tryPatchDanglingBelts(
         if placeRelayBelt(ct, target, facing) == "placed":
             return True
 
+    if not allow_walk:
+        return False
     # Nothing adjacent to act on — walk to the most downstream provable break.
     return moveToward(bot, ct, actionable[0][0])
 
 
-def reconnectBelts(bot, ct: Controller) -> bool:
+def reconnectBelts(bot, ct: Controller, *, allow_walk: bool = True) -> bool:
     """Patch a cut belt line near the core back toward the core, one tile a turn.
 
-    Guardian-only idle work, gated with the economy on `not underAttack`. Exists
-    because the normal repair path is *ore-anchored*: `maintainHarvester` re-enters
-    `relayToCore` and the watermark rebuilds from the first gap, but a guardian's
-    `_allowOreSite` confines it to ore inside the leash. A break near the core that
-    belongs to a harvester outside the leash is therefore unreachable — the guardian
-    can never claim the ore that would carry it there. Anchoring on the belt instead
-    of the ore is the whole point.
+    Guardian-only idle work. Exists because the normal repair path is
+    *ore-anchored*: `maintainHarvester` re-enters `relayToCore` and the
+    watermark rebuilds from the first gap, but a guardian's `_allowOreSite`
+    confines it to ore inside the leash. A break near the core that belongs to
+    a harvester outside the leash is therefore unreachable — the guardian can
+    never claim the ore that would carry it there. Anchoring on the belt
+    instead of the ore is the whole point.
 
     Greedy and deliberately unplanned: no A*, so a blocked coreward tile cannot be
     routed around. Candidates are tried in order and a failed placement falls through
     to the next rather than retrying, so it cannot thrash. Multi-tile gaps are walked
     one tile per turn and only while each step stays layable.
+
+    `allow_walk=False` (passed by `runGuardian` while `underAttack`) restricts
+    this to the zero-movement adjacent-patch case — see `_tryPatchDanglingBelts`.
+    A belt actively being shot needs patching *most* on those turns: every turn
+    it stays cut is lost Ti throughput on top of the belt's own repair cost, and
+    patching it costs nothing but the turn's build action if the guardian is
+    already standing right there.
     """
     core = bot.corePos
     if core is None or bot.inRelay or getattr(bot, "recheckingOre", False):
@@ -612,10 +746,10 @@ def reconnectBelts(bot, ct: Controller) -> bool:
     candidates = _danglingBeltEnds(bot, ct, max_dist=guardianLeash(ct))
     if not candidates:
         return False
-    return _tryPatchDanglingBelts(bot, ct, candidates, core)
+    return _tryPatchDanglingBelts(bot, ct, candidates, core, allow_walk=allow_walk)
 
 
-def finishNearbyBelt(bot, ct: Controller) -> bool:
+def finishNearbyBelt(bot, ct: Controller, *, allow_walk: bool = True) -> bool:
     """Opportunistically finish a dangling ally belt end near this bot's own tile.
 
     `reconnectBelts`/`_danglingBeltEnds` are core-leash-anchored — guardian patrol
@@ -639,6 +773,9 @@ def finishNearbyBelt(bot, ct: Controller) -> bool:
     `_danglingBeltEnds`: several idle units converging on the same known gap
     (exactly the scenario this function exists for) would otherwise each see
     *each other* nearby and defer, and nobody would ever act.
+
+    `allow_walk=False` — see `reconnectBelts`/`_tryPatchDanglingBelts`: keeps the
+    zero-movement adjacent patch available while hostile, drops the walk.
     """
     from main import DANGLING_BELT_SELF_CHEBYSHEV
 
@@ -655,7 +792,7 @@ def finishNearbyBelt(bot, ct: Controller) -> bool:
     )
     if not candidates:
         return False
-    return _tryPatchDanglingBelts(bot, ct, candidates, core)
+    return _tryPatchDanglingBelts(bot, ct, candidates, core, allow_walk=allow_walk)
 
 
 def _patrolWaypoints(bot, ct: Controller) -> list[Position]:

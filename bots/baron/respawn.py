@@ -21,6 +21,9 @@ class SpawnSchedule:
     max_builders_early: int
     max_builders: int
     builder_target_by_ti: tuple[tuple[int, int], ...] = ()
+    # Rounds after game start before the crew may grow past max_builders_early.
+    # ≤0 disables — see main.BUILDER_GROWTH_DELAY_TURNS.
+    growth_delay_turns: int = 0
 
 
 def _apronSites(ct: Controller, core_pos: Position) -> list[Position]:
@@ -60,6 +63,16 @@ def _builderTarget(ct: Controller, schedule: SpawnSchedule) -> int:
         if ti >= min_ti:
             target = count
             break
+
+    # Growth past the early rush is held back until growth_delay_turns has
+    # elapsed. Passive income alone crosses most bank tiers well before any
+    # real turn count justifies the extra crew, and nothing paces spawns
+    # once the target is unlocked, so without this a bracket crossing spawns
+    # its full jump back-to-back. Only clamps growth — never used to shrink
+    # below max_builders_early, so the unpaced rush at game start is untouched.
+    if schedule.growth_delay_turns and schedule.growth_delay_turns > 0:
+        if ct.get_current_round() < schedule.growth_delay_turns:
+            target = min(target, schedule.max_builders_early)
     return max(schedule.max_builders_early, min(target, schedule.max_builders))
 
 

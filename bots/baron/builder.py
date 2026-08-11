@@ -59,6 +59,12 @@
 #    completes (relayEverComplete, slot 0) — before there is any economy an enemy
 #    builder in vision must not keep a guardian off ore.
 # 6. clearBarriers — fire / move to nearest enemy barrier inside the leash only
+# 6a. buildHarvesterOnClearedBarrier — runs ahead of clearBarriers itself: if the
+#        barrier clearBarriers just killed sat on ore (bot.guardianOreBarrier, set
+#        by clearBarriers while firing), build a harvester on it before wandering
+#        off to the next barrier. Ti-starved holds position for up to
+#        GUARDIAN_ORE_WAIT_TURNS turns (main.py) rather than giving up outright,
+#        then forgets the tile so clearBarriers can move on.
 # 7. reconnectBelts — ally conveyor inside the leash aiming at a layable empty
 #        tile → build the patch belt. Facing must be *proven*: a neighbour one step
 #        nearer the core already holding a belt/core, or (2-tile gap) that neighbour
@@ -136,6 +142,14 @@
 #        though an already-placed gunner still opportunistically fires on one)
 # 4. defendHome — near core only; heal core if HP < 500 (no attack branch)
 # 5. healAlly — core → gunner/sentinel → harvester
+# 5b. verifyHomeHarvester — every HARVESTER_VERIFY_INTERVAL_TURNS, re-walk the
+#        belt line of our nearest-core harvester with bot.relayVerify set, which
+#        forces beltFacingOk to prove each tile by vision instead of accepting a
+#        ≤RELAY_LEDGER_TRUST_TURNS-old ledger entry. Without it a belt destroyed
+#        out of sight lingers in local_map as a ghost, relayToCore declares the
+#        line complete without looking, and the builder drops to exploreFrontier
+#        and circles mid-map forever. Sits below every real-work step, so it only
+#        ever spends a turn that was going to be a wander anyway.
 # 6. recheckOreNodes — clear sticky oreSite; prefer empty → ally-blocked → harvester
 # 7. exploreFrontier(outward=False) — last resort, no ore anywhere to claim. Walks to
 #        the nearest tile absent from local_map that borders known space, preferring
@@ -244,8 +258,10 @@ from logistics import (
     exploreFrontier,
     recheckOreNodes,
     relayEverComplete,
+    verifyHomeHarvester,
 )
 from defence import (
+    _buildHarvesterOnClearedBarrier,
     blockGunLine,
     clearBarriers,
     defGun,
@@ -487,6 +503,8 @@ def _runDefaultHome(bot, ct: Controller) -> None:
     #    return
     if healAlly(bot, ct):
         return
+    if finishNearbyBelt(bot, ct):
+        return
     if buildHarvester(bot, ct):
         return
     if maintainHarvester(bot, ct):
@@ -495,8 +513,7 @@ def _runDefaultHome(bot, ct: Controller) -> None:
     # ally belt end (most commonly a relay abandoned mid-build by a builder that
     # died — no on-death hook reports that to OrphanRelayRegistry) might be
     # sitting right next to us. Cheap, self-anchored — see finishNearbyBelt.
-    if finishNearbyBelt(bot, ct):
-        return
+
     # Same idea, for a harvester nobody has started relaying yet — see
     # finishNearbyHarvester.
     if finishNearbyHarvester(bot, ct):
@@ -549,6 +566,12 @@ def runDefault(bot, ct: Controller) -> None:
     # Same idea, for a harvester nobody has started relaying yet — see
     # finishNearbyHarvester.
     if finishNearbyHarvester(bot, ct):
+        return
+    # Below every real-work step, above the last-resort ones: this only fires on
+    # a builder that would otherwise fall through to exploreFrontier's aimless
+    # wander, which is exactly the builder that should be going home to check on
+    # an old harvester whose line may have been cut behind our back.
+    if verifyHomeHarvester(bot, ct):
         return
     if recheckOreNodes(bot, ct):
         return
@@ -657,8 +680,12 @@ def _relayNearlyComplete(bot) -> bool:
 
 def runGuardian(bot, ct: Controller) -> None:
     """Guardian: leash → react → defGun → defSentinel → avoidFire → defendHome
-    → healAlly → clearBarriers → reconnectBelts → economy (last three only while
-    nothing hostile is in vision) → patrol."""
+    → healAlly → buildHarvesterOnClearedBarrier → clearBarriers → reconnectBelts
+    → economy (clearBarriers and economy only while nothing hostile is in
+    vision; buildHarvesterOnClearedBarrier/reconnectBelts/finishNearbyBelt run
+    regardless but drop their walk-to-a-distant-break fallback (n/a for the
+    harvester step, which never walks) while hostile, keeping only the
+    zero-movement adjacent action) → patrol."""
     _resolveCores(bot, ct)
     bot.nearCoreEconomy = False
     if bot.corePos is None:
@@ -716,20 +743,34 @@ def runGuardian(bot, ct: Controller) -> None:
         return
     if healAlly(bot, ct):
         return
+    # Ahead of clearBarriers itself: if a barrier this guardian already killed
+    # sat on ore, claim it before wandering off to the next barrier. Zero
+    # movement (only acts while still adjacent) and a single build/wait action,
+    # so — like reconnectBelts' adjacent-patch case below — it's safe to run
+    # even with something hostile in vision; it can't pull the guardian
+    # anywhere it isn't already standing.
+    if _buildHarvesterOnClearedBarrier(bot, ct):
+        return
     # Barrier clearing is a chore, not a response: 30 HP at 2 dmg is 15 turns and
     # 30 Ti to remove a 3 Ti barrier, so it must never run while anything hostile
     # is in vision. Same gate as the economy below it.
     if not underAttack and clearBarriers(bot, ct):
         return
     # Above the economy: a cut belt zeroes a whole line's throughput, while a new
-    # harvester is only incremental. Repair beats build.
-    if not underAttack and reconnectBelts(bot, ct):
+    # harvester is only incremental. Repair beats build. Called unconditionally
+    # (not gated on `not underAttack`): the adjacent-patch case inside these is a
+    # single build action and no movement, so it's safe even with something
+    # hostile in vision — it doesn't pull the guardian out of position, and
+    # delaying it lets an enemy actively shooting the belt keep taxing Ti on the
+    # same cut turn after turn. Only the "walk to a distant break" fallback
+    # inside `_tryPatchDanglingBelts` still backs off while under attack.
+    if reconnectBelts(bot, ct, allow_walk=not underAttack):
         return
     # Self-anchored fallback: reconnectBelts only looks near the core, but a
     # guardian working an ore/relay under GUARDIAN_ECON_SLACK (or simply
     # patrolling somewhere a dangling tail happens to sit) can be standing right
     # next to a break reconnectBelts will never see. Cheap, opportunistic.
-    if not underAttack and finishNearbyBelt(bot, ct):
+    if finishNearbyBelt(bot, ct, allow_walk=not underAttack):
         return
     if not underAttack and finishNearbyHarvester(bot, ct):
         return
@@ -739,24 +780,23 @@ def runGuardian(bot, ct: Controller) -> None:
 
 
 def runHarasser(bot, ct: Controller) -> None:
-    """Harasser: relay → leash → finishNearbyHarvester → snipe →
-    denyHarvesterSupply → offGun → wallCore → avoidFire → denyOre → denyBelt →
-    seek → seekCore."""
+    """Harasser: leash → snipe → denyHarvesterSupply → offGun → wallCore →
+    avoidFire → denyOre → denyBelt → seek → seekCore.
+
+    Used to start a steal-relay via `finishNearbyHarvester` (belting a nearby
+    un-relayed harvester, ally or enemy, all the way back to our own core) and
+    commit to finishing it once `bot.inRelay` — mirroring `runDefault`'s own
+    bot.inRelay bypass. Removed: a harasser is, by construction, deep in or
+    near enemy territory, so that belt line is long, runs straight through
+    enemy fire the whole way, and is expensive relative to what it protects —
+    worst right at the opening, when a harasser committing to it immediately
+    on spawn tied the unit down instead of harassing. Steal-relays from
+    `runDefault`/`runGuardian` (near-core economy, short lines) are unaffected.
+    """
     _resolveCores(bot, ct)
     bot.nearCoreEconomy = False
     # State-only; the selectors below re-pick this turn. Costs no turn.
     breakBeltDeadlock(bot, ct)
-    # Committed to a relay (started here via finishNearbyHarvester, or handed
-    # off): finish it, ignoring the leash below — mirrors runDefault's own
-    # bot.inRelay bypass. The belt has to walk all the way back to *our* core,
-    # which is definitionally far outside the enemy-core leash, so the leash
-    # check must not fight it. avoidFire mirrors _dodgeWhileRelaying so a
-    # relaying harasser still dodges fire instead of tanking it.
-    if bot.inRelay:
-        if avoidFire(bot, ct, goal=bot.corePos):
-            return
-        maintainHarvester(bot, ct)
-        return
     if not _harassLeashOk(bot, ct):
         # Recall to the region within the leash rather than the literal core
         # tile — moveTowardLeash A*-paths around obstacles; seekCore's own
@@ -764,11 +804,6 @@ def runHarasser(bot, ct: Controller) -> None:
         from main import HARASS_LEASH_CHEBYSHEV
 
         moveTowardLeash(bot, ct, bot.enemyCorePos, radius=HARASS_LEASH_CHEBYSHEV)
-        return
-    # Prefer stealing a fresh, unclaimed enemy harvester over sniping it —
-    # directly resolves harassers destroying a harvester a steal-relay could
-    # have captured alive instead. See finishNearbyHarvester.
-    if finishNearbyHarvester(bot, ct):
         return
     if snipeHarvester(bot, ct):
         return

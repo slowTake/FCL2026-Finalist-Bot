@@ -513,6 +513,28 @@ def breakBeltDeadlock(bot, ct: Controller) -> bool:
     return dropped
 
 
+def _wouldSelfEncircle(ct: Controller, pos: Position, pad: Position) -> bool:
+    """True if barricading `pad` would leave no other cardinal way out.
+
+    `pad` is always exactly cardinal-adjacent here (the `isAdjacent` gate
+    below `_tryForwardBarrier` calls this from), so it occupies one of the
+    four tiles `can_move` checks. Without this, a harasser boxed in by
+    terrain/other buildings on three sides happily seals the fourth with its
+    own barrier, sits motionless for `ENCIRCLED_TURNS`, has
+    `pathing.breakEncirclement` tear the same barrier back down as the
+    cheapest door, and — since the pad is empty again and nothing else about
+    the target enemy belt changed — immediately rebuilds it next turn it's
+    adjacent and off cooldown. See denyBelt's docstring for the loop.
+    """
+    d = pos.direction_to(pad)
+    for other in CARDINALS:
+        if other == d:
+            continue
+        if ct.can_move(other):
+            return False
+    return True
+
+
 def _tryForwardBarrier(bot, ct: Controller, *, adjacent_only: bool) -> bool:
     pads = _forwardBarrierPads(bot, ct)
     if not pads:
@@ -521,6 +543,8 @@ def _tryForwardBarrier(bot, ct: Controller, *, adjacent_only: bool) -> bool:
     if ct.get_action_cooldown() == 0 and _denyBeltCooldownElapsed(bot, ct):
         for pad in pads:
             if not isAdjacent(pos, pad):
+                continue
+            if _wouldSelfEncircle(ct, pos, pad):
                 continue
             if ct.can_build_barrier(pad):
                 ct.build_barrier(pad)
@@ -897,6 +921,8 @@ def denyOre(bot, ct: Controller) -> bool:
     if ct.get_action_cooldown() == 0:
         for ore in candidates:
             if not isAdjacent(pos, ore):
+                continue
+            if _wouldSelfEncircle(ct, pos, ore):
                 continue
             if ct.can_build_barrier(ore):
                 ct.build_barrier(ore)

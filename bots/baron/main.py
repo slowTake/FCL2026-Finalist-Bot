@@ -2,9 +2,10 @@
 
 Store slots (HiveMind v2):
   0  SLOT_RELAY_COMPLETE   bit-packed: bit 0 = a relay has completed (written
-       by builders), bit 1 = CORE_THREAT_BIT, the core sees a turret/builder
-       (written only by the core). Readers must mask — no slot is free, so the
-       guardian-leash signal rides in slot 0's 31 unused bits.
+       by builders), bit 1 = CORE_THREAT_BIT, the core sees an enemy turret
+       (gunner/sentinel/launcher — not a bare builder; written only by the
+       core). Readers must mask — no slot is free, so the guardian-leash
+       signal rides in slot 0's 31 unused bits.
   1–3 SLOT_ORPHAN_1/2/3    orphaned-harvester registry (logistics.py) — the
        last Player-free slots; nothing else may claim them
   4–15 HiveMind-owned — never write from Player
@@ -35,6 +36,17 @@ BUILDER_TARGET_BY_TI: list[tuple[int, int]] = [
     (2000, 10),
     (1000, 7),
 ]
+
+# Rounds after game start before the crew may grow past MAX_BUILDERS_EARLY
+# (≤0 disables). The bank-tier target above is otherwise a pure stock check —
+# passive income alone (10 Ti/4 rounds) crosses the 1000 Ti / 7-builder tier
+# at turn 200 on the nose regardless of whether there's any unclaimed ore left
+# to justify two more units, and since nothing paces the spawns themselves,
+# both land back-to-back the moment the bracket is crossed. This clamps the
+# target back to MAX_BUILDERS_EARLY until the delay elapses; the bank tiers
+# still gate everything past that point exactly as before — this only holds
+# the door shut a while longer, it doesn't replace the bank check.
+BUILDER_GROWTH_DELAY_TURNS = 80
 
 # --- Guardian cap (≤0 / None disables) ---
 # Guardian slots are idx % 5 in (0, 1) — 2 per 5 spawns. Guardians past this rank
@@ -94,6 +106,26 @@ GUARDIAN_LEASH_HOLD_TURNS = 20
 # abandoned mid-build (most commonly its builder died with no on-death hook to
 # report it), not a search that should pull a builder off its own task.
 DANGLING_BELT_SELF_CHEBYSHEV = 3
+
+# --- Harvester line verification (≤0 disables) ---
+# How long a builder waits between verification passes, and how long one of its
+# own harvesters stays "recently verified" before it is eligible again.
+# logistics.verifyHomeHarvester re-walks a harvester's belt line with
+# bot.relayVerify set, which forces vision-only proof — the only way to notice a
+# belt destroyed out of sight, since a ghost entry in local_map otherwise reads
+# as still-built for RELAY_LEDGER_TRUST_TURNS(30). Deliberately longer than that
+# window (so a pass can't be fooled by the very staleness it exists to catch)
+# but short enough that a cut line is found within a few dozen turns. Raise it
+# if verification trips start displacing real economy.
+HARVESTER_VERIFY_INTERVAL_TURNS = 40
+
+# --- Guardian: build on ore uncovered by clearBarriers ---
+# Consecutive Ti-starved turns a guardian holds position on an ore tile it just
+# cleared a barrier off of before giving up on it. Waits rather than abandoning
+# outright — the shared bank is usually just temporarily short, not permanently
+# — but caps it so a guardian can't camp one tile forever if Ti never arrives;
+# once it gives up, clearBarriers is free to move it on to the next barrier.
+GUARDIAN_ORE_WAIT_TURNS = 3
 
 # --- Opportunistic nearby-harvester relay (≤0 disables) ---
 # Chebyshev radius, anchored on the acting bot's own tile, that
@@ -230,7 +262,7 @@ HARASS_DEADLOCK_TURNS = 8
 # threats against). Keeps snipeHarvester/offGun/denyOre/denyBelt/seekHarvester
 # from reaching far-out enemy harvesters that a steal-relay could claim alive
 # instead of the harasser destroying them.
-HARASS_LEASH_CHEBYSHEV = 8
+HARASS_LEASH_CHEBYSHEV = 7
 
 # --- Blocked-route breaker (False disables) ---
 # When A* proves the ore claim unreachable, replan with enemy barriers passable to
@@ -371,7 +403,8 @@ SLOT_PACKED_CORES = 15
 
 # Slot 0 is bit-packed: no store slot is free (all 16 are allocated), but slot 0
 # only ever used 1 of its 32 bits. Bit 0 = a relay has completed (written by
-# builders); bit 1 = the core currently sees a threat (written only by the core).
+# builders); bit 1 = the core currently sees an enemy turret (gunner/sentinel/
+# launcher — a bare builder doesn't count; written only by the core).
 # Every reader must mask — see relayEverComplete / coreThreatened in logistics.
 RELAY_COMPLETE_BIT = 1
 CORE_THREAT_BIT = 2
@@ -390,13 +423,14 @@ DEBUG = True
 from guns import gunnerLoop, sentinelLoop, topUpAmmo
 from hivemind import CoreState, HiveMind, unpack_cores
 from respawn import Respawn, SpawnSchedule
-from builder import _enemyUnitInVision, runBuilderRoles
-from logistics import setCoreThreat
+from builder import runBuilderRoles
+from logistics import enemyTurretInVision, setCoreThreat
 
 SPAWN_SCHEDULE = SpawnSchedule(
     max_builders_early=MAX_BUILDERS_EARLY,
     max_builders=MAX_BUILDERS,
     builder_target_by_ti=tuple(BUILDER_TARGET_BY_TI),
+    growth_delay_turns=BUILDER_GROWTH_DELAY_TURNS,
 )
 
 
@@ -416,6 +450,13 @@ class Player:
         self.relayPath: list[Position] | None = None
         self.relayBuiltTo = -1
         self.relayStuck = 0
+        # Set only for a verifyHomeHarvester pass: makes beltFacingOk refuse the
+        # ledger fallback so the line is proven by eye, not by memory. Cleared by
+        # clearRelay so it can never leak into an ordinary relay.
+        self.relayVerify = False
+        self.lastHarvesterVerifyRound = -999
+        # (x, y) -> round this builder last verified that harvester's line.
+        self.verifiedHarvesters: dict[tuple[int, int], int] = {}
         self.blockadeDoor: tuple[int, int] | None = None
         self.relayPathBlocked = False
         self.relayPathBlockedFrom: tuple[int, int] | None = None
@@ -462,6 +503,11 @@ class Player:
         # rather than relying solely on the reactive re-place that only
         # triggers once the gunner has already landed another hit through it.
         self.gunLineBlockTile: tuple[int, int] | None = None
+        # Ore tile a guardian's own clearBarriers just uncovered (the barrier it
+        # killed sat on Environment.ORE_TITANIUM) — set by clearBarriers, consumed
+        # by defence._buildHarvesterOnClearedBarrier. See GUARDIAN_ORE_WAIT_TURNS.
+        self.guardianOreBarrier: Position | None = None
+        self.guardianOreWaitTurns = 0
 
     def run(self, ct: Controller) -> None:
         self.hivemind.tick(ct)
@@ -490,7 +536,12 @@ class Player:
         # get_nearby_entities() this turn, so the scan is effectively free.
         # The hold window lives here, in core instance state, rather than
         # costing store bits — Player persists across turns.
-        if _enemyUnitInVision(ct):
+        #
+        # Turret-only (enemyTurretInVision: gunner/sentinel/launcher), not
+        # _enemyUnitInVision's turret-or-builder — an enemy builder scouting
+        # past the core isn't a threat the guardian leash needs to tighten
+        # for; only something that can actually shell the core should do that.
+        if enemyTurretInVision(ct):
             self.coreThreatRound = round_n
         setCoreThreat(
             ct, round_n - self.coreThreatRound <= GUARDIAN_LEASH_HOLD_TURNS
