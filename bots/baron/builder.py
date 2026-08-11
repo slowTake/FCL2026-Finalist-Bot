@@ -50,6 +50,14 @@
 #        Caveat: step 2's _reactEnemyTurret runs defendHome/healAlly internally, so
 #        a guardian that can heal something will still do so from inside the line
 #        before ever reaching this step.
+# 3d. patchAdjacentCoreBelt — belt gap that both touches the core footprint
+#        and is already adjacent to this guardian → place it, no walk. Ahead
+#        of defendHome on purpose: defendHome returns True every turn it
+#        heals, which otherwise starves reconnectBelts (parked well below
+#        it) for as long as the core stays damaged, so a guardian stuck
+#        healing never gets a turn to plug a gap sitting right next to it.
+#        Zero-movement by construction — can never pull the guardian off the
+#        core to fix a belt further away; that stays reconnectBelts' job.
 # 4. defendHome — heal core if HP < 500. No attack branch: builder fire is
 #        1.0 Ti/dmg against a gunner's 0.20, and the approach walked a 40 HP
 #        builder into something dealing 10 dmg/turn. Turrets answer turrets.
@@ -268,6 +276,7 @@ from defence import (
     defSentinel,
     finishNearbyBelt,
     maintainGunLineBlock,
+    patchAdjacentCoreBelt,
     patrolHome,
     reconnectBelts,
 )
@@ -679,13 +688,14 @@ def _relayNearlyComplete(bot) -> bool:
 
 
 def runGuardian(bot, ct: Controller) -> None:
-    """Guardian: leash → react → defGun → defSentinel → avoidFire → defendHome
-    → healAlly → buildHarvesterOnClearedBarrier → clearBarriers → reconnectBelts
-    → economy (clearBarriers and economy only while nothing hostile is in
-    vision; buildHarvesterOnClearedBarrier/reconnectBelts/finishNearbyBelt run
-    regardless but drop their walk-to-a-distant-break fallback (n/a for the
-    harvester step, which never walks) while hostile, keeping only the
-    zero-movement adjacent action) → patrol."""
+    """Guardian: leash → react → defGun → defSentinel → avoidFire →
+    patchAdjacentCoreBelt → defendHome → healAlly → buildHarvesterOnClearedBarrier
+    → clearBarriers → reconnectBelts → economy (clearBarriers and economy only
+    while nothing hostile is in vision; patchAdjacentCoreBelt/
+    buildHarvesterOnClearedBarrier/reconnectBelts/finishNearbyBelt run
+    regardless but drop their walk-to-a-distant-break fallback (n/a for
+    patchAdjacentCoreBelt and the harvester step, which never walk) while
+    hostile, keeping only the zero-movement adjacent action) → patrol."""
     _resolveCores(bot, ct)
     bot.nearCoreEconomy = False
     if bot.corePos is None:
@@ -738,6 +748,15 @@ def runGuardian(bot, ct: Controller) -> None:
     # while taking 10 is not, and neither is clearing a barrier or laying a belt.
     # goal=corePos so the dodge retreats homeward and stays inside the leash.
     if avoidFire(bot, ct, goal=bot.corePos):
+        return
+    # Zero-movement — only acts on a belt gap that already touches the core
+    # AND is already adjacent to this guardian — so it can never be the
+    # reason a guardian leaves its healing post. Ahead of defendHome because
+    # defendHome returns True every turn it heals, which otherwise starves
+    # reconnectBelts (parked well below) for as long as the core stays
+    # damaged, and a gap right against the core is usually the one tile a
+    # shelled corridor is missing.
+    if patchAdjacentCoreBelt(bot, ct):
         return
     if defendHome(bot, ct):
         return

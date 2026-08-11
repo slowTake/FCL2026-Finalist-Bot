@@ -13,6 +13,7 @@ from geometry import (
     coreFootprint,
     harvesterClaimedByAlly,
     isAdjacent,
+    manhattanToCore,
     nearCore,
     tileEntity,
 )
@@ -654,9 +655,15 @@ def _defaultOreRank(bot) -> int:
 
 
 def _oreStaggerKey(ore: Position, core: Position | None) -> tuple:
-    """Team-stable sort: closer to core first, then x/y."""
+    """Team-stable sort: closer to core first, then x/y.
+
+    Final tiebreak is raw (x, y) — not mirror-symmetric between two point-
+    mirrored maps' teams, unlike the manhattanToCore term above it. Left as-is:
+    ORE_STAGGER is False by default (main.py), so this path is dormant;
+    revisit if it's ever turned on for a mirrored map.
+    """
     if core is not None:
-        return (manhattan(ore, core), ore.x, ore.y)
+        return (manhattanToCore(ore, core), ore.x, ore.y)
     return (ore.x, ore.y)
 
 
@@ -671,13 +678,20 @@ def _oreConvenienceKey(
     fresh harvester actually starts producing. The weighted-sum blend keeps
     core proximity as a real factor (still breaks close ties toward the more
     defendable option) without letting it override a much closer pick.
+
+    `core_d` is `manhattanToCore`, not raw `manhattan` to the core's anchor
+    tile — the anchor is one corner of a 2x2 footprint, so raw distance is
+    biased by up to 2 tiles depending which corner a team's core happens to
+    occupy. On a mirrored map that bias flips per team and can make one
+    team's builders read a contested node as closer than their own
+    mirror-equivalent safe node while the other team reads it correctly.
     """
     from main import ORE_PICK_CORE_WEIGHT, ORE_PICK_SELF_WEIGHT
 
     self_d = manhattan(ore, self_pos)
     if core is None:
         return (self_d, ore.x, ore.y)
-    core_d = manhattan(ore, core)
+    core_d = manhattanToCore(ore, core)
     score = ORE_PICK_SELF_WEIGHT * self_d + ORE_PICK_CORE_WEIGHT * core_d
     return (score, ore.x, ore.y)
 
@@ -888,8 +902,8 @@ def _shouldClearAllyOreBlock(
     """Clear ally ore blockers unless gunner/sentinel and that ore is threatened.
 
     A **barrier** on the enemy's side of the midline (`bot` supplied, and
-    `manhattan(tile, ally_core) > manhattan(tile, enemy_core)`) is left alone.
-    That's the exact test `offense.denyOre` uses to decide a tile is worth
+    `manhattanToCore(tile, ally_core) > manhattanToCore(tile, enemy_core)`) is
+    left alone. That's the exact test `offense.denyOre` uses to decide a tile is worth
     denying in the first place — a barrier sitting there is presumptively a
     live denial, not stray clutter. Without this, a default/guardian running
     low on nearby ore (`_allowOreSite` has no leash outside `nearCoreEconomy`,
@@ -915,7 +929,7 @@ def _shouldClearAllyOreBlock(
         if (
             core is not None
             and enemy is not None
-            and manhattan(tile, core) > manhattan(tile, enemy)
+            and manhattanToCore(tile, core) > manhattanToCore(tile, enemy)
         ):
             return False
     return True
@@ -985,8 +999,11 @@ def pickMaintainOre(bot, ct: Controller) -> Position | None:
     best_key = None
 
     def score(ore: Position) -> tuple:
+        # manhattanToCore, not raw manhattan to the core's anchor tile — see
+        # _oreConvenienceKey's docstring for why raw anchor distance is biased
+        # per team on a mirrored map.
         if core is not None:
-            return (manhattan(ore, core), manhattan(ore, pos))
+            return (manhattanToCore(ore, core), manhattan(ore, pos))
         return (manhattan(ore, pos),)
 
     def consider(ore: Position) -> None:
@@ -2331,8 +2348,11 @@ def _pickRecheckOre(bot, ct: Controller) -> Position | None:
     harv_key = None
 
     def score(ore: Position):
+        # manhattanToCore, not raw manhattan to the core's anchor tile — see
+        # _oreConvenienceKey's docstring for why raw anchor distance is biased
+        # per team on a mirrored map.
         if core is not None:
-            return (manhattan(ore, core), manhattan(ore, pos))
+            return (manhattanToCore(ore, core), manhattan(ore, pos))
         return (manhattan(ore, pos),)
 
     def consider(ore: Position, *, kind: str) -> None:

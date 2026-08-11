@@ -19,6 +19,7 @@ from geometry import (
     coreFootprint,
     harvesterClaimedByAlly,
     isAdjacent,
+    manhattanToCore,
 )
 from logistics import moveToward, pathKnownBlocked
 from pathing import CARDINALS, inBounds, manhattan, walkPassable
@@ -411,14 +412,21 @@ def _enemyBeltAt(ct: Controller, tile: Position) -> bool:
 
 
 def _oreCloserToAlly(bot, ct: Controller, pad: Position) -> bool:
-    """True if pad is ore nearer ally core than enemy (don't wall our expansion)."""
+    """True if pad is ore nearer ally core than enemy (don't wall our expansion).
+
+    `manhattanToCore`, not raw `manhattan` to each core's anchor tile — the
+    anchor is one corner of a 2x2 footprint, so raw distance is biased by up
+    to 2 tiles depending which corner a team's core happens to occupy. On a
+    mirrored map that bias flips per team and can misjudge which side of the
+    midline an ore tile is actually on.
+    """
     if ct.get_tile_env(pad) != Environment.ORE_TITANIUM:
         return False
     ally = bot.corePos
     enemy = bot.enemyCorePos
     if ally is None or enemy is None:
         return False
-    return manhattan(pad, ally) <= manhattan(pad, enemy)
+    return manhattanToCore(pad, ally) <= manhattanToCore(pad, enemy)
 
 
 def _forwardBarrierPads(bot, ct: Controller) -> list[Position]:
@@ -877,7 +885,11 @@ def _denyOreCandidates(bot, ct: Controller) -> list[Position]:
         # out of vision, and the env check is redundant anyway: it is ore by
         # construction. Getting this wrong is silent, because Player.run swallows the
         # exception and the harasser simply does nothing for the rest of the game.
-        if manhattan(ore, ally) <= manhattan(ore, enemy):
+        # manhattanToCore, not raw manhattan to each core's anchor tile — see
+        # _oreCloserToAlly's docstring for why raw anchor distance is biased
+        # per team on a mirrored map. Must stay the same test as that helper
+        # and logistics._shouldClearAllyOreBlock (see its docstring).
+        if manhattanToCore(ore, ally) <= manhattanToCore(ore, enemy):
             continue
         # Occupied nodes are somebody else's problem: a live enemy harvester belongs
         # to snipeHarvester, and anything else already denies the tile for us.

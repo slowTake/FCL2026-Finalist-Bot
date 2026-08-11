@@ -12,7 +12,7 @@ from fcode import (
     Position,
 )
 
-from geometry import coreFootprint
+from geometry import coreFootprint, manhattanToCore
 from pathing import CARDINALS, inBounds
 
 
@@ -165,14 +165,40 @@ class Respawn:
             from features import oreSideBuckets
 
             left, right = oreSideBuckets(hivemind.map_id, core_pos, goal)
-            side_pool = left if (predicted_idx // 5) % 2 == 0 else right
-            if not side_pool:
-                side_pool = right or left
-            if side_pool:
-                spawn_goal = min(
-                    side_pool,
-                    key=lambda o: abs(o.x - core_pos.x) + abs(o.y - core_pos.y),
+
+            # Rank the two buckets by distance to home, not by which one
+            # oreSideBuckets happened to call "left" — "left"/"right" come from
+            # a fixed 90deg-CCW rotation of *this* core's own core->enemy
+            # vector, which has no notion of which side is actually nearer
+            # home. On a map where both cores share a coordinate (e.g. heart:
+            # both at y=9), that rotation's handedness is a function of which
+            # side of the map a team's core sits on — so it deterministically
+            # handed the *same* team the richer/nearer bucket first, every
+            # match, regardless of which side genuinely was nearer. Distance-
+            # ranking instead makes "group 0 goes first" mean the same thing
+            # (closer, faster to reach) for both teams.
+            def _nearestInPool(pool: list[Position]) -> int:
+                return min(
+                    (manhattanToCore(o, core_pos) for o in pool), default=10**9
                 )
+
+            near_pool, far_pool = (
+                (left, right) if _nearestInPool(left) <= _nearestInPool(right)
+                else (right, left)
+            )
+            side_pool = near_pool if (predicted_idx // 5) % 2 == 0 else far_pool
+            if not side_pool:
+                side_pool = far_pool or near_pool
+            if side_pool:
+                # manhattanToCore, not raw distance to core_pos (the core's
+                # top-left/min-corner anchor tile) — the anchor is one specific
+                # corner of the 2x2 footprint, so raw distance is biased by up
+                # to 2 tiles depending which corner a team's core happens to
+                # occupy. On a mirrored map that bias flips per team: the same
+                # pitfall fixed in logistics.py's ore pickers (see
+                # geometry.manhattanToCore's docstring), just here for which
+                # ore a fresh default's spawn tile gets biased toward.
+                spawn_goal = min(side_pool, key=lambda o: manhattanToCore(o, core_pos))
 
         sites = _apronSites(ct, core_pos)
         sites.sort(key=lambda p: abs(p.x - spawn_goal.x) + abs(p.y - spawn_goal.y))
