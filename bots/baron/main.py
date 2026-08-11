@@ -127,6 +127,50 @@ HARVESTER_VERIFY_INTERVAL_TURNS = 40
 # once it gives up, clearBarriers is free to move it on to the next barrier.
 GUARDIAN_ORE_WAIT_TURNS = 3
 
+# --- Harvester build: Ti-starved hold (≤0 disables) ---
+# Consecutive turns a builder standing next to its claimed ore pad holds
+# position waiting for the bank to reach the harvester cost, before giving the
+# pad up. Same reasoning and same default as GUARDIAN_ORE_WAIT_TURNS above,
+# applied to the two *main* build sites (buildHarvester's approach, checkOre's
+# empty branch) rather than only the guardian's cleared-barrier case.
+#
+# Without it those sites read `can_build_harvester() == False` and cannot tell
+# "this tile is unbuildable" from "we're 4 Ti short this turn" — the engine
+# folds affordability into the same boolean. They returned False either way,
+# which drops the builder through the rest of runDefault to recheckOreNodes /
+# a fresh pick, and lets moveToward walk it *onto* the pad it was going to
+# build on (then checkOre steps it back off in an arbitrary direction). The
+# observed symptom is a builder arriving at ore and wandering away from it.
+# Holding costs at most this many idle turns; the bank refills from any live
+# harvester in a fraction of that.
+HARVESTER_TI_WAIT_TURNS = 5
+
+# --- Early ore reach cap (≤0 disables) ---
+# Max Manhattan distance from the core footprint (geometry.manhattanToCore) that
+# a *fresh* empty-ore claim may sit at, during the opening. Existing harvesters
+# are never filtered by this — it caps how far we reach for something new, not
+# how far we maintain what we already own.
+#
+# Over-reach is expensive twice over: a relay to distant ore is a long line of
+# 3 Ti belts that delays the 20 Ti harvester meant to pay for it, and the
+# further out the claim, the likelier the trip is interrupted — leaving belts
+# with nothing on the end. Preferring near ore early compounds the other way:
+# the first harvester funds the second, and a short line is itself a merge
+# target for the next claim (see RELAY_MERGE_MAX_HOPS).
+#
+# 12 is read off the map tables, not guessed. Across the 15 active maps the
+# median ore sits ~12 Manhattan from its core while the farthest run 23-36, so
+# 12 cuts the far tail while still leaving at least 4 candidate nodes on every
+# core in the pool (a cap of 8 starves `hive` to a single node). pickEmptyOre
+# also falls back to the unfiltered pool if the cap would empty it — the same
+# concession skippedOres and _dropSkipped already make — so this can never
+# starve a builder outright; worst case it is simply ignored.
+ORE_REACH_EARLY = 12
+# Rounds the cap applies for. After this the whole ore field is fair game again:
+# the economy is running by then, a long line is affordable, and the outer ring
+# is exactly what late expansion is for.
+ORE_REACH_EARLY_TURNS = 150
+
 # --- Opportunistic nearby-harvester relay (≤0 disables) ---
 # Chebyshev radius, anchored on the acting bot's own tile, that
 # finishNearbyHarvester searches for an un-relayed harvester (ally or, if
@@ -179,11 +223,19 @@ GUARDIAN_PATROL_OFFSET = 3
 # tile's needed facing is likewise never recomputed if it's already a
 # provably-connected conveyor in its own right — see neededBeltFacing.
 RELAY_MERGE_ENABLED = True
-# Hop budget for _relayReachesCore's forward-walk. Also bounds worst-case
-# per-turn cost, since the merge goal is evaluated on every node A* expands —
-# capped low enough to stay well inside the 10ms/turn CPU budget even against
-# a long belt line, generous enough to span a normal relay's length.
-RELAY_MERGE_MAX_HOPS = 10
+# Hop budget for _relayReachesCore's forward-walk: how far along a belt chain we
+# will follow stored facings while proving the chain actually feeds the core. A
+# belt further than this from the core cannot be *proven* connected, so it is
+# rejected as a merge target — which silently disqualified the outer half of
+# every long line, exactly where merging saves the most belts.
+#
+# Was 10, which is shorter than the ore-to-core distance on most of the pool:
+# across the 15 active maps the median ore sits ~12 Manhattan from its core and
+# the farthest run 23-36 (snowflake 36, saga 34, hive 33). 40 covers the longest
+# real chain with margin. Cost is bounded by memoization, not by this number —
+# _relayReachesCore caches per starting tile for the whole pickRelayPath call, so
+# the walk is O(distinct belt tiles), not O(nodes A* expands).
+RELAY_MERGE_MAX_HOPS = 40
 
 # --- Steal enemy harvesters (False disables) ---
 # A default's ore-scan (pickMaintainOre / _pickRecheckOre / checkOre) normally
@@ -241,6 +293,29 @@ ORE_BLOCK_MEMORY_TURNS = 30
 # trusted belt entry can silently mark a broken relay complete, a materially
 # worse failure than misjudging one ore tile.
 RELAY_LEDGER_TRUST_TURNS = 30
+
+# --- Outbound relay (False disables, restoring the plain walk exactly) ---
+# Lay the belt line core→ore *during the walk out* instead of only ore→core
+# after arriving. A builder claims its ore site before it starts walking
+# (buildHarvester sets bot.oreSite, then moveToward one tile a turn), and that
+# walk leaves the action channel completely idle — move and action cooldowns
+# are separate counters, and relayToCore already places a belt and steps in the
+# same turn. So the belts cost titanium, not turns: the line lands ~N+3 instead
+# of ~2N+1 for an N-tile corridor, roughly halving time-to-first-titanium.
+#
+# Safe to build in reverse because neededBeltFacing is a pure function of
+# (path, idx, core_pos) — it never reads the builder's position, so a line laid
+# core→ore is identical to one laid ore→core. Outbound is strictly an
+# optimization layer: it never destroys anything, never sets bot.inRelay (which
+# would lock out every defence step), and never consumes a turn the plain walk
+# would have spent moving. The inbound relayToCore remains the source of truth
+# and closes any gap outbound skipped. Off ⇒ byte-identical to the old walk.
+OUTBOUND_RELAY = True
+# Failed placements against one tile before outbound gives up for this claim and
+# falls back to the plain walk (inbound repairs it later). Mirrors relayStuck's
+# own 3-strike limit. ≤0 never disengages — not recommended: a barriered tile is
+# unwalkable, so the builder would sit beside it for the rest of the trip.
+OUTBOUND_STUCK_LIMIT = 3
 
 # --- Ore deadlock breaker (≤0 disables) ---
 # Turns a default builder may sit motionless outside a relay before it drops its
@@ -460,6 +535,31 @@ class Player:
         self.blockadeDoor: tuple[int, int] | None = None
         self.relayPathBlocked = False
         self.relayPathBlockedFrom: tuple[int, int] | None = None
+        # Outbound relay (OUTBOUND_RELAY). Deliberately its own `out*` family
+        # rather than reusing the `relay*` fields: bot.inRelay early-returns
+        # every defence step, buildHarvester itself and the recheck machinery,
+        # so an outbound builder must not look like it is mid-relay.
+        self.outPath: list[Position] | None = None
+        # The ore site outPath was planned for — the cache key. A claim that
+        # moves invalidates the path.
+        self.outPathOrigin: tuple[int, int] | None = None
+        # Work frontier, high-water: the next tile to build is outBuiltFrom - 1.
+        # A frontier, *not* a completeness claim — it may sit above a gap
+        # outbound declined to fill. Inbound's own watermark is the authority.
+        self.outBuiltFrom = 0
+        self.outStuck = 0
+        # One relay replan per builder per turn — buildHarvester can decline and
+        # fall through to checkOre with a different tile in the same turn.
+        self.outPlannedTurn = -1
+        # Ore site outbound has given up on for good. Keyed to the tile, not the
+        # relay, so clearRelay must NOT wipe it — otherwise the next turn just
+        # replans the same doomed corridor.
+        self.outDisabledFor: tuple[int, int] | None = None
+        # Ti-starved hold at an ore pad (HARVESTER_TI_WAIT_TURNS). Keyed to the
+        # tile so moving to a different pad restarts the budget rather than
+        # inheriting a partly-spent one.
+        self.harvesterWaitTile: tuple[int, int] | None = None
+        self.harvesterWaitTurns = 0
         self.lastPathFailed = False
         self.lastPathFailedTarget: tuple[int, int] | None = None
         self.cachedPath: list[Position] | None = None

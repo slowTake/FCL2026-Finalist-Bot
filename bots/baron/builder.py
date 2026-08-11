@@ -132,7 +132,17 @@
 #      6. recheckOreNodes — near-core empty → ally-blocked → harvester
 #    After age gate (after react):
 # 1. buildHarvester — empty ore in vision / HiveMind → build;
-#        skip ore if visible enemy gunner is aiming at that tile
+#        skip ore if visible enemy gunner is aiming at that tile.
+#        The walk out to a claimed pad now lays the belt line core→ore as it
+#        goes (_outboundRelayStep, OUTBOUND_RELAY in main.py) instead of walking
+#        empty-handed: move and action cooldowns are separate counters, so the
+#        belts cost titanium, not turns — an N-tile line lands ~N+3 instead of
+#        ~2N+1. Falls back to the plain moveToward whenever outbound declines,
+#        and hands its corridor to the relay on arrival so relayToCore verifies
+#        that line rather than replanning a second one from the other end.
+#        Strictly an optimization layer: never destroys anything, never sets
+#        inRelay, never consumes a turn the plain walk would have spent moving.
+#        See CONTEXT.md's OutboundRelay.
 # 2. maintainHarvester
 #    2a. checkOre — harvester → relayToCore (team-blind by default: an
 #        enemy-owned harvester is relayed the same as our own, minus the build

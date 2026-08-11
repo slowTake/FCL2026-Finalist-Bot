@@ -60,6 +60,14 @@ def clearRelay(bot) -> None:
     # builder — leaking it into the next relay would make every ordinary build
     # re-walk its own corridor. See verifyHomeHarvester.
     bot.relayVerify = False
+    # Outbound state dies with the relay so breakOreDeadlock and runGuardian's
+    # under-attack abort drop it too. `outDisabledFor` is deliberately NOT
+    # cleared: it is keyed to an ore tile rather than to this relay, and wiping
+    # it here would let the next turn replan the same corridor outbound has
+    # already proven it cannot build.
+    bot.outPath = None
+    bot.outPathOrigin = None
+    bot.outStuck = 0
 
 
 def abortRelay(bot) -> None:
@@ -840,6 +848,22 @@ def pickEmptyOre(bot, ct: Controller) -> Position | None:
     if not eligible:
         return None
 
+    # Early reach cap: don't claim ore we can't afford to relay yet. Falls back
+    # to the uncapped pool if it would empty it, the same concession the
+    # blacklist below makes — a cap that leaves nothing to do is worse than a
+    # distant node. Fresh claims only; maintaining an existing harvester is
+    # never filtered by this (pickMaintainOre doesn't call here).
+    from main import ORE_REACH_EARLY, ORE_REACH_EARLY_TURNS
+
+    if (
+        core is not None
+        and ORE_REACH_EARLY > 0
+        and ct.get_current_round() < ORE_REACH_EARLY_TURNS
+    ):
+        near = [o for o in eligible if manhattanToCore(o, core) <= ORE_REACH_EARLY]
+        if near:
+            eligible = near
+
     # Honour the deadlock/recheck blacklist, but fall back if it empties the pool
     skipped = getattr(bot, "skippedOres", set())
     unskipped = [o for o in eligible if (o.x, o.y) not in skipped]
@@ -1187,7 +1211,7 @@ def _mergeCandidateNeighbor(
     `_relayReachesCore` is memoized per `pickRelayPath` call, which matters
     because `is_goal` calls this on every node A* expands.
     """
-    from defence import _allyBuilderNear, _isBeltOrCore
+    from defence import _isBeltOrCore
 
     footprint = coreFootprint(core_pos)
     for d in CARDINALS:
@@ -1201,12 +1225,14 @@ def _mergeCandidateNeighbor(
         # No `_allyBuilderNear` guard here: it rejects on *any* other ally builder
         # within Chebyshev 2, and the thing it protects — a builder's
         # not-yet-committed relay head — by definition does not reach the core,
-        # so the connectivity proof immediately above already excludes it. The
+        # so the connectivity proof immediately below already excludes it. The
         # proximity heuristic only added false negatives, concentrated near the
         # core where ally builders congregate.
+        #
+        # (The guard was documented as removed by the commit that wrote this
+        # comment, but the `continue` itself survived — so it kept suppressing
+        # merges for another release. Now actually gone.)
         if not _relayReachesCore(bot, ct, near, core_pos, cache=cache):
-            continue
-        if _allyBuilderNear(ct, near):
             continue
         return near
     return None
@@ -1490,6 +1516,53 @@ def extendRelayWatermark(
     return built_to
 
 
+_MERGE_ANCHOR_LIMIT = 8
+
+
+def _mergeHeuristicAnchors(bot, ct: Controller, origin: Position) -> list[Position]:
+    """Nearest few ally belt tiles to `origin`, as extra heuristic targets.
+
+    `pickRelayPath`'s heuristic used to be `manhattan(p, core_pos)` outright,
+    which is *inadmissible* once the merge goal exists: a tile cardinally
+    adjacent to a connected ally belt IS a goal, so its true remaining cost is
+    0, but the heuristic still charges it the full distance to the core.
+    `astarFromSeeds` returns on the first goal it pops, and f = g + h, so a
+    merge two tiles away in the opposite direction from the core sat far down
+    the queue while core-ward nodes got popped first — the search returned a
+    long independent line and the merge never fired. That is the single
+    biggest reason relays did not branch into existing infrastructure.
+
+    Taking `min(distance-to-core, distance-to-a-nearby-belt)` restores
+    admissibility. Deliberately does **not** prove connectivity: an
+    unconnected belt is not a goal, so counting it only makes the heuristic
+    smaller than the truth, which is the safe direction — admissible, just
+    slightly more exploration. The goal test still proves connectivity properly
+    via `_relayReachesCore`.
+
+    Capped at `_MERGE_ANCHOR_LIMIT` nearest tiles so the per-node cost stays a
+    handful of integer comparisons rather than a scan of every belt we own —
+    the heuristic runs on every node A* expands, and this bot has an open
+    exec-time TLE to stay clear of.
+    """
+    from main import RELAY_MERGE_ENABLED
+
+    if not RELAY_MERGE_ENABLED:
+        return []
+    me = ct.get_team()
+    scored: list[tuple[int, int, int]] = []
+    for (x, y), cell in bot.hivemind.local_map.items():
+        ent = cell.get("entity")
+        if not ent or ent.get("team") != me:
+            continue
+        if ent.get("type") != EntityType.CONVEYOR:
+            continue
+        scored.append((abs(origin.x - x) + abs(origin.y - y), x, y))
+    if not scored:
+        return []
+    scored.sort()
+    return [Position(x, y) for _d, x, y in scored[:_MERGE_ANCHOR_LIMIT]]
+
+
 def pickRelayPath(
     bot,
     ct: Controller,
@@ -1532,13 +1605,26 @@ def pickRelayPath(
             if ok(n):
                 seeds.append(n)
 
+    # Admissible with the merge goal, unlike a bare distance-to-core — see
+    # _mergeHeuristicAnchors. Without this the search reached core-adjacency
+    # before it would ever pop a nearby merge, and relays never branched.
+    anchors = _mergeHeuristicAnchors(bot, ct, origin)
+
+    def heuristic(p: Position) -> int:
+        best = manhattan(p, core_pos)
+        for a in anchors:
+            d = abs(p.x - a.x) + abs(p.y - a.y)
+            if d < best:
+                best = d
+        return best
+
     path = None
     if seeds:
         path = astarFromSeeds(
             seeds,
             is_passable=ok,
             is_goal=is_goal,
-            heuristic=lambda p: manhattan(p, core_pos),
+            heuristic=heuristic,
             max_iters=PATH_MAX_ITERS,
         )
     if path is None:
@@ -1558,6 +1644,251 @@ def pickRelayPath(
     bot.relayPathBlocked = path is None
     bot.relayPathBlockedFrom = (origin.x, origin.y) if path is None else None
     return path
+
+
+def _nearestPathIdx(pos: Position, path: list[Position]) -> int:
+    """Index of the path tile nearest `pos`, ties broken toward the core end.
+
+    Seeds the outbound frontier so it can never walk a builder *backward*: work
+    starts at or below wherever the builder already sits on the corridor. A
+    fresh spawn on the core apron is equidistant from two corridor tiles about
+    as often as not, and the core-side tie-break puts it at the far end where
+    the whole line is still to build.
+    """
+    best_i = 0
+    best_d = 10**9
+    for i, tile in enumerate(path):
+        d = manhattan(pos, tile)
+        if d <= best_d:  # <= so the highest (core-side) index wins ties
+            best_d = d
+            best_i = i
+    return best_i
+
+
+def _outboundLeashOk(bot, ct: Controller, path: list[Position]) -> bool:
+    """Whole outbound corridor inside the guardian leash (guardian economy only).
+
+    `GUARDIAN_ECON_SLACK` already widens `_guardianLeashOk` while `oreSite` is
+    set, which covers the ore tile itself — `_allowOreSite` confines a guardian's
+    claims to `DEFEND_HOME_CHEBYSHEV` under `nearCoreEconomy` anyway. What it does
+    not cover is that outbound walks the **relay** path, and `relayPassable` is
+    strictly stricter than `walkPassable`: the corridor may detour around a
+    building where the plain walk went straight. A detour that pokes past
+    leash+slack makes `_guardianLeashOk` fail, `moveTowardLeash` marches the
+    guardian home, the economy sends it straight back out — the exact oscillation
+    class this codebase has fought before (see GUARDIAN_PATROL_OFFSET).
+
+    Checked once at plan time, not per turn: rejecting the path outright and
+    falling back to the plain walk is the cheap, non-oscillating answer.
+    """
+    core = bot.corePos
+    if core is None:
+        return True
+    from main import GUARDIAN_ECON_SLACK
+
+    limit = guardianLeash(ct) + (GUARDIAN_ECON_SLACK or 0)
+    return all(chebyshevToCore(tile, core) <= limit for tile in path)
+
+
+def _outboundPlan(bot, ct: Controller, oreTile: Position) -> bool:
+    """Plan (once per claim) the corridor outbound will build. True if usable.
+
+    Cached on `outPathOrigin`; a claim that moves invalidates it. `outPlannedTurn`
+    caps this at one A* per builder per turn — `buildHarvester` can decline and
+    fall through to `maintainHarvester`/`checkOre` with a *different* tile in the
+    same turn, and this bot already has an open exec-time TLE, so a second
+    800-iteration search in one turn is not affordable. For the same reason the
+    plan is charged against `MAX_PATH_SEARCHES_PER_TURN` — a deliberate deviation
+    from `relayToCore`, which does not pay that budget.
+
+    `pickRelayPath` reads `bot.oreSite` (for `ore_blocked`) and writes
+    `bot.relayPathBlocked` / `relayPathBlockedFrom`. Both are saved and restored
+    around the call: those verdicts describe a *running* relay and feed
+    `openBlockedRoute`'s door search, which must not be handed a verdict about a
+    relay that isn't running.
+    """
+    from main import MAX_PATH_SEARCHES_PER_TURN, OUTBOUND_RELAY
+
+    if not OUTBOUND_RELAY:
+        return False
+    key = (oreTile.x, oreTile.y)
+    if getattr(bot, "outDisabledFor", None) == key:
+        return False
+    if bot.outPath is not None and bot.outPathOrigin == key:
+        return True
+    if bot.outPlannedTurn == bot.hivemind.global_turn:
+        return False
+    core = _allyCorePos(bot, ct)
+    if core is None:
+        return False
+    searches = getattr(bot, "pathSearchesThisTurn", 0)
+    if MAX_PATH_SEARCHES_PER_TURN and searches >= MAX_PATH_SEARCHES_PER_TURN:
+        return False
+    bot.pathSearchesThisTurn = searches + 1
+    bot.outPlannedTurn = bot.hivemind.global_turn
+
+    # `bot.oreSite` is already `oreTile` at every entry to this function —
+    # buildHarvester assigns it before it starts walking, and all four checkOre
+    # callers assign it immediately before the call — which is what makes
+    # pickRelayPath's `ore_blocked` exclude the pad the harvester itself wants.
+    # So there is nothing to swap in, and nothing to restore.
+    saved_blocked = bot.relayPathBlocked
+    saved_blocked_from = bot.relayPathBlockedFrom
+    path = pickRelayPath(bot, ct, oreTile, core)
+    # Those two verdicts describe a *running* relay and feed openBlockedRoute's
+    # door search, which must never be handed a verdict about a relay that isn't
+    # running. Restored by plain assignment rather than try/finally: the engine's
+    # bot validator rejects `finally` blocks outright (and bare `except:`).
+    bot.relayPathBlocked = saved_blocked
+    bot.relayPathBlockedFrom = saved_blocked_from
+
+    if not path:
+        bot.outDisabledFor = key
+        return False
+    if getattr(bot, "nearCoreEconomy", False) and not _outboundLeashOk(bot, ct, path):
+        bot.outDisabledFor = key
+        return False
+
+    bot.outPath = path
+    bot.outPathOrigin = key
+    bot.outBuiltFrom = min(len(path), _nearestPathIdx(ct.get_position(), path) + 1)
+    bot.outStuck = 0
+    return True
+
+
+def _outboundRelayStep(bot, ct: Controller, oreTile: Position) -> bool:
+    """Walk toward `oreTile` along the relay corridor, laying it core→ore.
+
+    Drop-in replacement for the bare `moveToward(bot, ct, oreTile)` on the way to
+    a claimed ore site. Returns True if the turn is consumed; False means "not my
+    job", and the caller falls back to the plain walk.
+
+    **The belt is a free rider on the action channel.** Move and action cooldowns
+    are independent counters, so placing a conveyor costs nothing the walk was
+    going to use — which is why this can never make arrival slower than today.
+    Every outcome other than a successful placement simply means *keep walking*:
+    the gap is left for the inbound `relayToCore`, which remains the sole
+    authority on whether a line is complete.
+
+    Two rules earn that guarantee, and both matter:
+
+    * A tile that could **not** be built is never stepped onto. `build_conveyor`
+      may not target the builder's own tile, so standing on a tile we failed to
+      lay guarantees failing it again next turn and then having to step off —
+      precisely the ping-pong this avoids.
+    * Movement along the corridor is a **direct cardinal step**, never
+      `moveToward`. Relay paths step cardinally and `isAdjacent` is Manhattan-1,
+      so once on the corridor the next frontier tile is always exactly one step
+      away. Routing to it through `moveToward` would rewrite `cachedPathTarget`
+      every turn (the frontier index changes) and force a fresh 800-iteration A*
+      per outbound turn. Stepping directly leaves net CPU *below* today's
+      baseline, which pathfinds to the ore on every walk turn.
+
+    Deliberately never destroys anything — no `clearBeltObstacle`, no `destroy`,
+    no `fire`. That keeps outbound wholly out of the failure class where a belt
+    placed on a guess gets torn out again (see `defence._reconnectFacing`).
+    """
+    from main import OUTBOUND_STUCK_LIMIT
+
+    if not _outboundPlan(bot, ct, oreTile):
+        return False
+    path = bot.outPath
+    core = _allyCorePos(bot, ct)
+    if core is None or not path:
+        return False
+
+    # Descend past tiles already carrying the right belt (an ally's work, or our
+    # own from an earlier turn). Mirrors extendRelayWatermark, other direction.
+    idx = bot.outBuiltFrom - 1
+    while idx >= 0 and beltFacingOk(
+        bot,
+        ct,
+        path[idx],
+        neededBeltFacing(bot, ct, path, idx, core),
+        local_map=bot.hivemind.local_map,
+    ):
+        bot.outBuiltFrom = idx
+        idx -= 1
+    if idx < 0:
+        return False  # corridor already stands — just walk in and build
+
+    tile = path[idx]
+    pos = ct.get_position()
+    adjacent = isAdjacent(pos, tile)
+
+    placed = False
+    if adjacent and ct.get_action_cooldown() == 0:
+        needed = neededBeltFacing(bot, ct, path, idx, core)
+        result = placeRelayBelt(ct, tile, needed)
+        if result == "placed":
+            bot.outBuiltFrom = idx
+            bot.outStuck = 0
+            placed = True
+        elif result == "failed":
+            # Something is genuinely in the way. Only *this* counts toward the
+            # disengage limit — "waiting" is a Ti-starved or not-yet-in-vision
+            # bank problem that resolves on its own, and counting it would give
+            # up on a perfectly good corridor over a few lean turns. Same
+            # distinction placeRelayBelt's own docstring draws for relayStuck.
+            bot.outStuck = getattr(bot, "outStuck", 0) + 1
+            if OUTBOUND_STUCK_LIMIT > 0 and bot.outStuck >= OUTBOUND_STUCK_LIMIT:
+                bot.outDisabledFor = bot.outPathOrigin
+                bot.outPath = None
+                return moveToward(bot, ct, oreTile)
+
+    if ct.get_move_cooldown() != 0:
+        # Action may still have fired; either way the move channel is spent.
+        return placed
+
+    if adjacent:
+        if not placed:
+            # Can't stand on a tile we failed to lay — see the docstring. Walk to
+            # the ore instead and let inbound pick this tile up later.
+            return moveToward(bot, ct, oreTile)
+        # Step onto the tile only when approaching it from the core side, which
+        # is the ordinary case (we stand on path[idx+1] and the step carries us
+        # one tile further out). A fallback walk can leave the builder *ore-ward*
+        # of the frontier instead, and stepping on from there would march it back
+        # toward the core — undoing the walk it is here to make. The terminal tile
+        # has no path[idx+1]; the builder reaches it off-corridor from the apron,
+        # and stepping on is how it joins the corridor.
+        if idx + 1 >= len(path) or pos == path[idx + 1]:
+            step = travelFacing(pos, tile)
+            if step != Direction.CENTRE and ct.can_move(step):
+                ct.move(step)
+            return True
+        return moveToward(bot, ct, oreTile)
+
+    # Off-corridor: getting onto it is the one place a real path search is worth
+    # it (initial approach, or recovery after a dodge).
+    return moveToward(bot, ct, tile)
+
+
+def _handOverOutboundPath(bot, tile: Position) -> None:
+    """Arm the relay with the corridor outbound just built, when it serves `tile`.
+
+    Replaces a bare `bot.relayPath = None` at every site that arms a relay on
+    arrival. Without the handover, `relayToCore` replans from the *ore* end with
+    different vision than the outbound plan had from the core end — and since
+    `relayPassable` treats fogged tiles as passable, the two searches routinely
+    return different equal-cost corridors. The builder would then lay a second
+    parallel line beside the one it just walked along: strictly worse than never
+    having built outbound at all. Handing the path over is what makes arrival
+    free — the watermark walks the tiles already standing and completes the relay
+    on the spot.
+
+    Guarded on tile identity because `buildHarvester`'s fast path scans all eight
+    neighbours and may claim a *different* ore than the one outbound planned for;
+    handing a corridor for ore A to a relay for ore B would build a line to
+    nowhere. `relayBuiltTo` still resets to -1: inbound re-derives what is
+    actually standing by looking, and never trusts outbound's frontier.
+    """
+    path = getattr(bot, "outPath", None)
+    if path and getattr(bot, "outPathOrigin", None) == (tile.x, tile.y):
+        bot.relayPath = path
+    else:
+        bot.relayPath = None
+    bot.relayBuiltTo = -1
 
 
 def _replanRelayOrAbort(
@@ -1820,6 +2151,57 @@ def bid_is_belt(ct: Controller, tile: Position) -> bool:
 # ------------------------------------------------------------------
 
 
+def _holdForHarvesterTi(bot, ct: Controller, tile: Position) -> bool:
+    """True ⇒ spend this turn standing next to `tile` waiting for harvester Ti.
+
+    `ct.can_build_harvester` folds affordability into the same boolean as
+    legality, so a build site that only consults it cannot tell "this pad is
+    unbuildable" from "the bank is 4 Ti short this turn". Both read as False and
+    both fall through — which drops the builder into the rest of `runDefault`
+    (recheckOreNodes, a fresh pick) and lets `moveToward` walk it *onto* the pad
+    it came to build on, from where `checkOre` steps it back off in an arbitrary
+    direction. The symptom is a builder reaching ore and wandering off it.
+
+    So the affordability case is separated out and answered by *waiting*: the
+    shared bank is nearly always temporarily short, not permanently, and one
+    delivery from any live harvester refills it. Capped by
+    `main.HARVESTER_TI_WAIT_TURNS` so a builder can't camp a pad forever if Ti
+    genuinely never arrives, after which the pad is released normally.
+
+    Mirrors `defence._buildHarvesterOnClearedBarrier`'s existing Ti-starved hold
+    (`GUARDIAN_ORE_WAIT_TURNS`), which had this right for the narrow
+    guardian-cleared-barrier case only. Returns False when the bank *is*
+    sufficient — then the build failed for a real reason and the caller's
+    existing fall-through is the correct answer.
+
+    The budget is keyed to the tile, so a builder that switches pads starts a
+    fresh count instead of inheriting a partly-spent one.
+    """
+    from main import HARVESTER_TI_WAIT_TURNS
+
+    if not HARVESTER_TI_WAIT_TURNS or HARVESTER_TI_WAIT_TURNS <= 0:
+        return False
+    if ct.get_global_resources() >= ct.get_harvester_cost():
+        bot.harvesterWaitTile = None
+        bot.harvesterWaitTurns = 0
+        return False
+
+    key = (tile.x, tile.y)
+    if getattr(bot, "harvesterWaitTile", None) != key:
+        bot.harvesterWaitTile = key
+        bot.harvesterWaitTurns = 0
+    # Spent budget stays spent for this pad. Zeroing the counter on give-up
+    # instead would re-arm the hold on the very next call, producing a
+    # hold-3 / release-1 / hold-3 cycle — and the release turn is precisely
+    # when the rest of runDefault re-picks and walks the builder away, so the
+    # wander this exists to prevent would just arrive on a 4-turn period.
+    # Only a different pad, or the bank recovering above, clears it.
+    if bot.harvesterWaitTurns >= HARVESTER_TI_WAIT_TURNS:
+        return False
+    bot.harvesterWaitTurns += 1
+    return True  # hold position; Ti may still arrive next turn
+
+
 def buildHarvester(bot, ct: Controller) -> bool:
     """Build on empty ore in vision / known map. Returns True if acted."""
     if bot.inRelay:
@@ -1843,8 +2225,9 @@ def buildHarvester(bot, ct: Controller) -> bool:
                 bot.oreSite = tile
                 bot.relayOrigin = tile
                 bot.inRelay = True
-                bot.relayPath = None
-                bot.relayBuiltTo = -1
+                bot.harvesterWaitTile = None
+                bot.harvesterWaitTurns = 0
+                _handOverOutboundPath(bot, tile)
                 return True
 
     # Commit to sticky empty target; only re-stagger when unset/invalid
@@ -1854,6 +2237,16 @@ def buildHarvester(bot, ct: Controller) -> bool:
     if target is None:
         return False
     bot.oreSite = target
+    # Lay the line on the way out instead of walking empty-handed — the action
+    # channel is idle every turn of this walk, so the belts cost titanium, not
+    # turns. Falls through to the plain walk whenever outbound declines.
+    if _outboundRelayStep(bot, ct, target):
+        return True
+    # Below outbound (a belt we *can* afford is better than idling) but above
+    # the walk: we're standing next to the pad and only the bank is stopping the
+    # build, so hold here instead of letting moveToward wander us onto/off it.
+    if isAdjacent(ct.get_position(), target) and _holdForHarvesterTi(bot, ct, target):
+        return True
     if moveToward(bot, ct, target):
         return True
     # Try stand next to it
@@ -1866,6 +2259,12 @@ def buildHarvester(bot, ct: Controller) -> bool:
 def checkOre(bot, ct: Controller, tile: Position) -> bool:
     """Inspect ore node; returns True if this turn's action consumed."""
     if not ct.is_in_vision(tile):
+        # The repair case this matters most for: a known-from-the-ledger
+        # harvester far from home whose line is gappy. Outbound's descending
+        # scan skips whatever core-side run still stands and starts work at the
+        # first real break, on the way there rather than after arriving.
+        if _outboundRelayStep(bot, ct, tile):
+            return True
         return moveToward(bot, ct, tile)
 
     bid = ct.get_tile_building_id(tile)
@@ -1881,8 +2280,14 @@ def checkOre(bot, ct: Controller, tile: Position) -> bool:
                 ct.build_harvester(tile)
                 bot.relayOrigin = tile
                 bot.inRelay = True
-                bot.relayPath = None
-                bot.relayBuiltTo = -1
+                bot.harvesterWaitTile = None
+                bot.harvesterWaitTurns = 0
+                _handOverOutboundPath(bot, tile)
+                return True
+            # Adjacent and the only thing missing is titanium — wait a few turns
+            # rather than reporting "nothing to do here" and getting re-picked
+            # somewhere else. See _holdForHarvesterTi.
+            if _holdForHarvesterTi(bot, ct, tile):
                 return True
             return False
         if pos == tile:
@@ -1892,6 +2297,8 @@ def checkOre(bot, ct: Controller, tile: Position) -> bool:
                         ct.move(d)
                         return True
             return False
+        if _outboundRelayStep(bot, ct, tile):
+            return True
         return moveToward(bot, ct, tile)
 
     etype = ct.get_entity_type(bid)
@@ -1907,6 +2314,11 @@ def checkOre(bot, ct: Controller, tile: Position) -> bool:
             return False
         bot.relayOrigin = tile
         bot.inRelay = True
+        # Same handover as the two build sites: if outbound already planned and
+        # part-built this harvester's corridor on the way here, the relay must
+        # verify *that* line rather than replanning a second one from this end.
+        if bot.relayPath is None:
+            _handOverOutboundPath(bot, tile)
         relayToCore(bot, ct)
         # relayToCore clears inRelay when it aborts or completes, in both cases
         # without consuming an action. Report that honestly so maintainHarvester
