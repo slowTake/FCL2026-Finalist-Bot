@@ -136,7 +136,7 @@
 # 2. maintainHarvester
 #    2a. checkOre — harvester → relayToCore (team-blind by default: an
 #        enemy-owned harvester is relayed the same as our own, minus the build
-#        step — STEAL_ENEMY_HARVESTERS, see logistics._harvesterOwnerAllowed
+#        step — STEAL_ENEMY_HARVESTERS, see logistics_helpers._harvesterOwnerAllowed
 #        and CONTEXT.md's StealEnemyHarvesters); empty → build (same
 #        gunner-aim gate); ally block → destroy (skip gunner/sentinel if that
 #        ore is threatened); enemy gunner/sentinel/belt/launcher/barrier →
@@ -214,7 +214,7 @@
 #        walled-off or harvester-blocked ore never reached denyBelt/seekHarvester
 #        below it and re-ran a full uncached 800-iter search every turn — see also
 #        MAX_PATH_SEARCHES_PER_TURN, a hard per-turn cap on full searches in
-#        logistics.moveToward that bounds the worst case regardless of which step in
+#        movement.moveToward that bounds the worst case regardless of which step in
 #        the chain is looping.
 # 4. denyBelt — Mode A: barrier on the empty tile ahead of an enemy belt's facing
 #        (3 Ti, unthrottled). Mode B: cut an enemy belt from an adjacent tile and
@@ -249,25 +249,22 @@ from geometry import (
     nearCore,
 )
 from hivemind import CoreState, unpack_cores
-from logistics import (
-    abortRelay,
+from logistics import abortRelay, relayEverComplete
+from logistics_helpers import (
     breakOreDeadlock,
     buildHarvester,
-    openBlockedRoute,
     contestTurret,
     defendHome,
     enemyTurretInVision,
+    exploreFrontier,
     finishNearbyHarvester,
+    guardianLeash,
     healAlly,
     maintainHarvester,
-    moveToward,
-    guardianLeash,
-    moveTowardLeash,
-    exploreFrontier,
     recheckOreNodes,
-    relayEverComplete,
     verifyHomeHarvester,
 )
+from movement import moveToward, moveTowardLeash, openBlockedRoute
 from defence import (
     _buildHarvesterOnClearedBarrier,
     blockGunLine,

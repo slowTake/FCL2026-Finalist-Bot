@@ -62,7 +62,7 @@ def manhattanToCore(pos: Position, core_pos: Position) -> int:
 
     Measuring to the anchor alone would read one tile too far from the east and
     south sides of the 2x2 — the same pitfall chebyshevToCore exists to avoid,
-    but the manhattan-distance ore pickers (logistics._oreConvenienceKey,
+    but the manhattan-distance ore pickers (logistics_helpers._oreConvenienceKey,
     pickMaintainOre, _pickRecheckOre, _oreStaggerKey; offense._oreCloserToAlly
     and denyOre) never got the equivalent treatment. On a point-mirrored map
     this raw single-tile bias flips which of two mirror-equivalent ore nodes
@@ -79,7 +79,7 @@ def nearCore(bot, ct: Controller, radius: int | None = None) -> bool:
     """True while this unit is inside `radius` of home. False if home is unknown.
 
     `radius` defaults to the static `DEFEND_HOME_CHEBYSHEV`. Callers that mean
-    "inside the guardian leash" pass `logistics.guardianLeash(ct)`, which varies
+    "inside the guardian leash" pass `logistics_helpers.guardianLeash(ct)`, which varies
     with whether the core is currently threatened; callers that mean "am I home
     enough to act at all" leave it alone. Taking it as a parameter keeps this
     module free of a `logistics` import (logistics already imports geometry).
