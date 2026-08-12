@@ -57,29 +57,31 @@ def guardianLeash(ct: Controller) -> int:
     return GUARDIAN_LEASH_TIGHT if coreThreatened(ct) else GUARDIAN_LEASH_WIDE
 
 
-def enemyTurretInVision(ct: Controller) -> bool:
-    """True if any enemy gunner, sentinel, or launcher is in vision."""
+def _enemyTurretPositions(ct: Controller):
+    """Yield positions of enemy gunner/sentinel/launcher entities in vision.
+
+    Shared scan behind enemyTurretInVision/nearestEnemyTurret — both used to
+    walk get_nearby_entities() independently with the same team/type filter.
+    """
     me = ct.get_team()
     for eid in ct.get_nearby_entities():
         if ct.get_team(eid) == me:
             continue
         if ct.get_entity_type(eid) in TURRET_TYPES:
-            return True
-    return False
+            yield ct.get_position(eid)
+
+
+def enemyTurretInVision(ct: Controller) -> bool:
+    """True if any enemy gunner, sentinel, or launcher is in vision."""
+    return next(_enemyTurretPositions(ct), None) is not None
 
 
 def nearestEnemyTurret(ct: Controller) -> Position | None:
     """Nearest enemy gunner/sentinel/launcher position in vision, else None."""
-    me = ct.get_team()
     pos = ct.get_position()
     best: Position | None = None
     best_d = 10**9
-    for eid in ct.get_nearby_entities():
-        if ct.get_team(eid) == me:
-            continue
-        if ct.get_entity_type(eid) not in TURRET_TYPES:
-            continue
-        epos = ct.get_position(eid)
+    for epos in _enemyTurretPositions(ct):
         d = manhattan(pos, epos)
         if d < best_d:
             best_d = d

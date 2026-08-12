@@ -810,6 +810,21 @@ def _replanRelayOrAbort(
     bot.relayBuiltTo = extendRelayWatermark(bot, ct, new_path, core_pos, -1)
 
 
+def _relayStuckExceeded(bot) -> bool:
+    """Increment bot.relayStuck; True once it reaches RELAY_STUCK_TURNS.
+
+    relayToCore hits this same "count consecutive stalls, give up at N" shape
+    at five separate points below (blocked-obstacle clear, in-place
+    placement, move-toward) — this is the one place it's counted. Resetting
+    the counter on success/give-up stays with each call site, since what
+    "give up" means differs there (replan vs. abort vs. report-and-abort).
+    """
+    from main import RELAY_STUCK_TURNS
+
+    bot.relayStuck = getattr(bot, "relayStuck", 0) + 1
+    return bot.relayStuck >= RELAY_STUCK_TURNS
+
+
 def relayToCore(bot, ct: Controller) -> None:
     """Orchestrator: path → facing check → clear/place → move (ally core only)."""
     core_pos = _allyCorePos(bot, ct)
@@ -912,8 +927,7 @@ def relayToCore(bot, ct: Controller) -> None:
                 if result == "waiting":
                     return
                 if result == "failed":
-                    bot.relayStuck = getattr(bot, "relayStuck", 0) + 1
-                    if bot.relayStuck < 3:
+                    if not _relayStuckExceeded(bot):
                         return
                     # 3 failed clear attempts — most commonly a heal-racing
                     # enemy barrier (clearBeltObstacle's own fire branch is
@@ -979,8 +993,7 @@ def relayToCore(bot, ct: Controller) -> None:
             if result == "acted":
                 return
             if result == "failed":
-                bot.relayStuck = getattr(bot, "relayStuck", 0) + 1
-                if bot.relayStuck >= 3:
+                if _relayStuckExceeded(bot):
                     _reportAndAbort(bot, ct)
                 return
             if result == "waiting":
@@ -1000,8 +1013,7 @@ def relayToCore(bot, ct: Controller) -> None:
             if ct.can_move(d):
                 ct.move(d)
                 return
-        bot.relayStuck = getattr(bot, "relayStuck", 0) + 1
-        if bot.relayStuck >= 3:
+        if _relayStuckExceeded(bot):
             _reportAndAbort(bot, ct)
         return
 
@@ -1018,17 +1030,14 @@ def relayToCore(bot, ct: Controller) -> None:
             return
         if result == "waiting":
             return
-        bot.relayStuck = getattr(bot, "relayStuck", 0) + 1
-        if bot.relayStuck >= 3:
+        if _relayStuckExceeded(bot):
             abortRelay(bot)
         return
 
     if moveToward(bot, ct, tile):
         bot.relayStuck = 0
-    else:
-        bot.relayStuck = getattr(bot, "relayStuck", 0) + 1
-        if bot.relayStuck >= 3:
-            _reportAndAbort(bot, ct)
+    elif _relayStuckExceeded(bot):
+        _reportAndAbort(bot, ct)
 
 
 def bid_is_belt(ct: Controller, tile: Position) -> bool:

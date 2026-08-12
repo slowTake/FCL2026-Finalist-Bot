@@ -79,7 +79,11 @@ class HiveMind:
             epos = ct.get_position(eid)
             etype = ct.get_entity_type(eid)
             eteam = ct.get_team(eid)
-            ent_data = {"type": etype, "team": eteam}
+            # src="vision": personally observed, as opposed to a network-
+            # ingested sighting (see _ingest_ledger) — _broadcast_ledger only
+            # ever reports src="vision" entries, so a unit never re-broadcasts
+            # a rumor it merely heard about from a teammate.
+            ent_data = {"type": etype, "team": eteam, "src": "vision"}
             if etype in (EntityType.CONVEYOR, EntityType.SPLITTER, EntityType.GUNNER, EntityType.SENTINEL):
                 try:
                     ent_data["direction"] = ct.get_direction(eid)
@@ -144,12 +148,37 @@ class HiveMind:
                     if 0 <= px < w and 0 <= py < h:
                         pos_tuple = (px, py)
                         ent = self.local_map.get(pos_tuple, {}).get("entity")
-                        
+                        if ent is not None and ent.get("src") == "network":
+                            # Never re-broadcast a sighting we only know about
+                            # from a teammate's earlier broadcast — otherwise
+                            # a rumor keeps getting relayed (and its
+                            # last_seen_turn keeps getting refreshed) by
+                            # whichever unit's turn it is next, long after the
+                            # real thing might be gone. Only report what this
+                            # unit has personally seen (src="vision" in
+                            # _update_local_vision, or nothing yet).
+                            ent = None
+
                         etype = ent.get("type") if ent else None
                         is_enemy = (ent.get("team") != my_team) if ent else False
                         d = ent.get("direction", Direction.NORTH) if ent else Direction.NORTH
                         
-                        if not ent and not self._map_detected:
+                        # WALL/ORE terrain sentinels are only useful before the
+                        # team knows the map: once map_id is nonzero, tick()'s
+                        # step 4 has already loaded the static WALL_LOCATIONS/
+                        # ORE_LOCATIONS tables into local_map for every unit
+                        # (including this one), so broadcasting terrain here is
+                        # pure noise competing with real entity sightings for
+                        # the 16-delta budget. This used to check
+                        # self._map_detected instead, which _detect_and_store_map
+                        # only ever sets True on the core (round 0) — every
+                        # builder's own copy stayed permanently False, so every
+                        # builder broadcast fake WALL/ORE entities on every empty
+                        # tile it saw for the entire match. self.map_id is the
+                        # fact that's actually propagated to every unit (tick()
+                        # step 4 reads it off the store once the core has
+                        # written it), so it's the right signal here.
+                        if not ent and self.map_id == 0:
                             tile_data = self.local_map.get(pos_tuple, {})
                             if not tile_data.get("passable", True):
                                 etype = "WALL"
@@ -202,7 +231,70 @@ class HiveMind:
             slots_data.append(val)
             
         return all_zero, slots_data
-        
+
+    def _ingest_ledger(self, ct: Controller, slots_data) -> None:
+        """Merge this round's broadcast deltas into local_map.
+
+        Runs for every unit, not just the core — this is what makes the
+        ledger actually team-shared. Each written entity is tagged
+        src="network" so _broadcast_ledger never re-broadcasts it (a unit
+        should only ever report what it personally saw, not echo a rumor it
+        heard secondhand — an echoed entry's last_seen_turn would otherwise
+        get refreshed indefinitely by whichever unit's turn it is to
+        broadcast next, long after the real thing might be gone).
+        _update_local_vision (step 6, always last) tags its own writes
+        src="vision" and overwrites whatever's here the moment a unit sees
+        the tile with its own eyes.
+
+        last_seen_turn is stamped with this unit's current turn, not the
+        original observation turn — the packed wire format (vision_v2.py) has
+        no spare bits for one (16 bits per target, all spoken for). The
+        freshness signal is therefore approximate, not exact: broadcast data
+        is already up to `total_builders` rounds old by the time it's sent
+        (the metronome only gives each builder a broadcast turn once per
+        full cycle), and ingest doesn't try to recover the original age on
+        top of that. Accepted rather than changing the wire format.
+        """
+        my_team = ct.get_team()
+        other_team = Team.B if my_team == Team.A else Team.A
+        for val in slots_data:
+            t0, t1 = unpack_ledger_slot(val)
+            for t in (t0, t1):
+                if not t:
+                    continue
+                tx, ty, etype, is_enemy, d = t
+                pos_tuple = (tx, ty)
+                if pos_tuple not in self.local_map:
+                    self.local_map[pos_tuple] = {}
+                cell = self.local_map[pos_tuple]
+
+                if etype is None:
+                    # Empty/deleted entity.
+                    if "entity" in cell:
+                        del cell["entity"]
+                    continue
+
+                actual_team = other_team if is_enemy else my_team
+                cell["entity"] = {
+                    "type": etype,
+                    "team": actual_team,
+                    "direction": d,
+                    "src": "network",
+                }
+                # CONVEYOR/SPLITTER and the "ORE" terrain sentinel are all
+                # walkable; the "WALL" sentinel and every other real entity
+                # type occupy the tile. Previously ORE fell into the
+                # not-CONVEYOR/SPLITTER "impassable" branch alongside WALL —
+                # harmless while only the core (which never paths) ingested,
+                # but wrong the moment every unit's pathfinder reads this.
+                if etype in (EntityType.CONVEYOR, EntityType.SPLITTER, "ORE"):
+                    cell["passable"] = True
+                else:
+                    cell["passable"] = False
+                if etype == "ORE":
+                    cell["ore"] = True
+                cell["last_seen_turn"] = self.global_turn
+
     def spawn_builder(self, ct: Controller, pos) -> bool:
         """Helper to spawn a builder and instantly register it with the HiveMind registry."""
         if ct.can_spawn(pos):
@@ -253,45 +345,22 @@ class HiveMind:
                     
             self._walls_loaded = True
 
-        # 5. Execute Metronome Sync Protocol (Core reads, Builders write)
-        if is_core:
-            # First, check if the previously assigned builder reported
-            if self.global_turn > 0:
-                is_dead, slots_data = self._sync_ledger(ct)
-                
-                if not is_dead:
-                    # Unpack everything
-                    for val in slots_data:
-                        t0, t1 = unpack_ledger_slot(val)
-                        for t in (t0, t1):
-                            if t:
-                                tx, ty, etype, is_enemy, d = t
-                                pos_tuple = (tx, ty)
-                                if pos_tuple not in self.local_map:
-                                    self.local_map[pos_tuple] = {}
-                                    
-                                if etype is None:
-                                    # It's an empty/deleted entity
-                                    if "entity" in self.local_map[pos_tuple]:
-                                        del self.local_map[pos_tuple]["entity"]
-                                else:
-                                    # Record the entity
-                                    my_team = ct.get_team()
-                                    other_team = Team.B if my_team == Team.A else Team.A
-                                    actual_team = other_team if is_enemy else my_team
-                                    
-                                    self.local_map[pos_tuple]["entity"] = {
-                                        "type": etype,
-                                        "team": actual_team,
-                                        "direction": d
-                                    }
-                                    if etype in (EntityType.CONVEYOR, EntityType.SPLITTER):
-                                        self.local_map[pos_tuple]["passable"] = True
-                                    elif etype not in (EntityType.CONVEYOR, EntityType.SPLITTER):
-                                        self.local_map[pos_tuple]["passable"] = False
-                                    self.local_map[pos_tuple]["last_seen_turn"] = self.global_turn
-                                        
-                # Then advance metronome and clear slots
+        # 5. Broadcast/ingest ledger protocol. Every unit ingests whatever the
+        # store currently holds into its own local_map — this is what makes
+        # the ledger team-shared rather than core-only (previously this whole
+        # step, ingest included, only ran `if is_core`, so a teammate's
+        # sighting only ever reached the core's own copy of local_map and
+        # every other unit stayed ignorant of it). Metronome advance + slot
+        # clearing stays core-only: it's a shared-state write that needs
+        # exactly one owner so two units can't race to pick the next
+        # broadcaster. Builders still only ever *write* on their own assigned
+        # turn, unchanged.
+        if self.global_turn > 0:
+            is_dead, slots_data = self._sync_ledger(ct)
+            if not is_dead:
+                self._ingest_ledger(ct, slots_data)
+
+            if is_core:
                 total_builders = ct.read_store(4)
                 if total_builders > 0:
                     current = ct.read_store(13)
@@ -305,7 +374,8 @@ class HiveMind:
                     # Clear slots
                     for i in range(8):
                         ct.write_store(5 + i, 0)
-        else:
+
+        if not is_core:
             # BUILDER: Check if it's our turn to broadcast
             current = ct.read_store(13)
             if current == self.my_index:
@@ -313,15 +383,23 @@ class HiveMind:
 
         # 6. Always update personal vision LAST (so it overrides stale network data)
         self._update_local_vision(ct)
-        
-        # 7. Garbage Collect Dead Builders (Core Only)
-        if is_core:
-            total_builders = ct.read_store(4)
-            stale_threshold = self.global_turn - (total_builders + 2)
-            for p, cell in list(self.local_map.items()):
-                if "entity" in cell:
-                    ent = cell["entity"]
-                    if ent["type"] == EntityType.BUILDER_BOT and ent["team"] == ct.get_team():
-                        if cell.get("last_seen_turn", 0) < stale_threshold:
-                            del cell["entity"]
-                            cell["passable"] = True
+
+        # 7. Garbage-collect stale ally-builder ghosts. Every unit runs this
+        # now (used to be core-only) — un-gating ingest above without also
+        # un-gating this would let every unit accumulate permanent phantom
+        # ally-builder obstacles at any tile a teammate has ever stood on:
+        # every broadcast injects the sender's own position as a BUILDER_BOT
+        # entity (see _broadcast_ledger's "liveness reporting" comment),
+        # ingest marks it impassable, and nothing but this step ever clears
+        # it. These ghosts feed walkPassable/relayPassable, i.e. the A* every
+        # role paths with, so leaving this core-only would have poisoned
+        # pathing for every other unit the moment ingest went team-wide.
+        total_builders = ct.read_store(4)
+        stale_threshold = self.global_turn - (total_builders + 2)
+        for p, cell in list(self.local_map.items()):
+            if "entity" in cell:
+                ent = cell["entity"]
+                if ent["type"] == EntityType.BUILDER_BOT and ent["team"] == ct.get_team():
+                    if cell.get("last_seen_turn", 0) < stale_threshold:
+                        del cell["entity"]
+                        cell["passable"] = True
