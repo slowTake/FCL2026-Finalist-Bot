@@ -30,7 +30,7 @@
 #        runs first. Gunners only — no chew-through LoS model exists for
 #        sentinels/launchers, so those fall through to reactEnemyTurret as before.
 # 1c. maintainGunLineBlock — same tier, right after: rebuilds THIS guardian's own
-#        gun-line barrier (bot.gunLineBlockTile) the instant it's destroyed, rather
+#        gun-line barrier (bot.guardian.gunLineBlockTile) the instant it's destroyed, rather
 #        than waiting on blockGunLine's own reactive re-place (which only fires once
 #        the gunner has already landed another hit through the gap). Opportunistic —
 #        only acts when the tile is already in vision, never a dedicated sortie.
@@ -68,7 +68,7 @@
 #    builder in vision must not keep a guardian off ore.
 # 6. clearBarriers — fire / move to nearest enemy barrier inside the leash only
 # 6a. buildHarvesterOnClearedBarrier — runs ahead of clearBarriers itself: if the
-#        barrier clearBarriers just killed sat on ore (bot.guardianOreBarrier, set
+#        barrier clearBarriers just killed sat on ore (bot.guardian.guardianOreBarrier, set
 #        by clearBarriers while firing), build a harvester on it before wandering
 #        off to the next barrier. Ti-starved holds position for up to
 #        GUARDIAN_ORE_WAIT_TURNS turns (main.py) rather than giving up outright,
@@ -180,7 +180,7 @@
 #        — an ally belt already lands next to it), worth more alive than dead
 # 1b. denyHarvesterSupply — a claimed harvester with an enemy belt still
 #        cardinally adjacent → cut that belt (reuses denyBelt Mode B's
-#        fire-then-barrier mechanic under its own bot.supplyCutTile, fully
+#        fire-then-barrier mechanic under its own bot.offense.supplyCutTile, fully
 #        independent of denyBelt's own state/cooldown) so 100% of the output
 #        routes to us instead of leaking back to their network. Unthrottled —
 #        defends an asset already being captured for free.
@@ -194,7 +194,7 @@
 # 3. avoidFire — under enemy gunner LoS → step to safe tile toward goal
 #    0. breakBeltDeadlock — motionless (bot.stuck) ≥ HARASS_DEADLOCK_TURNS →
 #        blacklist sticky denyBeltTile / harassTarget / supplyCutTile into
-#        bot.skippedTargets and clear them. State-only, no turn cost. Needed because denyBelt's Mode B is
+#        bot.offense.skippedTargets and clear them. State-only, no turn cost. Needed because denyBelt's Mode B is
 #        gated off while a gun is affordable, so a funded harasser beside a belt
 #        correctly refuses to cut it (10 shots / 20 Ti for a 3 Ti conveyor) and then
 #        had no way to give the target up. bot.stuck now also trips on tight
@@ -218,7 +218,7 @@
 #        the chain is looping.
 # 4. denyBelt — Mode A: barrier on the empty tile ahead of an enemy belt's facing
 #        (3 Ti, unthrottled). Mode B: cut an enemy belt from an adjacent tile and
-#        barrier it in place (sticky via bot.denyBeltTile; falls back to mounting the
+#        barrier it in place (sticky via bot.offense.denyBeltTile; falls back to mounting the
 #        belt if an adjacent shot is refused). Skips ore nearer our core.
 #        Mode B starts (once this harasser's DENY_CUT_COOLDOWN has elapsed) when
 #        either gun placement is unaffordable OR the target has no enemy builder

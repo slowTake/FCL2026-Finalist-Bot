@@ -25,6 +25,16 @@ from guns import (
 from pathing import CARDINALS, inBounds, manhattan, walkPassable
 
 
+class GuardianMemory:
+    """Per-unit guardian state."""
+
+    def __init__(self) -> None:
+        self.gunLineBlockTile: tuple[int, int] | None = None
+        self.guardianOreBarrier: Position | None = None
+        self.guardianOreWaitTurns = 0
+        self.patrolIdx = 0
+
+
 def _pickDefGunTarget(
     ct: Controller, core_pos: Position | None, max_cheb: int = DEFEND_HOME_CHEBYSHEV
 ) -> Position | None:
@@ -172,10 +182,8 @@ def blockGunLine(bot, ct: Controller) -> bool:
     sentinels/launchers aren't modeled the same way and fall through to the
     normal turret responses instead.
 
-    Records the tile on `bot.gunLineBlockTile` so `maintainGunLineBlock` can
-    follow up and rebuild it the moment it's gone, rather than this being a
-    one-off placement that only gets reactively re-triggered once the gunner
-    has already landed another hit through the gap.
+    Records the tile on `bot.guardian.gunLineBlockTile` so
+    `maintainGunLineBlock` can rebuild it once it's gone.
     """
     core = bot.corePos
     if core is None or bot.inRelay or getattr(bot, "recheckingOre", False):
@@ -193,7 +201,7 @@ def blockGunLine(bot, ct: Controller) -> bool:
     if not _layableTile(ct, block):
         return False
     if _placeGunLineBarrier(ct, block):
-        bot.gunLineBlockTile = (block.x, block.y)
+        bot.guardian.gunLineBlockTile = (block.x, block.y)
         return True
     return False
 
@@ -201,28 +209,14 @@ def blockGunLine(bot, ct: Controller) -> bool:
 def maintainGunLineBlock(bot, ct: Controller) -> bool:
     """Rebuild this guardian's own gun-line barrier the moment it's destroyed.
 
-    `blockGunLine` is a one-off placement; without this, the block only ever
-    gets reactively re-placed once `_gunnerFiringAtCore` proves the gunner
-    has already landed *another* hit through the gap (that's the only way it
-    notices a break), and only if whichever guardian's turn comes up next
-    happens to have that exact tile in vision. This makes the specific
-    builder that placed a block own its upkeep instead: check every turn the
-    tile is in vision, rebuild the instant it's gone — cheap for us (~3 Ti a
-    barrier), and every rebuild the enemy forces is shots and ammo they spent
-    for nothing.
-
-    Opportunistic, not a dedicated sortie: this only acts when the tile is
-    already in vision and needs rebuilding, at the same priority tier as
-    `blockGunLine` itself — it does not pull the guardian off patrol/economy
-    to go stand next to a barrier that's still standing. Ownership needs no
-    explicit release either: once the tile holds a barrier again, this is a
-    no-op every turn until something breaks it again, and if the owning
-    guardian dies, `bot.gunLineBlockTile` simply dies with it — any other
-    guardian's own `blockGunLine` picks the gap back up fresh if the gunner
-    is still connecting.
+    Opportunistic: only acts when the tile is already in vision and needs
+    rebuilding, at the same priority tier as `blockGunLine`. Ownership needs
+    no explicit release — if the owning guardian dies,
+    `bot.guardian.gunLineBlockTile` dies with it, and another guardian's own
+    `blockGunLine` picks the gap back up.
     """
     core = bot.corePos
-    tile_xy = getattr(bot, "gunLineBlockTile", None)
+    tile_xy = bot.guardian.gunLineBlockTile
     if core is None or tile_xy is None:
         return False
     if bot.inRelay or getattr(bot, "recheckingOre", False):
@@ -233,7 +227,7 @@ def maintainGunLineBlock(bot, ct: Controller) -> bool:
     if not ct.is_in_vision(tile):
         return False  # can't confirm or act — wait for vision, don't chase it
     if not _layableTile(ct, tile):
-        bot.gunLineBlockTile = None  # tile is occupied by something else now
+        bot.guardian.gunLineBlockTile = None  # tile is occupied by something else now
         return False
     return _placeGunLineBarrier(ct, tile)
 
@@ -355,7 +349,7 @@ def clearBarriers(bot, ct: Controller) -> bool:
             # firing turn (idempotent, same tile) rather than only once so a
             # guardian that gets reassigned mid-clear still has it recorded.
             if ct.get_tile_env(best) == Environment.ORE_TITANIUM:
-                bot.guardianOreBarrier = best
+                bot.guardian.guardianOreBarrier = best
             ct.fire(best)
             return True
         return False
@@ -368,49 +362,29 @@ def clearBarriers(bot, ct: Controller) -> bool:
 def _buildHarvesterOnClearedBarrier(bot, ct: Controller) -> bool:
     """Build a harvester on ore this guardian's own clearBarriers just uncovered.
 
-    `bot.guardianOreBarrier` is set by `clearBarriers` while it's actively
-    firing on a barrier sitting on `Environment.ORE_TITANIUM`. Runs ahead of
-    `clearBarriers` in `runGuardian` so the guardian claims the tile the turn
-    after the barrier dies instead of immediately wandering off to the next
-    barrier — it's still standing right there for free.
+    Runs ahead of `clearBarriers` in `runGuardian` so the guardian claims the
+    tile the turn after the barrier dies. Ti-starved holds position for up to
+    `main.GUARDIAN_ORE_WAIT_TURNS` turns before forgetting the tile.
 
-    Ti-starved holds position (returns True, consuming the turn) for up to
-    `main.GUARDIAN_ORE_WAIT_TURNS` turns rather than giving up on the first
-    empty bank — see that constant's docstring — then forgets the tile so
-    `clearBarriers` is free to move on.
-
-    Deliberately narrow: only acts while still adjacent to the remembered
-    tile. If the guardian got pulled elsewhere (combat, a closer barrier) in
-    the meantime this just quietly does nothing rather than walking back —
-    unlike a belt gap, a single missed ore tile is not worth breaking
-    position over, and a later pass (this guardian's own patrol, or any
-    other builder's normal ore search) will pick it up regardless.
+    Only acts while still adjacent to the remembered tile — if the guardian
+    got pulled elsewhere in the meantime, this quietly does nothing.
     """
-    tile = getattr(bot, "guardianOreBarrier", None)
+    tile = bot.guardian.guardianOreBarrier
     if tile is None:
         return False
 
-    # get_tile_env/get_tile_building_id both raise outside vision — same guard
-    # _layableTile uses. A guardian pulled elsewhere by combat before this step
-    # runs (avoidFire/defendHome/healAlly all sit above it) can lose vision of
-    # its own remembered tile; don't crash, and don't forget it either — it's
-    # cheap to just wait for vision to come back around.
+    # get_tile_env/get_tile_building_id both raise outside vision.
     if not ct.is_in_vision(tile):
         return False
 
-    # Not ore (shouldn't happen) or something else already sits there —
-    # forget it either way, nothing left for this helper to do.
     if ct.get_tile_env(tile) != Environment.ORE_TITANIUM:
-        bot.guardianOreBarrier = None
-        bot.guardianOreWaitTurns = 0
+        bot.guardian.guardianOreBarrier = None
+        bot.guardian.guardianOreWaitTurns = 0
         return False
 
     bid = ct.get_tile_building_id(tile)
     if bid is not None:
-        # Barrier (or whatever is there) hasn't actually died yet — keep
-        # waiting without spending guardianOreWaitTurns, that budget is for
-        # the Ti-starved case below, not "still fighting the barrier."
-        return False
+        return False  # barrier hasn't actually died yet
 
     if not isAdjacent(ct.get_position(), tile):
         return False
@@ -418,17 +392,17 @@ def _buildHarvesterOnClearedBarrier(bot, ct: Controller) -> bool:
     from main import GUARDIAN_ORE_WAIT_TURNS
 
     if ct.get_global_resources() < ct.get_harvester_cost():
-        bot.guardianOreWaitTurns = getattr(bot, "guardianOreWaitTurns", 0) + 1
-        if bot.guardianOreWaitTurns > GUARDIAN_ORE_WAIT_TURNS:
-            bot.guardianOreBarrier = None
-            bot.guardianOreWaitTurns = 0
+        bot.guardian.guardianOreWaitTurns += 1
+        if bot.guardian.guardianOreWaitTurns > GUARDIAN_ORE_WAIT_TURNS:
+            bot.guardian.guardianOreBarrier = None
+            bot.guardian.guardianOreWaitTurns = 0
             return False
         return True  # hold position; Ti may still arrive next turn
 
     if ct.get_action_cooldown() == 0 and ct.can_build_harvester(tile):
         ct.build_harvester(tile)
-        bot.guardianOreBarrier = None
-        bot.guardianOreWaitTurns = 0
+        bot.guardian.guardianOreBarrier = None
+        bot.guardian.guardianOreWaitTurns = 0
         return True
     return False
 
@@ -927,15 +901,15 @@ def patrolHome(bot, ct: Controller) -> bool:
     if not waypoints:
         return False
 
-    idx = getattr(bot, "patrolIdx", 0) % len(waypoints)
+    idx = bot.guardian.patrolIdx % len(waypoints)
     target = waypoints[idx]
     pos = ct.get_position()
     if pos.x == target.x and pos.y == target.y:
-        bot.patrolIdx = (idx + 1) % len(waypoints)
-        target = waypoints[bot.patrolIdx]
+        bot.guardian.patrolIdx = (idx + 1) % len(waypoints)
+        target = waypoints[bot.guardian.patrolIdx]
     elif getattr(bot, "stuck", 0) >= 3:
-        bot.patrolIdx = (idx + 1) % len(waypoints)
-        target = waypoints[bot.patrolIdx]
+        bot.guardian.patrolIdx = (idx + 1) % len(waypoints)
+        target = waypoints[bot.guardian.patrolIdx]
 
     from movement import moveToward
 

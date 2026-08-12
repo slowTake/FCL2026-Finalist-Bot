@@ -25,6 +25,26 @@ from movement import moveToward, pathKnownBlocked
 from pathing import CARDINALS, inBounds, manhattan, walkPassable
 from walls import wallEnemyCore
 
+
+class OffenseMemory:
+    """Per-unit harasser state."""
+
+    def __init__(self) -> None:
+        self.harassTarget: tuple[int, int] | None = None
+        self.harassOrbitIdx = 0
+        self.scoutedOres: set[tuple[int, int]] = set()
+        self.skippedTargets: set[tuple[int, int]] = set()
+        self.dodgeBlacklist: dict = {}
+        # denyBelt's own cut target/cooldown.
+        self.denyBeltTile: tuple[int, int] | None = None
+        self.lastCutRound = -999
+        self.lastDenyBeltRound = -999
+        # denyHarvesterSupply's cut target/cooldown — kept independent of the
+        # pair above so the two cuts never collide on bookkeeping.
+        self.supplyCutTile: tuple[int, int] | None = None
+        self.lastSupplyCutRound = -999
+
+
 _AVOID_RADIUS = 4
 _ORBIT_OFFSET = 3
 _FIRE_TI_COST = 2
@@ -127,15 +147,15 @@ def _orbitEnemyCore(bot, ct: Controller, core: Position) -> bool:
     if not waypoints:
         return _orbitJitter(bot, ct)
 
-    idx = getattr(bot, "harassOrbitIdx", 0) % len(waypoints)
+    idx = bot.offense.harassOrbitIdx % len(waypoints)
     target = waypoints[idx]
     pos = ct.get_position()
     if pos.x == target.x and pos.y == target.y:
-        bot.harassOrbitIdx = (idx + 1) % len(waypoints)
-        target = waypoints[bot.harassOrbitIdx]
+        bot.offense.harassOrbitIdx = (idx + 1) % len(waypoints)
+        target = waypoints[bot.offense.harassOrbitIdx]
     elif getattr(bot, "stuck", 0) >= 3:
-        bot.harassOrbitIdx = (idx + 1) % len(waypoints)
-        target = waypoints[bot.harassOrbitIdx]
+        bot.offense.harassOrbitIdx = (idx + 1) % len(waypoints)
+        target = waypoints[bot.offense.harassOrbitIdx]
 
     return _harassMove(bot, ct, target)
 
@@ -174,17 +194,14 @@ def _tileUnderGunnerFire(
 
 def _avoidGoal(bot) -> Position | None:
     """Prefer sticky harass target, else enemy core."""
-    sticky = getattr(bot, "harassTarget", None)
+    sticky = bot.offense.harassTarget
     if sticky is not None:
         return Position(sticky[0], sticky[1])
     return getattr(bot, "enemyCorePos", None)
 
 
 def _dodgeMemory(bot) -> dict[tuple[int, int], int]:
-    mem = getattr(bot, "dodgeBlacklist", None)
-    if mem is None:
-        bot.dodgeBlacklist = {}
-        return bot.dodgeBlacklist
+    return bot.offense.dodgeBlacklist
     return mem
 
 
@@ -467,11 +484,7 @@ def _forwardBarrierPads(bot, ct: Controller) -> list[Position]:
 
 
 def _skippedTargets(bot) -> set[tuple[int, int]]:
-    s = getattr(bot, "skippedTargets", None)
-    if s is None:
-        bot.skippedTargets = set()
-        return bot.skippedTargets
-    return s
+    return bot.offense.skippedTargets
 
 
 def _dropSkipped(bot, tiles: list[Position]) -> list[Position]:
@@ -510,10 +523,10 @@ def breakBeltDeadlock(bot, ct: Controller) -> bool:
     skipped = _skippedTargets(bot)
     dropped = False
     for attr in ("denyBeltTile", "harassTarget", "supplyCutTile"):
-        target = getattr(bot, attr, None)
+        target = getattr(bot.offense, attr, None)
         if target is not None:
             skipped.add(target)
-            setattr(bot, attr, None)
+            setattr(bot.offense, attr, None)
             dropped = True
     bot.cachedPath = None
     bot.cachedPathTarget = None
@@ -556,7 +569,7 @@ def _tryForwardBarrier(bot, ct: Controller, *, adjacent_only: bool) -> bool:
                 continue
             if ct.can_build_barrier(pad):
                 ct.build_barrier(pad)
-                bot.lastDenyBeltRound = ct.get_current_round()
+                bot.offense.lastDenyBeltRound = ct.get_current_round()
                 return True
     if adjacent_only:
         return False
@@ -591,29 +604,15 @@ def _stepOff(ct: Controller) -> bool:
 
 
 def _cutInProgress(bot, ct: Controller, *, attr: str = "denyBeltTile") -> bool:
-    """True while a belt cut is already underway and must not be interrupted.
+    """True while a belt cut is underway: not yet in vision, mid-cut, or dead but not barriered.
 
-    A cut is 20 HP at 2 dmg an attack — 10 shots, 20 Ti, 10 turns. Only the
-    *marginal* cost matters once it has started, so the bank gate and the cooldown
-    that decide whether to *begin* must not decide whether to *continue*. Dropping
-    a cut half-finished spends the titanium and achieves nothing.
+    A full-HP belt does not count — the heal-race is unfavorable, so a healed
+    target should be abandoned rather than restarted.
 
-    In progress means the sticky target is:
-      * not in vision — selected, still walking in; do not strand it part-way;
-      * a damaged enemy belt — mid-cut;
-      * an empty tile — the belt is already dead and the barrier is the next
-        action, so gating here would abandon at the moment of payoff.
-
-    A **full-HP** enemy belt is deliberately not in progress. That is the heal-race
-    bail-out for free: their builder restores 4 HP/turn for 1 Ti against our 2 dmg
-    for 2 Ti, so once they have healed it back to full we are losing 4:1 and should
-    walk away rather than grind.
-
-    `attr` names the sticky-target field on `bot` — defaults to `denyBeltTile`
-    (denyBelt's own cut). `denyHarvesterSupply` reuses this same mechanic under
-    `supplyCutTile` instead, so the two cuts never share or collide on state.
+    `attr` selects which sticky-target field on `bot.offense` to check —
+    `denyBeltTile` (default) or `supplyCutTile`, so the two cuts stay independent.
     """
-    sticky = getattr(bot, attr, None)
+    sticky = getattr(bot.offense, attr, None)
     if sticky is None:
         return False
     tile = Position(sticky[0], sticky[1])
@@ -638,8 +637,7 @@ def _cutCooldownElapsed(bot, ct: Controller) -> bool:
 
     if DENY_CUT_COOLDOWN is None or DENY_CUT_COOLDOWN <= 0:
         return True
-    last = getattr(bot, "lastCutRound", -(10**9))
-    return ct.get_current_round() - last >= DENY_CUT_COOLDOWN
+    return ct.get_current_round() - bot.offense.lastCutRound >= DENY_CUT_COOLDOWN
 
 
 def _denyBeltCooldownElapsed(bot, ct: Controller) -> bool:
@@ -648,8 +646,7 @@ def _denyBeltCooldownElapsed(bot, ct: Controller) -> bool:
 
     if DENY_BELT_COOLDOWN is None or DENY_BELT_COOLDOWN <= 0:
         return True
-    last = getattr(bot, "lastDenyBeltRound", -(10**9))
-    return ct.get_current_round() - last >= DENY_BELT_COOLDOWN
+    return ct.get_current_round() - bot.offense.lastDenyBeltRound >= DENY_BELT_COOLDOWN
 
 
 def _enemyBuilderNear(ct: Controller, tile: Position, radius: int) -> bool:
@@ -711,16 +708,15 @@ def _cutAndBarrier(
 ) -> bool:
     """Cut an enemy belt from an adjacent tile, then barrier it (guns gated).
 
-    Staying adjacent is the point: the barrier can go down the moment the belt
-    dies, with no move onto the tile and no step off afterwards.
+    Staying adjacent lets the barrier go down the instant the belt dies, with
+    no move onto the tile and no step off afterwards.
 
-    `attr`/`cooldownAttr` name the sticky-target/last-start fields on `bot`,
-    and `pick` overrides the default nearest-enemy-belt target search — see
-    `denyHarvesterSupply`, which reuses this mechanic under its own
-    `supplyCutTile`/`lastSupplyCutRound` pair and a claimed-harvester-anchored
-    `pick`, fully independent of `denyBelt`'s own state.
+    `attr`/`cooldownAttr` name the sticky-target/last-start fields on
+    `bot.offense`; `pick` overrides the default nearest-enemy-belt target
+    search — see `denyHarvesterSupply`, which reuses this under its own
+    `supplyCutTile`/`lastSupplyCutRound` pair, independent of `denyBelt`'s.
     """
-    sticky = getattr(bot, attr, None)
+    sticky = getattr(bot.offense, attr, None)
     tile: Position | None = None
     if sticky is not None:
         cand = Position(sticky[0], sticky[1])
@@ -728,7 +724,7 @@ def _cutAndBarrier(
             if _enemyBeltAt(ct, cand) or ct.is_tile_empty(cand):
                 tile = cand
             else:
-                setattr(bot, attr, None)
+                setattr(bot.offense, attr, None)
         else:
             tile = cand  # keep sticky while fogged / walking in
     if tile is None:
@@ -738,10 +734,8 @@ def _cutAndBarrier(
         tile = finder()
         if tile is None:
             return False
-        setattr(bot, attr, (tile.x, tile.y))
-        # Single stamp point: the cooldown spaces *starts*, so it is written where a
-        # fresh target is claimed rather than chased across every exit path.
-        setattr(bot, cooldownAttr, ct.get_current_round())
+        setattr(bot.offense, attr, (tile.x, tile.y))
+        setattr(bot.offense, cooldownAttr, ct.get_current_round())
 
     pos = ct.get_position()
     adjacent = isAdjacent(pos, tile)
@@ -749,20 +743,20 @@ def _cutAndBarrier(
     # Belt cleared — plant the barrier from where we already stand
     if ct.is_in_vision(tile) and ct.is_tile_empty(tile):
         if _oreCloserToAlly(bot, ct, tile):
-            setattr(bot, attr, None)
+            setattr(bot.offense, attr, None)
             return False
         if pos == tile:
             return _stepOff(ct)  # can't build on our own tile
         if adjacent:
             if ct.get_action_cooldown() == 0 and ct.can_build_barrier(tile):
                 ct.build_barrier(tile)
-                setattr(bot, attr, None)
+                setattr(bot.offense, attr, None)
                 return True
             return False
         return _harassMove(bot, ct, tile)
 
     if not _enemyBeltAt(ct, tile):
-        setattr(bot, attr, None)
+        setattr(bot.offense, attr, None)
         return False
 
     if ct.get_global_resources() < _FIRE_TI_COST:
@@ -822,18 +816,9 @@ def _claimedHarvesterSupplyTargets(bot, ct: Controller) -> list[Position]:
 def denyHarvesterSupply(bot, ct: Controller) -> bool:
     """Cut an enemy belt still feeding a harvester our own steal-relay claimed.
 
-    Reuses `_cutAndBarrier`'s fire-then-barrier mechanic under its own sticky
-    field (`bot.supplyCutTile`/`bot.lastSupplyCutRound`), so it can never
-    collide with `denyBelt` Mode B's `denyBeltTile` continuation lock or
-    `DENY_CUT_COOLDOWN` — the two cuts run fully independently, and if they
-    ever pick the same physical tile, whichever fires first destroys it; the
-    other's next check sees an empty tile and falls through cleanly (its own
-    barrier attempt, or a re-pick).
-
-    Unthrottled on purpose: this defends an asset we're already actively
-    capturing for free, not an opportunistic denial — there's no bank-based
-    start condition to weigh the way `denyBelt`'s `_canAffordGunPlace` gate
-    does for a generic cut.
+    Reuses `_cutAndBarrier` under its own `supplyCutTile`/`lastSupplyCutRound`
+    pair, independent of `denyBelt`'s. Unthrottled — this defends an asset
+    already being captured for free, not an opportunistic denial.
     """
     from main import STEAL_ENEMY_HARVESTERS
 
@@ -941,7 +926,7 @@ def denyOre(bot, ct: Controller) -> bool:
                 return True
 
     target = candidates[0]
-    bot.harassTarget = (target.x, target.y)
+    bot.offense.harassTarget = (target.x, target.y)
     moved = _harassMove(bot, ct, target)
     if not moved and pathKnownBlocked(bot, target):
         # A* just proved this ore unreachable (walled off / occupied with no way
@@ -951,7 +936,7 @@ def denyOre(bot, ct: Controller) -> bool:
         # makes, so the verdict is guaranteed to be this target's, not some other
         # step's leftover from earlier in the turn.
         _skippedTargets(bot).add((target.x, target.y))
-        bot.harassTarget = None
+        bot.offense.harassTarget = None
     return moved
 
 
@@ -1006,11 +991,7 @@ def _localEnemyHarvesters(bot, ct: Controller) -> list[Position]:
 
 
 def _scoutedOres(bot) -> set[tuple[int, int]]:
-    s = getattr(bot, "scoutedOres", None)
-    if s is None:
-        bot.scoutedOres = set()
-        return bot.scoutedOres
-    return s
+    return bot.offense.scoutedOres
 
 
 def _markOreScouted(bot, tile: Position) -> None:
@@ -1052,7 +1033,7 @@ def _scoutOreTargets(bot, ct: Controller) -> list[Position]:
 
 def seekHarvester(bot, ct: Controller) -> bool:
     """Move to known enemy harvesters or scout ore nodes; vision refreshes local_map."""
-    sticky = getattr(bot, "harassTarget", None)
+    sticky = bot.offense.harassTarget
     if sticky is not None:
         sx, sy = sticky
         tile = Position(sx, sy)
@@ -1062,13 +1043,13 @@ def seekHarvester(bot, ct: Controller) -> bool:
             else:
                 # Inspected empty / friendly / cleared — don't re-scout this pad
                 _markOreScouted(bot, tile)
-                bot.harassTarget = None
+                bot.offense.harassTarget = None
                 sticky = None
         if sticky is not None and _harassMove(bot, ct, tile):
             return True
 
     for harv in _localEnemyHarvesters(bot, ct):
-        bot.harassTarget = (harv.x, harv.y)
+        bot.offense.harassTarget = (harv.x, harv.y)
         if _harassMove(bot, ct, harv):
             return True
 
@@ -1079,7 +1060,7 @@ def seekHarvester(bot, ct: Controller) -> bool:
             if abs(pos.x - ore.x) + abs(pos.y - ore.y) <= 1:
                 _markOreScouted(bot, ore)
                 continue
-        bot.harassTarget = (ore.x, ore.y)
+        bot.offense.harassTarget = (ore.x, ore.y)
         if _harassMove(bot, ct, ore):
             return True
     return False

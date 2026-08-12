@@ -424,8 +424,10 @@ from guns import gunnerLoop, sentinelLoop, topUpAmmo
 from hivemind import CoreState, HiveMind, unpack_cores
 from respawn import Respawn, SpawnSchedule
 from builder import runBuilderRoles
+from defence import GuardianMemory
 from logistics import setCoreThreat
 from logistics_helpers import enemyTurretInVision
+from offense import OffenseMemory
 
 SPAWN_SCHEDULE = SpawnSchedule(
     max_builders_early=MAX_BUILDERS_EARLY,
@@ -439,6 +441,8 @@ class Player:
     def __init__(self) -> None:
         self.hivemind = HiveMind()
         self.respawn = Respawn()
+        self.offense = OffenseMemory()
+        self.guardian = GuardianMemory()
 
         self.corePos: Position | None = None
         self.enemyCorePos: Position | None = None
@@ -483,32 +487,7 @@ class Player:
         self.reactFrozen = 0
         self.recheckingOre = False
         self.skippedOres: set[tuple[int, int]] = set()
-        self.skippedTargets: set[tuple[int, int]] = set()
         self.lastOreRecheckRound = -999
-        self.harassTarget: tuple[int, int] | None = None
-        self.denyBeltTile: tuple[int, int] | None = None
-        self.lastCutRound = -999
-        self.lastDenyBeltRound = -999
-        # Parallel sticky/cooldown pair for denyHarvesterSupply — kept fully
-        # independent of denyBeltTile/lastCutRound above so a generic belt cut
-        # (denyBelt) and a claimed-harvester supply cut can never collide on
-        # bookkeeping even if they'd pick the same tile.
-        self.supplyCutTile: tuple[int, int] | None = None
-        self.lastSupplyCutRound = -999
-        self.scoutedOres: set[tuple[int, int]] = set()
-        self.patrolIdx = 0
-        self.harassOrbitIdx = 0
-        # The gun-line barrier this guardian itself placed (defence.blockGunLine),
-        # if any — owned by whichever guardian placed it, so
-        # defence.maintainGunLineBlock knows which tile to rebuild on sight
-        # rather than relying solely on the reactive re-place that only
-        # triggers once the gunner has already landed another hit through it.
-        self.gunLineBlockTile: tuple[int, int] | None = None
-        # Ore tile a guardian's own clearBarriers just uncovered (the barrier it
-        # killed sat on Environment.ORE_TITANIUM) — set by clearBarriers, consumed
-        # by defence._buildHarvesterOnClearedBarrier. See GUARDIAN_ORE_WAIT_TURNS.
-        self.guardianOreBarrier: Position | None = None
-        self.guardianOreWaitTurns = 0
 
     def run(self, ct: Controller) -> None:
         self.hivemind.tick(ct)
