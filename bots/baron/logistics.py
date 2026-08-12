@@ -10,7 +10,7 @@ on `movement.py` (moveToward, core-adjacency, facing) but never imports from
 
 from __future__ import annotations
 
-from fcode import Controller, Direction, EntityType, Position
+from fcode import Controller, Direction, EntityType, Position, Team
 
 from geometry import BELT_TYPES, coreFootprint, isAdjacent
 from movement import (
@@ -45,6 +45,10 @@ def clearRelay(bot) -> None:
     # builder — leaking it into the next relay would make every ordinary build
     # re-walk its own corridor. See verifyHomeHarvester.
     bot.relayVerify = False
+    # Set only while this relay's origin came from the hijack registry (see
+    # pursueHijackTarget) — _reportAndAbort reads it to decide which side of
+    # the shared registry to re-offer a stalled relay to.
+    bot.hijackOrigin = False
 
 
 def abortRelay(bot) -> None:
@@ -65,14 +69,24 @@ def abortRelay(bot) -> None:
 # Record = one u32: an explicit occupied bit (so a real (0,0)-at-turn-0
 # record is never confused with an empty slot's bare 0) plus 7-bit x, 7-bit y
 # (map dimensions top out at 40x32 — mirrors pack_cores's coordinate width in
-# hivemind.py, not the ledger's narrower 5-bit one in vision_v2.py) and a
-# 10-bit report turn (MAX_TURNS=1000 fits with room to spare — no wraparound
-# handling needed).
+# hivemind.py, not the ledger's narrower 5-bit one in vision_v2.py), a 10-bit
+# report turn (MAX_TURNS=1000 fits with room to spare — no wraparound handling
+# needed), and a 1-bit kind (0 = harvester orphan, 1 = hijack tap — see
+# offense.tapHijackTarget/reportHijackTarget). Both kinds share this same
+# 3-slot pool rather than getting a slot each: all 16 store slots are already
+# allocated, and both kinds reduce to the exact same thing once picked up — a
+# relayOrigin waiting for a builder to walk it home — so splitting the pool
+# would only shrink both for no behavioral gain. 25 of 32 bits used before the
+# kind bit, 26 after — plenty of headroom left.
 _ORPHAN_TURN_BITS = 10
 _ORPHAN_TURN_MASK = (1 << _ORPHAN_TURN_BITS) - 1
 _ORPHAN_COORD_BITS = 7
 _ORPHAN_COORD_MASK = (1 << _ORPHAN_COORD_BITS) - 1
-_ORPHAN_OCCUPIED_BIT = 1 << (_ORPHAN_COORD_BITS * 2 + _ORPHAN_TURN_BITS)
+_ORPHAN_KIND_SHIFT = _ORPHAN_COORD_BITS * 2 + _ORPHAN_TURN_BITS
+_ORPHAN_OCCUPIED_BIT = 1 << (_ORPHAN_KIND_SHIFT + 1)
+
+_ORPHAN_KIND_HARVESTER = 0
+_ORPHAN_KIND_HIJACK = 1
 
 
 def _orphanSlots() -> tuple[int, int, int]:
@@ -81,32 +95,45 @@ def _orphanSlots() -> tuple[int, int, int]:
     return (SLOT_ORPHAN_1, SLOT_ORPHAN_2, SLOT_ORPHAN_3)
 
 
-def _packOrphan(x: int, y: int, turn: int) -> int:
+def _packOrphan(x: int, y: int, turn: int, kind: int = _ORPHAN_KIND_HARVESTER) -> int:
     return (
         _ORPHAN_OCCUPIED_BIT
+        | ((kind & 1) << _ORPHAN_KIND_SHIFT)
         | ((x & _ORPHAN_COORD_MASK) << (_ORPHAN_COORD_BITS + _ORPHAN_TURN_BITS))
         | ((y & _ORPHAN_COORD_MASK) << _ORPHAN_TURN_BITS)
         | (turn & _ORPHAN_TURN_MASK)
     )
 
 
-def _unpackOrphan(val: int) -> tuple[int, int, int] | None:
-    """(x, y, reportedAtTurn), or None if the slot is empty."""
+def _unpackOrphan(val: int) -> tuple[int, int, int, int] | None:
+    """(x, y, reportedAtTurn, kind), or None if the slot is empty."""
     if val == 0:
         return None
     turn = val & _ORPHAN_TURN_MASK
     y = (val >> _ORPHAN_TURN_BITS) & _ORPHAN_COORD_MASK
     x = (val >> (_ORPHAN_COORD_BITS + _ORPHAN_TURN_BITS)) & _ORPHAN_COORD_MASK
-    return x, y, turn
+    kind = (val >> _ORPHAN_KIND_SHIFT) & 1
+    return x, y, turn, kind
 
 
-def _readOrphanRegistry(ct: Controller) -> list[tuple[int, tuple[int, int, int]]]:
-    """[(slot, (x, y, reportedAtTurn)), ...] for every occupied slot."""
+def _readOrphanRegistry(
+    ct: Controller, *, kind: int | None = None
+) -> list[tuple[int, tuple[int, int, int, int]]]:
+    """[(slot, (x, y, reportedAtTurn, kind)), ...] for every occupied slot.
+
+    `kind=None` (default) returns both kinds mixed — used only by the shared
+    report/dedup/evict path, which must see the whole pool regardless of kind
+    to evict correctly. Every reader-side consumer (`_pickOrphanRelay`,
+    `_pickHijackTarget`) passes its own kind explicitly.
+    """
     out = []
     for slot in _orphanSlots():
         rec = _unpackOrphan(ct.read_store(slot))
-        if rec is not None:
-            out.append((slot, rec))
+        if rec is None:
+            continue
+        if kind is not None and rec[3] != kind:
+            continue
+        out.append((slot, rec))
     return out
 
 
@@ -134,43 +161,79 @@ def _rememberedAllyHarvester(bot, ct: Controller, tile: Position) -> bool:
     )
 
 
-def reportOrphanRelay(bot, ct: Controller, tile: Position) -> None:
-    """Broadcast `tile` (a harvester whose relay we're giving up on) for pickup.
+def _reportRelayTarget(ct: Controller, tile: Position, kind: int) -> None:
+    """Shared pack/dedup/evict body for reportOrphanRelay/reportHijackTarget.
 
-    Dedups by tile — if already registered (by us or someone else), just
-    refreshes its turn instead of taking a second slot; two builders
-    reporting the same tile in the same round write byte-identical values, so
-    that collision is harmless by construction. Otherwise takes a free slot,
-    or evicts whichever entry is stalest if all three are already holding
-    *different* tiles.
+    Dedups by (tile, kind) — if already registered (by us or someone else, of
+    the same kind), just refreshes its turn instead of taking a second slot;
+    two builders reporting the same tile in the same round write
+    byte-identical values, so that collision is harmless by construction.
+    Otherwise takes a free slot, or evicts whichever entry is stalest *across
+    both kinds* if all three are already holding different tiles — the two
+    kinds share one scarce 3-slot pool (see the record-format comment above
+    `_orphanSlots`), not a slot each.
     """
-    if not _rememberedAllyHarvester(bot, ct, tile):
-        return  # not actually a harvester we own — nothing to report
     turn = ct.get_current_round() & _ORPHAN_TURN_MASK
     entries = _readOrphanRegistry(ct)
-    for slot, (x, y, _t) in entries:
-        if (x, y) == (tile.x, tile.y):
-            ct.write_store(slot, _packOrphan(tile.x, tile.y, turn))
+    for slot, (x, y, _t, k) in entries:
+        if (x, y) == (tile.x, tile.y) and k == kind:
+            ct.write_store(slot, _packOrphan(tile.x, tile.y, turn, kind))
             return
     occupied = {slot for slot, _ in entries}
     free = [s for s in _orphanSlots() if s not in occupied]
     if free:
-        ct.write_store(free[0], _packOrphan(tile.x, tile.y, turn))
+        ct.write_store(free[0], _packOrphan(tile.x, tile.y, turn, kind))
         return
     oldest_slot, _ = min(entries, key=lambda e: e[1][2])
-    ct.write_store(oldest_slot, _packOrphan(tile.x, tile.y, turn))
+    ct.write_store(oldest_slot, _packOrphan(tile.x, tile.y, turn, kind))
+
+
+def reportOrphanRelay(bot, ct: Controller, tile: Position) -> None:
+    """Broadcast `tile` (a harvester whose relay we're giving up on) for pickup."""
+    if not _rememberedAllyHarvester(bot, ct, tile):
+        return  # not actually a harvester we own — nothing to report
+    _reportRelayTarget(ct, tile, _ORPHAN_KIND_HARVESTER)
+
+
+def reportHijackTarget(bot, ct: Controller, tile: Position) -> None:
+    """Broadcast `tile` (a cleared tap point in a live enemy relay) for pickup.
+
+    Validated against "empty, or already our own belt" rather than
+    `_rememberedAllyHarvester` — there's no harvester to verify here.
+    `offense.tapHijackTarget` calls `clearBeltObstacle` until the tile reads
+    empty before ever calling this, so the normal case is a bare tile; "or
+    already our own belt" additionally covers `_reportAndAbort` re-offering a
+    hijack relay that had already placed its first belt before stalling —
+    still a valid pickup point, just not a bare tile anymore. Anything else
+    (enemy building, an unrelated ally building) means the tile isn't
+    actually available and this silently declines to report it.
+    """
+    from geometry import tileEntity
+
+    ent = tileEntity(ct, tile, local_map=bot.hivemind.local_map)
+    if ent is not None and (
+        ent.get("team") != ct.get_team() or ent.get("type") not in BELT_TYPES
+    ):
+        return
+    _reportRelayTarget(ct, tile, _ORPHAN_KIND_HIJACK)
 
 
 def clearOrphanRelay(ct: Controller, tile: Position) -> None:
-    """Clear a registry entry for `tile`, if one exists — its relay is done."""
-    for slot, (x, y, _t) in _readOrphanRegistry(ct):
+    """Clear a registry entry for `tile`, if one exists — its relay is done.
+
+    Kind-agnostic: matches by tile only. A tile can't hold both a harvester-
+    orphan and a hijack-tap entry at once, and completion doesn't care which
+    kind it started as — `markRelayComplete`'s callers already call this
+    generically regardless of why the relay began.
+    """
+    for slot, (x, y, _t, _k) in _readOrphanRegistry(ct):
         if (x, y) == (tile.x, tile.y):
             ct.write_store(slot, 0)
             return
 
 
 def _reportAndAbort(bot, ct: Controller) -> None:
-    """abortRelay, but first offer the harvester up for another builder to finish.
+    """abortRelay, but first offer the tile up for another builder to finish.
 
     Only called from relayToCore's builder-local / fog-dependent abort sites —
     a different builder, with different fog knowledge or a different approach
@@ -180,9 +243,18 @@ def _reportAndAbort(bot, ct: Controller) -> None:
     titanium-starved placement abort (every builder shares one bank and fails
     identically; it self-resolves once Ti arrives, so reporting it floods the
     registry with a tile that isn't actually stuck).
+
+    Branches on `bot.hijackOrigin` (set by `logistics.pursueHijackTarget`) so
+    a stalled hijack relay goes back to the hijack side of the registry
+    instead of being silently dropped — without this, a hijack relay that
+    stalls partway just vanishes, since `reportOrphanRelay` would reject its
+    origin (not a harvester).
     """
     if bot.relayOrigin is not None:
-        reportOrphanRelay(bot, ct, bot.relayOrigin)
+        if getattr(bot, "hijackOrigin", False):
+            reportHijackTarget(bot, ct, bot.relayOrigin)
+        else:
+            reportOrphanRelay(bot, ct, bot.relayOrigin)
     abortRelay(bot)
 
 
@@ -206,7 +278,7 @@ def _pickOrphanRelay(bot, ct: Controller) -> Position | None:
     pos = ct.get_position()
     best: Position | None = None
     best_d = 10**9
-    for slot, (x, y, turn) in _readOrphanRegistry(ct):
+    for slot, (x, y, turn, _kind) in _readOrphanRegistry(ct, kind=_ORPHAN_KIND_HARVESTER):
         if now - turn > ORPHAN_REGISTRY_TTL_TURNS:
             ct.write_store(slot, 0)
             continue
@@ -223,6 +295,48 @@ def _pickOrphanRelay(bot, ct: Controller) -> Position | None:
                 or ct.get_team(bid) != ct.get_team()
             ):
                 ct.write_store(slot, 0)  # visibly no longer a live ally harvester
+                continue
+            if allyBuilderNearOre(ct, tile):
+                continue  # someone's already there working it
+        d = manhattan(pos, tile)
+        if d < best_d:
+            best_d = d
+            best = tile
+    return best
+
+
+def _pickHijackTarget(bot, ct: Controller) -> Position | None:
+    """Nearest usable hijack tap from the shared registry, else None.
+
+    Mirrors `_pickOrphanRelay`'s shape exactly (same TTL/leash/skip filters,
+    same nearest-wins tie-break) — validated against "still empty or still
+    our own belt" instead of "still a live ally harvester", since that's what
+    a hijack tap point actually is (see `reportHijackTarget`).
+    """
+    from geometry import tileEntity
+    from logistics_helpers import _allowOreSite, allyBuilderNearOre
+    from main import ORPHAN_REGISTRY_TTL_TURNS
+
+    skipped = getattr(bot, "skippedOres", set())
+    now = ct.get_current_round()
+    pos = ct.get_position()
+    best: Position | None = None
+    best_d = 10**9
+    for slot, (x, y, turn, _kind) in _readOrphanRegistry(ct, kind=_ORPHAN_KIND_HIJACK):
+        if now - turn > ORPHAN_REGISTRY_TTL_TURNS:
+            ct.write_store(slot, 0)
+            continue
+        if (x, y) in skipped:
+            continue
+        tile = Position(x, y)
+        if not _allowOreSite(bot, tile):
+            continue
+        if ct.is_in_vision(tile):
+            ent = tileEntity(ct, tile, local_map=bot.hivemind.local_map)
+            if ent is not None and (
+                ent.get("team") != ct.get_team() or ent.get("type") not in BELT_TYPES
+            ):
+                ct.write_store(slot, 0)  # visibly claimed/blocked by something else
                 continue
             if allyBuilderNearOre(ct, tile):
                 continue  # someone's already there working it
@@ -307,8 +421,17 @@ def _allyBeltAt(ct: Controller, tile: Position) -> bool:
     )
 
 
-def _beltDirectionAt(bot, ct: Controller, tile: Position) -> Direction | None:
-    """Facing of the ally CONVEYOR at tile, vision first then ledger.
+def _beltDirectionAt(
+    bot, ct: Controller, tile: Position, *, team=None
+) -> Direction | None:
+    """Facing of the `team`-owned CONVEYOR at tile, vision first then ledger.
+
+    `team` defaults to our own (`ct.get_team()`), so every existing ally-only
+    call site is unaffected. Generalized to take any team — not just ours —
+    for `offense.findHijackTarget`'s use via `_relayReachesCore(..., team=
+    enemy_team)`: the ledger already captures `direction` for enemy
+    conveyors too (`hivemind_v2.py`'s `_update_local_vision` has no team
+    filter on that capture), it just had nothing reading it before.
 
     CONVEYOR only — deliberately excludes SPLITTER, matching
     `defence._danglingBeltEnds`'s own precedent: a splitter rotates its output
@@ -318,14 +441,15 @@ def _beltDirectionAt(bot, ct: Controller, tile: Position) -> Direction | None:
     a missed merge — it's a *false positive* connectivity proof, which is
     exactly what the walk below exists to prevent.
 
-    None for anything else — enemy-owned, not a conveyor, no data, or a stale
+    None for anything else — wrong owner, not a conveyor, no data, or a stale
     ledger entry (`_beltLedgerStale`). The connectivity walk below treats
     None as "chain broken here."
     """
-    me = ct.get_team()
+    if team is None:
+        team = ct.get_team()
     if ct.is_in_vision(tile):
         bid = ct.get_tile_building_id(tile)
-        if bid is None or ct.get_team(bid) != me:
+        if bid is None or ct.get_team(bid) != team:
             return None
         if ct.get_entity_type(bid) != EntityType.CONVEYOR:
             return None
@@ -337,7 +461,7 @@ def _beltDirectionAt(bot, ct: Controller, tile: Position) -> Direction | None:
     if not entry or _beltLedgerStale(bot, entry):
         return None
     ent = entry.get("entity")
-    if not ent or ent.get("team") != me or ent.get("type") != EntityType.CONVEYOR:
+    if not ent or ent.get("team") != team or ent.get("type") != EntityType.CONVEYOR:
         return None
     return ent.get("direction")
 
@@ -348,9 +472,10 @@ def _relayReachesCore(
     tile: Position,
     core_pos: Position,
     *,
+    team=None,
     cache: dict | None = None,
 ) -> bool:
-    """Bounded forward-walk proving `tile`'s ally belt chain actually feeds the core.
+    """Bounded forward-walk proving `tile`'s `team`-owned belt chain reaches `core_pos`.
 
     Follows each tile's own stored facing (the same ledger `direction` field
     `defence._danglingBeltEnds` already reads) toward wherever it actually points,
@@ -363,9 +488,18 @@ def _relayReachesCore(
     distinguishable from a live line at the single-tile level (see
     `OrphanRelayRegistry`'s own rationale for why that distinction matters).
 
-    `cache` (keyed by the starting tile) is a per-`pickRelayPath`-call memo —
-    the merge goal is evaluated on every node A* expands, so without it the
-    same candidate's chain could be re-walked many times in one search.
+    `team` defaults to ours (see `_beltDirectionAt`) — pass the enemy team and
+    the enemy core to prove an *enemy* belt chain reaches *their* core instead
+    (`offense.findHijackTarget`'s hijack-target detection: "is this candidate
+    tile genuinely part of a working relay, not a dead stub").
+
+    `cache` (keyed by the starting tile) is a per-call memo — the merge goal
+    is evaluated on every node A* expands in `pickRelayPath`, and
+    `findHijackTarget`'s candidate scan is a similar repeated-check shape, so
+    without it the same candidate's chain could be re-walked many times in
+    one call. Keyed on tile only, not (tile, team) — safe as long as a caller
+    never reuses one cache across both an ally-team and enemy-team walk in
+    the same call, which none of today's callers do.
     """
     from main import RELAY_MERGE_MAX_HOPS
 
@@ -387,7 +521,7 @@ def _relayReachesCore(
         if key in seen:
             break  # loop — shouldn't happen on a real belt line, defensive only
         seen.add(key)
-        d = _beltDirectionAt(bot, ct, cur)
+        d = _beltDirectionAt(bot, ct, cur, team=team)
         if d is None or d == Direction.CENTRE:
             break
         cur = cur.add(d)
@@ -396,6 +530,24 @@ def _relayReachesCore(
     if cache is not None:
         cache[key0] = result
     return result
+
+
+def _enemyBeltReachesEnemyCore(
+    bot, ct: Controller, tile: Position, enemy_core: Position, *, cache: dict | None = None
+) -> bool:
+    """True if `tile`'s enemy belt chain is genuinely part of a working relay to their core.
+
+    Thin team-flip of `_relayReachesCore` — see that function for the walk
+    itself. `offense.findHijackTarget` uses this to turn "an enemy conveyor
+    exists near their core" into "this specific tile is provably part of a
+    live line," the same distinction `RELAY_MERGE_ENABLED` needs for our own
+    merge candidates and for the identical reason: an unconditional "any
+    enemy belt is fine" risks tapping a dead/orphaned stub instead of an
+    actually-flowing line.
+    """
+    my_team = ct.get_team()
+    enemy_team = Team.B if my_team == Team.A else Team.A
+    return _relayReachesCore(bot, ct, tile, enemy_core, team=enemy_team, cache=cache)
 
 
 def _mergeCandidateNeighbor(
@@ -713,6 +865,47 @@ def extendRelayWatermark(
     return built_to
 
 
+def _mergeAnchorCandidates(
+    bot, ct: Controller, origin: Position, core_pos: Position, *, cache: dict | None = None
+) -> list[Position]:
+    """Ally CONVEYOR tiles from local_map, provably core-connected, near `origin`.
+
+    Precomputed once per `pickRelayPath` call and fed into the search
+    heuristic below it (not into `is_goal`, which already checks every
+    expanded node exactly via `_mergeCandidateNeighbor`) — a plain
+    `manhattan(p, core_pos)` heuristic *overestimates* the true remaining
+    cost whenever a nearer merge target exists, since `is_goal` accepts that
+    closer point too. An inadmissible heuristic like that silently starves
+    A* of any pull toward a nearby line: the search keeps preferring nodes
+    that look closer to the raw core position even when actually walking
+    toward a provably-connected line a few tiles away would resolve the
+    search far cheaper. Observed directly: a relay planned from a tile with
+    an already-built, provably-connected line ~7 tiles away instead wandered
+    130+ tiles around a wall maze before reaching any goal at all.
+
+    Bounded to RELAY_MERGE_ANCHOR_CHEBYSHEV of `origin` — this is a heuristic
+    aid, not a correctness check (the real proof is still `_relayReachesCore`,
+    run here per candidate same as `is_goal` runs it per node), so it only
+    needs to be cheap and roughly useful, not exhaustive.
+    """
+    from main import RELAY_MERGE_ANCHOR_CHEBYSHEV
+
+    if RELAY_MERGE_ANCHOR_CHEBYSHEV is None or RELAY_MERGE_ANCHOR_CHEBYSHEV <= 0:
+        return []
+    me = ct.get_team()
+    out: list[Position] = []
+    for (x, y), cell in bot.hivemind.local_map.items():
+        ent = cell.get("entity")
+        if not ent or ent.get("team") != me or ent.get("type") != EntityType.CONVEYOR:
+            continue
+        if max(abs(x - origin.x), abs(y - origin.y)) > RELAY_MERGE_ANCHOR_CHEBYSHEV:
+            continue
+        tile = Position(x, y)
+        if _relayReachesCore(bot, ct, tile, core_pos, cache=cache):
+            out.append(tile)
+    return out
+
+
 def pickRelayPath(
     bot,
     ct: Controller,
@@ -724,12 +917,21 @@ def pickRelayPath(
     if bot.oreSite is not None:
         ore_blocked.add((bot.oreSite.x, bot.oreSite.y))
 
-    from main import RELAY_MERGE_ENABLED
+    from main import RELAY_MAX_PATH_RATIO, RELAY_MAX_PATH_SLACK, RELAY_MERGE_ENABLED
 
     # Per-call memo: the merge goal is evaluated on every node A* expands, so
     # without this the same candidate belt's connectivity chain could be
-    # walked repeatedly within one search. See _relayReachesCore.
+    # walked repeatedly within one search. See _relayReachesCore. Also backs
+    # _mergeAnchorCandidates' own _relayReachesCore calls below, so a tile
+    # checked once as a heuristic anchor isn't re-walked when is_goal reaches
+    # it again during the search proper.
     merge_cache: dict = {}
+
+    merge_anchors = (
+        _mergeAnchorCandidates(bot, ct, origin, core_pos, cache=merge_cache)
+        if RELAY_MERGE_ENABLED
+        else []
+    )
 
     def is_goal(p: Position) -> bool:
         if isCoreAdjacent(ct, p, core_pos):
@@ -737,6 +939,14 @@ def pickRelayPath(
         if not RELAY_MERGE_ENABLED:
             return False
         return _mergeCandidateNeighbor(bot, ct, p, core_pos, cache=merge_cache) is not None
+
+    def heuristic(p: Position) -> int:
+        best = manhattan(p, core_pos)
+        for anchor in merge_anchors:
+            d = manhattan(p, anchor)
+            if d < best:
+                best = d
+        return best
 
     def ok(p: Position) -> bool:
         return relayPassable(
@@ -761,7 +971,7 @@ def pickRelayPath(
             seeds,
             is_passable=ok,
             is_goal=is_goal,
-            heuristic=lambda p: manhattan(p, core_pos),
+            heuristic=heuristic,
             max_iters=PATH_MAX_ITERS,
         )
     if path is None:
@@ -770,14 +980,43 @@ def pickRelayPath(
             origin,
             is_goal=is_goal,
             heuristic_to=core_pos,
+            extra_heuristic_points=merge_anchors,
             ore_blocked=ore_blocked,
             local_map=local_map,
             max_iters=PATH_MAX_ITERS,
         )
-    # Both planners failing is the relay's own "no route exists" verdict. Without
-    # recording it, relayToCore just aborts and the reason is indistinguishable from
-    # every other abort — so a relay sealed by our own gunner never reached the door
-    # search, which reads `moveToward`'s walking verdict only.
+
+    # Sanity cap: reject a path that's wildly longer than the straight-line
+    # trip warrants, even if A* found one and it satisfies is_goal. A correct
+    # heuristic (above) should make this rare, but it's a backstop against
+    # any pathological case — wall mazes, a merge/is_goal edge case, anything
+    # else — that produces a "valid" path no one should actually walk: a
+    # relay that takes 100+ turns to lay is worse than no relay, since the
+    # builder is committed (bot.inRelay) and unavailable to defend/economy
+    # the whole time, and it can graze past and incidentally capture titanium
+    # from unrelated enemy harvesters purely because the route happens to
+    # pass near them (the engine pulls from any adjacent conveyor regardless
+    # of team — see STEAL_HARVESTER_MAX_CHEBYSHEV, which only bounds a
+    # *deliberate* steal pick and can't catch this). Ratio, not a flat cap,
+    # so long-but-genuine trips on big maps aren't punished the same as a
+    # short trip that somehow produced a huge detour; the flat slack on top
+    # covers legitimately-walled short trips a pure ratio would reject.
+    if path is not None and RELAY_MAX_PATH_RATIO is not None and RELAY_MAX_PATH_RATIO > 0:
+        straight = manhattan(origin, core_pos)
+        for anchor in merge_anchors:
+            d = manhattan(origin, anchor)
+            if d < straight:
+                straight = d
+        slack = RELAY_MAX_PATH_SLACK if RELAY_MAX_PATH_SLACK is not None else 0
+        cap = straight * RELAY_MAX_PATH_RATIO + slack
+        if len(path) > cap:
+            path = None
+
+    # Both planners failing (or the length cap rejecting the result) is the
+    # relay's own "no route exists" verdict. Without recording it, relayToCore
+    # just aborts and the reason is indistinguishable from every other abort —
+    # so a relay sealed by our own gunner never reached the door search, which
+    # reads `moveToward`'s walking verdict only.
     bot.relayPathBlocked = path is None
     bot.relayPathBlockedFrom = (origin.x, origin.y) if path is None else None
     return path
@@ -1038,6 +1277,61 @@ def relayToCore(bot, ct: Controller) -> None:
         bot.relayStuck = 0
     elif _relayStuckExceeded(bot):
         _reportAndAbort(bot, ct)
+
+
+def pursueHijackTarget(bot, ct: Controller) -> bool:
+    """Default-builder step: continue or pick up a hijack-registry relay.
+
+    Mirrors how `checkOre`'s HARVESTER branch commits to a steal (`bot.
+    relayOrigin = tile; bot.inRelay = True; relayToCore(bot, ct)`) — same
+    machinery, no new relay-building logic. The only hijack-specific state is
+    `bot.hijackOrigin`, which exists purely so `_reportAndAbort` knows which
+    side of the shared registry to re-offer a stalled relay to.
+
+    Deliberately no claim-on-pickup, matching the harvester-orphan registry's
+    own "report-only, no claim field" philosophy — two builders racing the
+    same entry is harmless and self-resolving (relayToCore's merge logic and
+    ordinary belt-placement conflict handling already cover a second builder
+    arriving at a tile the first one already built on).
+
+    One deliberate divergence from the harvester registry, though: a fresh
+    pickup that fails on its very first `relayToCore` call is evicted
+    outright instead of re-offered. `_reportAndAbort`'s premise for the
+    harvester side is that a *different* builder's fog/vision or approach
+    angle genuinely might succeed where this one didn't — reasonable for an
+    own-side relay that stalled partway through. A hijack origin sitting deep
+    in defended enemy territory is far more likely to be genuinely
+    unreachable than fog-affected, and every builder that tries it fails
+    identically — observed directly: the same tile re-offered and re-failed
+    by three different builders across dozens of turns, each attempt burning
+    a full `pickRelayPath` search (a real A* run) for nothing. `relayToCore`
+    only ever takes one action (or aborts) per call before returning, so
+    `not bot.inRelay` right after this first call already means "aborted
+    with zero progress" — no separate check needed. A stall *after* real
+    progress goes through relayToCore's own normal stuck/obstacle handling
+    (`_reportAndAbort`) on a later call, unaffected by this.
+    """
+    if bot.inRelay and bot.hijackOrigin:
+        relayToCore(bot, ct)
+        return True
+    if bot.inRelay:
+        return False  # already committed to something else this doesn't own
+    target = _pickHijackTarget(bot, ct)
+    if target is None:
+        return False
+    bot.relayOrigin = target
+    bot.hijackOrigin = True
+    bot.inRelay = True
+    relayToCore(bot, ct)
+    if not bot.inRelay:
+        # Aborted on the very first call, nothing built — see docstring. If
+        # relayToCore instead completed the relay outright in one call (the
+        # origin was already core-adjacent), clearOrphanRelay here is just a
+        # harmless no-op — markRelayComplete's own success path already
+        # called it.
+        clearOrphanRelay(ct, target)
+        bot.skippedOres.add((target.x, target.y))
+    return True
 
 
 def bid_is_belt(ct: Controller, tile: Position) -> bool:

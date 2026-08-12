@@ -158,6 +158,13 @@
 #        line complete without looking, and the builder drops to exploreFrontier
 #        and circles mid-map forever. Sits below every real-work step, so it only
 #        ever spends a turn that was going to be a wander anyway.
+# 5c. pursueHijackTarget — a harasser cleared and reported a live enemy relay tap
+#        point (offense.tapHijackTarget) → pick it up, walk it home via the
+#        unmodified relayToCore (same machinery STEAL_ENEMY_HARVESTERS already uses
+#        for harvesters, just for a belt tile). In the actual chain this sits right
+#        after finishNearbyHarvester, above verifyHomeHarvester — both it and
+#        finishNearbyHarvester are "start a new opportunistic commitment" steps,
+#        grouped ahead of the "check on old stuff" steps below them.
 # 6. recheckOreNodes — clear sticky oreSite; prefer empty → ally-blocked → harvester
 # 7. exploreFrontier(outward=False) — last resort, no ore anywhere to claim. Walks to
 #        the nearest tile absent from local_map that borders known space, preferring
@@ -228,6 +235,16 @@
 #        any of that (_cutInProgress), because a cut is 20 Ti / 10 turns and
 #        abandoning it half-way spends the Ti for nothing. A belt healed back to full
 #        HP stops counting as in-progress — that is the 4:1 heal-race bail-out.
+# 4b. tapHijackTarget — enemy CONVEYOR within HIJACK_TAP_CHEBYSHEV of their core,
+#        proven via logistics._enemyBeltReachesEnemyCore to actually reach it (not a
+#        dead stub) → clear it (logistics.clearBeltObstacle, same fire-then-done
+#        mechanic and 11-turn give-up as a normal relay fighting through a wrong-team
+#        belt) → report to the shared hijack registry (logistics.reportHijackTarget,
+#        same 3 store slots as the harvester-orphan registry, kind-tagged) for a
+#        default builder to walk home (logistics.pursueHijackTarget). The harasser
+#        never builds anything and never leaves the tap radius — see
+#        HIJACK_RELAYS_ENABLED's comment for why the return line is a separate role's
+#        job, same reasoning that removed the old direct steal-relay commit above.
 # 5. seekHarvester — local_map enemy harvesters / scout ore nodes (vision updates map)
 # 6. seekCore — moveToward enemy core; if stuck, orbit mid-side / ring waypoints
 # 7. exploreFrontier(outward=True) — last resort, enemy core unknown so everything
@@ -249,7 +266,7 @@ from geometry import (
     nearCore,
 )
 from hivemind import CoreState, unpack_cores
-from logistics import abortRelay, relayEverComplete
+from logistics import abortRelay, pursueHijackTarget, relayEverComplete
 from logistics_helpers import (
     breakOreDeadlock,
     buildHarvester,
@@ -288,6 +305,7 @@ from offense import (
     seekCore,
     seekHarvester,
     snipeHarvester,
+    tapHijackTarget,
     wallCore,
 )
 
@@ -573,6 +591,12 @@ def runDefault(bot, ct: Controller) -> None:
     # finishNearbyHarvester.
     if finishNearbyHarvester(bot, ct):
         return
+    # A harasser cleared and reported a live enemy relay tap point
+    # (offense.tapHijackTarget) — pick it up and walk the return line home.
+    # See HIJACK_RELAYS_ENABLED's comment for why this is a default builder's
+    # job rather than the harasser finishing what it started.
+    if pursueHijackTarget(bot, ct):
+        return
     # Below every real-work step, above the last-resort ones: this only fires on
     # a builder that would otherwise fall through to exploreFrontier's aimless
     # wander, which is exactly the builder that should be going home to check on
@@ -794,7 +818,7 @@ def runGuardian(bot, ct: Controller) -> None:
 
 def runHarasser(bot, ct: Controller) -> None:
     """Harasser: leash → snipe → denyHarvesterSupply → offGun → wallCore →
-    avoidFire → denyOre → denyBelt → seek → seekCore.
+    avoidFire → denyOre → denyBelt → tapHijackTarget → seek → seekCore.
 
     Used to start a steal-relay via `finishNearbyHarvester` (belting a nearby
     un-relayed harvester, ally or enemy, all the way back to our own core) and
@@ -839,6 +863,11 @@ def runHarasser(bot, ct: Controller) -> None:
     if denyOre(bot, ct):
         return
     if denyBelt(bot, ct):
+        return
+    # Same tier as denyOre/denyBelt: cheap, opportunistic, no attrition — walk
+    # in, clear one tile, hand off to a default builder to walk home. See
+    # HIJACK_RELAYS_ENABLED's comment for why the harasser stops there.
+    if tapHijackTarget(bot, ct):
         return
     if seekHarvester(bot, ct):
         return

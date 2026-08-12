@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run a bot against starter on every map in maps/. Pass only on 15/15 wins."""
+"""Run a bot against starter on its live map pool. Pass only on a clean sweep."""
 
 from __future__ import annotations
 
@@ -23,7 +23,44 @@ CONDITION_LABELS = {
 }
 
 
-def resolve_maps(maps_dir: Path, override: list[str] | None) -> list[Path]:
+def live_map_pool(bot_dir: Path) -> list[str] | None:
+    """MAP_ID_TO_NAME's values from the bot's own features.py, if it has one.
+
+    This is the actual map pool the bot fingerprints/recognizes (see
+    hivemind.py's _detect_and_store_map / KNOWN_MAPS) — narrower than every
+    *.map26 file sitting in maps_dir, which accumulates maps the bot has no
+    fingerprint table for and was never tuned against. Testing against those
+    extra maps runs the bot in a materially different mode (no ORE_LOCATIONS/
+    WALL_LOCATIONS, no fingerprinted enemy core) and produces regression
+    signal that doesn't reflect real competitive performance — this script's
+    own docstring used to say "every map in maps/, pass on 15/15," which only
+    ever matched MAP_ID_TO_NAME's count; maps_dir just grew past it over time
+    without this script being updated to filter back down.
+
+    Executed in an isolated namespace (not sys.modules) rather than imported,
+    so gauntlet-ing multiple bots in one process can't cross-contaminate via
+    Python's module cache — every bot's features.py shares the same module
+    name. None if the bot has no features.py or no MAP_ID_TO_NAME, so callers
+    can fall back to a full directory scan.
+    """
+    features_path = bot_dir / "features.py"
+    if not features_path.is_file():
+        return None
+    ns: dict = {"__file__": str(features_path)}
+    try:
+        exec(compile(features_path.read_text(), str(features_path), "exec"), ns)
+    except Exception as exc:
+        print(f"Warning: could not read live map pool from {features_path}: {exc}", file=sys.stderr)
+        return None
+    mapping = ns.get("MAP_ID_TO_NAME")
+    if not isinstance(mapping, dict) or not mapping:
+        return None
+    return sorted(mapping.values())
+
+
+def resolve_maps(
+    maps_dir: Path, override: list[str] | None, bot_dir: Path | None = None
+) -> list[Path]:
     if override:
         maps = []
         for name in override:
@@ -33,6 +70,23 @@ def resolve_maps(maps_dir: Path, override: list[str] | None) -> list[Path]:
             if not path.exists():
                 raise FileNotFoundError(f"Map not found: {path}")
             maps.append(path)
+        return maps
+
+    pool = live_map_pool(bot_dir) if bot_dir is not None else None
+    if pool:
+        maps = []
+        missing = []
+        for name in pool:
+            path = maps_dir / f"{name}.map26"
+            if path.exists():
+                maps.append(path)
+            else:
+                missing.append(name)
+        if missing:
+            print(
+                f"Warning: live map pool names not found in {maps_dir}: {missing}",
+                file=sys.stderr,
+            )
         return maps
     return sorted(maps_dir.glob("*.map26"))
 
@@ -80,7 +134,7 @@ def run_gauntlet(bot_name: str, map_names: list[str] | None) -> int:
         print(f"Error: starter bot not found at {starter}", file=sys.stderr)
         return 1
 
-    maps = resolve_maps(maps_dir, map_names)
+    maps = resolve_maps(maps_dir, map_names, bots_dir / bot_name)
     if not maps:
         print(f"Error: no maps found in {maps_dir}", file=sys.stderr)
         return 1
@@ -153,7 +207,7 @@ def run_gauntlet(bot_name: str, map_names: list[str] | None) -> int:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Run a bot against starter on every map. Pass only if all matches are won."
+        description="Run a bot against starter on its live map pool. Pass only if all matches are won."
     )
     parser.add_argument(
         "--bot",
@@ -163,7 +217,11 @@ def main() -> None:
     parser.add_argument(
         "--maps",
         nargs="+",
-        help="Optional map names to run (default: all *.map26 in maps/)",
+        help=(
+            "Optional map names to run (default: the bot's own "
+            "features.py MAP_ID_TO_NAME pool, falling back to every "
+            "*.map26 in maps/ if the bot has none)"
+        ),
     )
     args = parser.parse_args()
     raise SystemExit(run_gauntlet(args.bot, args.maps))

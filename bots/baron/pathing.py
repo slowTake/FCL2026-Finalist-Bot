@@ -373,11 +373,20 @@ def findPathAroundObstruction(
     *,
     is_goal: GoalFn,
     heuristic_to: Position | None = None,
+    extra_heuristic_points: list[Position] | None = None,
     ore_blocked: set[tuple[int, int]] | None = None,
     local_map: dict | None = None,
     max_iters: int = 800,
 ) -> list[Position] | None:
-    """Fallback relay path: seed from cardinal neighbors of start when origin blocked."""
+    """Fallback relay path: seed from cardinal neighbors of start when origin blocked.
+
+    `extra_heuristic_points` — see pickRelayPath's identical parameter on the
+    primary astarFromSeeds call: a heuristic of manhattan-to-heuristic_to alone
+    overestimates true remaining cost whenever is_goal also accepts a nearer
+    point (e.g. a merge candidate), which is inadmissible and starves the
+    search of any pull toward it. Taking the min against known-good extra
+    points keeps the heuristic admissible for either goal shape.
+    """
 
     def ok(p: Position) -> bool:
         return relayPassable(
@@ -398,9 +407,12 @@ def findPathAroundObstruction(
         return None
 
     def h(p: Position) -> int:
-        if heuristic_to is None:
-            return 0
-        return manhattan(p, heuristic_to)
+        candidates = []
+        if heuristic_to is not None:
+            candidates.append(manhattan(p, heuristic_to))
+        if extra_heuristic_points:
+            candidates.extend(manhattan(p, a) for a in extra_heuristic_points)
+        return min(candidates) if candidates else 0
 
     return astarFromSeeds(
         seeds,

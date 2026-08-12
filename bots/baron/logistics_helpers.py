@@ -535,8 +535,8 @@ def _approachOreBlock(bot, ct: Controller, tile: Position) -> bool:
     return moveToward(bot, ct, best)
 
 
-def _harvesterOwnerAllowed(ct: Controller, owner_team) -> bool:
-    """True if a harvester owned by owner_team may be picked/relayed by us.
+def _harvesterOwnerAllowed(bot, ct: Controller, owner_team, tile: Position) -> bool:
+    """True if a harvester owned by owner_team, sitting at tile, may be picked/relayed by us.
 
     Always true for our own. For an enemy-owned harvester this is the single
     choke point every picker reads — see main.STEAL_ENEMY_HARVESTERS and
@@ -544,14 +544,25 @@ def _harvesterOwnerAllowed(ct: Controller, owner_team) -> bool:
     ally conveyor can pull output off an opposing team's harvester without its
     ownership ever changing, so relaying one captures its titanium for the
     cost of belts alone. Every consumer (checkOre, pickMaintainOre,
-    _pickRecheckOre) reads this one function, so the whole feature is a single
-    off-switch.
+    _pickRecheckOre, finishNearbyHarvester) reads this one function, so the
+    whole feature is a single off-switch.
+
+    Also bounds how far we'll go for one — see STEAL_HARVESTER_MAX_CHEBYSHEV's
+    comment for why this needs an explicit distance cap now that the ledger is
+    team-shared. Fails open (no cap applied) if the ally core isn't known yet,
+    matching _allowOreSite's own convention for the same situation.
     """
     if owner_team == ct.get_team():
         return True
-    from main import STEAL_ENEMY_HARVESTERS
+    from main import STEAL_ENEMY_HARVESTERS, STEAL_HARVESTER_MAX_CHEBYSHEV
 
-    return bool(STEAL_ENEMY_HARVESTERS)
+    if not STEAL_ENEMY_HARVESTERS:
+        return False
+    if STEAL_HARVESTER_MAX_CHEBYSHEV is not None and STEAL_HARVESTER_MAX_CHEBYSHEV > 0:
+        core = bot.corePos
+        if core is not None and chebyshevToCore(tile, core) > STEAL_HARVESTER_MAX_CHEBYSHEV:
+            return False
+    return True
 
 
 def pickMaintainOre(bot, ct: Controller) -> Position | None:
@@ -599,7 +610,7 @@ def pickMaintainOre(bot, ct: Controller) -> Position | None:
             if bid is None:
                 continue  # empties via pickEmptyOre
             if ct.get_entity_type(bid) == EntityType.HARVESTER and _harvesterOwnerAllowed(
-                ct, ct.get_team(bid)
+                bot, ct, ct.get_team(bid), ore
             ):
                 consider(ore)
             elif _shouldClearAllyOreBlock(ct, ore, bot=bot):
@@ -610,7 +621,7 @@ def pickMaintainOre(bot, ct: Controller) -> Position | None:
             if (
                 ent
                 and ent.get("type") == EntityType.HARVESTER
-                and _harvesterOwnerAllowed(ct, ent.get("team"))
+                and _harvesterOwnerAllowed(bot, ct, ent.get("team"), ore)
             ):
                 consider(ore)
             elif ent:
@@ -624,7 +635,7 @@ def pickMaintainOre(bot, ct: Controller) -> Position | None:
         if bid is None:
             continue
         if ct.get_entity_type(bid) == EntityType.HARVESTER and _harvesterOwnerAllowed(
-            ct, ct.get_team(bid)
+            bot, ct, ct.get_team(bid), tile
         ):
             consider(tile)
         elif _shouldClearAllyOreBlock(ct, tile, bot=bot):
@@ -729,7 +740,7 @@ def checkOre(bot, ct: Controller, tile: Position) -> bool:
         # is the steal mechanic (main.STEAL_ENEMY_HARVESTERS); see
         # _harvesterOwnerAllowed. Disallowed → leave it alone, same as any
         # other tile this function has nothing to do on.
-        if not _harvesterOwnerAllowed(ct, team):
+        if not _harvesterOwnerAllowed(bot, ct, team, tile):
             return False
         bot.relayOrigin = tile
         bot.inRelay = True
@@ -829,9 +840,9 @@ def finishNearbyHarvester(bot, ct: Controller) -> bool:
             continue
         if (x, y) in skipped:
             continue
-        if not _harvesterOwnerAllowed(ct, ent.get("team")):
-            continue
         tile = Position(x, y)
+        if not _harvesterOwnerAllowed(bot, ct, ent.get("team"), tile):
+            continue
         if max(abs(tile.x - pos.x), abs(tile.y - pos.y)) > NEARBY_HARVESTER_SELF_CHEBYSHEV:
             continue
         if not _allowOreSite(bot, tile):
@@ -1162,7 +1173,7 @@ def _pickRecheckOre(bot, ct: Controller) -> Position | None:
         if bid is None:
             consider(tile, kind="empty")
         elif ct.get_entity_type(bid) == EntityType.HARVESTER and _harvesterOwnerAllowed(
-            ct, ct.get_team(bid)
+            bot, ct, ct.get_team(bid), tile
         ):
             consider(tile, kind="harvester")
         elif _shouldClearAllyOreBlock(ct, tile, bot=bot):
@@ -1177,7 +1188,7 @@ def _pickRecheckOre(bot, ct: Controller) -> Position | None:
             if bid is None:
                 consider(ore, kind="empty")
             elif ct.get_entity_type(bid) == EntityType.HARVESTER and _harvesterOwnerAllowed(
-                ct, ct.get_team(bid)
+                bot, ct, ct.get_team(bid), ore
             ):
                 consider(ore, kind="harvester")
             elif _shouldClearAllyOreBlock(ct, ore, bot=bot):
@@ -1191,7 +1202,7 @@ def _pickRecheckOre(bot, ct: Controller) -> Position | None:
             # disqualifying here would be the last resort that ever rescues it.
             ent = None
         if ent and ent.get("type") == EntityType.HARVESTER and _harvesterOwnerAllowed(
-            ct, ent.get("team")
+            bot, ct, ent.get("team"), ore
         ):
             consider(ore, kind="harvester")
         elif not ent:
