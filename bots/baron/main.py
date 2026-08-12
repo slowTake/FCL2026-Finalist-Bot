@@ -27,7 +27,7 @@ from fcode import Controller, EntityType, Position
 # a bracket leapt the target and spawned a run of builders back to back, and falling
 # back froze spawning for hundreds of rounds because it compared against a lifetime
 # counter that never decreases. Both are gone with the round arithmetic.
-MAX_BUILDERS_EARLY = 5  # unpaced rush; also the poor-state floor
+MAX_BUILDERS_EARLY = 4  # unpaced rush; also the poor-state floor
 MAX_BUILDERS = 10  # hard ceiling on living builders
 
 # Richer bank → bigger crew. (min_ti, target); highest matching min_ti wins.
