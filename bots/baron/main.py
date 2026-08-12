@@ -204,9 +204,23 @@ RELAY_MERGE_MAX_HOPS = 10
 # for the picking/relaying side, offense.denyHarvesterSupply for the supply cut.
 STEAL_ENEMY_HARVESTERS = True
 
-# --- Empty-ore pick (defaults) ---
-# False = nearest convenient (core then self). True = index-stagger slots.
-ORE_STAGGER = False
+# --- Spread zoning (logistics_helpers.spreadZone) ---
+# Ported from bandit, which uses this as its sole anti-clumping mechanism in
+# place of baron's role split. `my_index` maps to one of SPREAD_ANGLE_BUCKETS
+# wedges around the ally core (bucket 0 centred on the core->enemy-core axis)
+# and one of SPREAD_DISTANCE_BANDS radial bands (0 = our half, 1 = push toward
+# the enemy core). Replaces the old ORE_STAGGER flag/_oreStaggerKey, which only
+# covered default-role builders, could collide multiple builders on the same
+# slot, and carried an unfixed mirrored-map tiebreak bug.
+#
+# Soft penalty: wrong wedge or band costs an ore candidate points in the same
+# weighted blend as ORE_PICK_SELF/CORE_WEIGHT below, never disqualifies it — a
+# zone with no ore should drift its builder into a neighbour's leftovers, not
+# starve it. Raise to spread harder, lower to prioritise convenience.
+SPREAD_ANGLE_BUCKETS = 4
+SPREAD_DISTANCE_BANDS = 2
+SPREAD_ANGLE_PENALTY = 6
+SPREAD_BAND_PENALTY = 4
 
 # --- Ore-pick priority blend (self-distance vs core-distance) ---
 # _oreConvenienceKey blends these instead of a strict core-first lexicographic

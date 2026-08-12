@@ -10,6 +10,8 @@ silently drift between copies.
 
 from __future__ import annotations
 
+import math
+
 from fcode import Controller, Direction, EntityType, Position
 
 # Chebyshev radius around the ally core that counts as "home": the guardian
@@ -63,8 +65,8 @@ def manhattanToCore(pos: Position, core_pos: Position) -> int:
     Measuring to the anchor alone would read one tile too far from the east and
     south sides of the 2x2 — the same pitfall chebyshevToCore exists to avoid,
     but the manhattan-distance ore pickers (logistics_helpers._oreConvenienceKey,
-    pickMaintainOre, _pickRecheckOre, _oreStaggerKey; offense._oreCloserToAlly
-    and denyOre) never got the equivalent treatment. On a point-mirrored map
+    pickMaintainOre, _pickRecheckOre; offense._oreCloserToAlly and denyOre)
+    never got the equivalent treatment. On a point-mirrored map
     this raw single-tile bias flips which of two mirror-equivalent ore nodes
     reads as "closer" depending on which corner of its 2x2 a team's core anchor
     happens to occupy — the mirror match then sends one team's builders into a
@@ -73,6 +75,29 @@ def manhattanToCore(pos: Position, core_pos: Position) -> int:
     return min(
         abs(pos.x - t.x) + abs(pos.y - t.y) for t in coreFootprint(core_pos)
     )
+
+
+def angleBucket(
+    core_pos: Position,
+    enemy_core_pos: Position,
+    tile: Position,
+    n_buckets: int,
+) -> int:
+    """Bucket `tile`'s bearing from `core_pos` into `n_buckets` equal wedges.
+
+    Measured against the core->enemy-core axis rather than compass/absolute
+    coordinates, so the same bucket means the same thing for both teams on a
+    point-mirrored map.
+    """
+    if n_buckets <= 1:
+        return 0
+    axis = math.atan2(
+        enemy_core_pos.y - core_pos.y, enemy_core_pos.x - core_pos.x
+    )
+    theta = math.atan2(tile.y - core_pos.y, tile.x - core_pos.x) - axis
+    theta = (theta + math.pi) % (2 * math.pi) - math.pi
+    width = 2 * math.pi / n_buckets
+    return int((theta + math.pi) // width) % n_buckets
 
 
 def nearCore(bot, ct: Controller, radius: int | None = None) -> bool:

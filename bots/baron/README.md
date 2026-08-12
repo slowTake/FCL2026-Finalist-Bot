@@ -4,7 +4,7 @@ Multi-module bot on **HiveMind v2**. Per five builders: **2 guardians** / **1 ha
 
 ## Layout
 
-- `main.py` — policy caps and `Player` dispatch (`BUILDER_HOME_TURNS`, `ORE_STAGGER`, …)
+- `main.py` — policy caps and `Player` dispatch (`BUILDER_HOME_TURNS`, `SPREAD_ANGLE_BUCKETS`, …)
 - `builder.py` — role task lists + orchestrators (`runGuardian`, `runDefault`, `runHarasser`, `runBuilderRoles`)
 - `defence.py` — home defence (`defGun`, `clearBarriers`, `patrolHome`)
 - `offense.py` — harasser helpers (`snipeHarvester`, `offGun`, `avoidFire`, `seekHarvester`, `seekCore`)

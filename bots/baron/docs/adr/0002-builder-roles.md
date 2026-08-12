@@ -30,7 +30,7 @@ Per five spawns: **2 guardians / 2 harassers / 1 default**. Index `0` means unas
 
 Guardians ignore wave gates; non-guardians switch to harasser when a wave gate fires. Guardians share `SLOT_THREAT` recall with default. *(Superseded — see the amendment under Status.)*
 
-Empty-ore stagger is optional (`ORE_STAGGER` in `main.py`); default off uses convenience pick (core then self distance).
+Empty-ore pick blends convenience (core then self distance) with a zone-spread penalty (`SPREAD_*` in `main.py`, ported from bandit) that discourages builders from crowding the same wedge around the core.
 
 Enemy harvester / ore scouting uses HiveMind `local_map` (no new store slots).
 

@@ -19,6 +19,7 @@ from fcode import Controller, Direction, EntityType, Environment, Position
 from geometry import (
     DEFEND_HOME_CHEBYSHEV,
     TURRET_TYPES,
+    angleBucket,
     beltNeighbors,
     chebyshevToCore,
     coreFootprint,
@@ -178,31 +179,77 @@ def allyBuilderOnOre(ct: Controller, ore: Position) -> bool:
     return ct.get_team(bid) == ct.get_team()
 
 
-def _defaultOreRank(bot) -> int:
-    """Stable rank among economy defaults (idx % 5 == 3): 3→0, 8→1, 13→2, …"""
-    idx = bot.hivemind.my_index
-    if idx <= 0 or idx % 5 != 3:
-        return 0
-    return (idx - 3) // 5
+def spreadZoneForIndex(idx: int) -> tuple[int, int]:
+    """(angle_bucket, distance_band) for a builder index. Pure.
 
-
-def _oreStaggerKey(ore: Position, core: Position | None) -> tuple:
-    """Team-stable sort: closer to core first, then x/y.
-
-    Final tiebreak is raw (x, y) — not mirror-symmetric between two point-
-    mirrored maps' teams, unlike the manhattanToCore term above it. Left as-is:
-    ORE_STAGGER is False by default (main.py), so this path is dormant;
-    revisit if it's ever turned on for a mirrored map.
+    Consecutive indices land in adjacent wedges, not adjacent bands: the first
+    SPREAD_ANGLE_BUCKETS builders fan out around the core, and only the next
+    one starts a second band further out.
     """
-    if core is not None:
-        return (manhattanToCore(ore, core), ore.x, ore.y)
-    return (ore.x, ore.y)
+    from main import SPREAD_ANGLE_BUCKETS, SPREAD_DISTANCE_BANDS
+
+    if idx < 0:
+        idx = 0
+    buckets = max(1, SPREAD_ANGLE_BUCKETS)
+    bands = max(1, SPREAD_DISTANCE_BANDS)
+    return (idx % buckets, (idx // buckets) % bands)
+
+
+def spreadZone(bot) -> tuple[int, int]:
+    """This builder's (angle_bucket, distance_band), cached on bot._spreadZone."""
+    cached = getattr(bot, "_spreadZone", None)
+    if cached is not None:
+        return cached
+    zone = spreadZoneForIndex(bot.hivemind.my_index)
+    bot._spreadZone = zone
+    return zone
+
+
+def _spreadScore(bot, ore: Position) -> int:
+    """Penalty, in ore-score points, for `ore` being outside this bot's zone.
+
+    Soft, always additive into the convenience blend below, never a filter —
+    a zone with no ore should drift its builder into a neighbour's leftovers,
+    not starve it. Ported from bandit, which uses this as its sole
+    anti-clumping mechanism. Returns 0 when the enemy core isn't known yet, so
+    an unidentified map degrades to the plain distance blend.
+    """
+    from main import (
+        SPREAD_ANGLE_BUCKETS,
+        SPREAD_ANGLE_PENALTY,
+        SPREAD_BAND_PENALTY,
+        SPREAD_DISTANCE_BANDS,
+    )
+
+    core = bot.corePos
+    enemy = getattr(bot, "enemyCorePos", None)
+    if core is None or enemy is None:
+        return 0
+
+    want_angle, want_band = spreadZone(bot)
+    buckets = max(1, SPREAD_ANGLE_BUCKETS)
+    got_angle = angleBucket(core, enemy, ore, buckets)
+    # Circular distance: with 4 buckets, wedge 0 and wedge 3 are neighbours
+    # (1 apart), not opposites (3 apart).
+    d_angle = min(
+        (got_angle - want_angle) % buckets, (want_angle - got_angle) % buckets
+    )
+    penalty = d_angle * SPREAD_ANGLE_PENALTY
+
+    # Band is radial along the core->enemy-core span, measured as a fraction
+    # of that span so it scales with map size.
+    bands = max(1, SPREAD_DISTANCE_BANDS)
+    span = manhattanToCore(enemy, core) or 1
+    frac = manhattanToCore(ore, core) / span
+    got_band = min(int(frac * bands), bands - 1)
+    penalty += abs(got_band - want_band) * SPREAD_BAND_PENALTY
+    return int(penalty)
 
 
 def _oreConvenienceKey(
-    ore: Position, core: Position | None, self_pos: Position
+    bot, ore: Position, core: Position | None, self_pos: Position
 ) -> tuple:
-    """Blend of near-builder (fast to reach) and near-core (defendable).
+    """Blend of near-builder (fast to reach), near-core (defendable), and zone spread.
 
     Previously a strict lexicographic (core_dist, self_dist, ...) sort — core
     distance always won outright, so a builder would walk past ore right next
@@ -221,10 +268,11 @@ def _oreConvenienceKey(
     from main import ORE_PICK_CORE_WEIGHT, ORE_PICK_SELF_WEIGHT
 
     self_d = manhattan(ore, self_pos)
+    spread = _spreadScore(bot, ore)
     if core is None:
-        return (self_d, ore.x, ore.y)
+        return (self_d + spread, ore.x, ore.y)
     core_d = manhattanToCore(ore, core)
-    score = ORE_PICK_SELF_WEIGHT * self_d + ORE_PICK_CORE_WEIGHT * core_d
+    score = ORE_PICK_SELF_WEIGHT * self_d + ORE_PICK_CORE_WEIGHT * core_d + spread
     return (score, ore.x, ore.y)
 
 
@@ -300,13 +348,11 @@ def _oreLedgerStale(bot, entry: dict) -> bool:
 
 
 def pickEmptyOre(bot, ct: Controller) -> Position | None:
-    """Pick empty ore: convenience or index-stagger; skip ally-on-tile pads.
+    """Pick empty ore by convenience+spread score; skip ally-on-tile pads.
 
     "Empty" admits ore carrying one of our own `denyOre` barriers — `checkOre`
     clears it and builds on arrival, so denial is never a lock-out.
     """
-    from main import ORE_STAGGER
-
     core = bot.corePos
     self_pos = ct.get_position()
     me = ct.get_team()
@@ -382,13 +428,8 @@ def pickEmptyOre(bot, ct: Controller) -> Position | None:
     free = [o for o in eligible if not allyBuilderOnOre(ct, o)]
     pool = free if free else eligible
 
-    if not ORE_STAGGER:
-        pool.sort(key=lambda o: _oreConvenienceKey(o, core, self_pos))
-        return pool[0]
-
-    pool.sort(key=lambda o: _oreStaggerKey(o, core))
-    rank = _defaultOreRank(bot)
-    return pool[rank % len(pool)]
+    pool.sort(key=lambda o: _oreConvenienceKey(bot, o, core, self_pos))
+    return pool[0]
 
 
 def tileThreatenedByGunner(ct: Controller, tile: Position) -> bool:
@@ -512,7 +553,7 @@ def _harvesterOwnerAllowed(ct: Controller, owner_team) -> bool:
 
 
 def pickMaintainOre(bot, ct: Controller) -> Position | None:
-    """Prefer sticky site, else a reported orphan, else staggered empty/harvester/block."""
+    """Prefer sticky site, else a reported orphan, else nearest harvester/block."""
     from logistics import _pickOrphanRelay
 
     _clearStickyIfAllyClaimed(bot, ct)
@@ -536,9 +577,10 @@ def pickMaintainOre(bot, ct: Controller) -> Position | None:
         # manhattanToCore, not raw manhattan to the core's anchor tile — see
         # _oreConvenienceKey's docstring for why raw anchor distance is biased
         # per team on a mirrored map.
+        spread = _spreadScore(bot, ore)
         if core is not None:
-            return (manhattanToCore(ore, core), manhattan(ore, pos))
-        return (manhattan(ore, pos),)
+            return (manhattanToCore(ore, core) + spread, manhattan(ore, pos))
+        return (manhattan(ore, pos) + spread,)
 
     def consider(ore: Position) -> None:
         nonlocal best, best_key
