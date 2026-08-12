@@ -661,6 +661,27 @@ def buildHarvester(bot, ct: Controller) -> bool:
     """Build on empty ore in vision / known map. Returns True if acted."""
     if bot.inRelay:
         return False
+    # A relay attempt can abort on its very first relayToCore call (no route
+    # found at all) without bot.inRelay having protected the harvester for
+    # more than one turn — abortRelay/clearRelay never touch bot.oreSite, so
+    # it's left pointing at the harvester we already built. Below,
+    # _stickyEmptyTarget would (correctly, for its own purpose of finding
+    # *empty* ore) see a tile with a building on it, conclude the sticky
+    # target is invalid, and clear bot.oreSite — silently abandoning an
+    # already-built harvester instead of giving maintainHarvester a chance to
+    # retry relaying it next. Observed directly: a builder building harvester
+    # after harvester, never finishing a relay until the 3rd or 4th, each
+    # earlier one costing 20 Ti for nothing. Bail out here instead, before
+    # touching oreSite, so runDefault's next step (maintainHarvester ->
+    # pickMaintainOre's sticky-oreSite branch) sees it still set and retries.
+    if bot.oreSite is not None and ct.is_in_vision(bot.oreSite):
+        bid = ct.get_tile_building_id(bot.oreSite)
+        if (
+            bid is not None
+            and ct.get_entity_type(bid) == EntityType.HARVESTER
+            and ct.get_team(bid) == ct.get_team()
+        ):
+            return False
 
     # Adjacent empty ore first
     if ct.get_action_cooldown() == 0:

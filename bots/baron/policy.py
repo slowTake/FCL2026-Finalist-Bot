@@ -201,24 +201,29 @@ RELAY_MERGE_MAX_HOPS = 10
 # tiles) with room to spare without scanning the whole map's local_map.
 RELAY_MERGE_ANCHOR_CHEBYSHEV = 20
 
-# --- Relay path length cap (≤0 / None on RELAY_MAX_PATH_RATIO disables) ---
-# pickRelayPath rejects a found path (treats it as "no route", same as A*
+# --- Relay path length cap (≤0 / None disables — currently disabled) ---
+# pickRelayPath can reject a found path (treats it as "no route", same as A*
 # finding nothing) if it's longer than straight_line_distance * RATIO + SLACK,
 # where straight_line_distance is the shorter of manhattan-to-core and
-# manhattan-to-nearest-merge-anchor. A backstop against any pathological
-# route — wall mazes, a merge/heuristic edge case, anything else — that
-# satisfies is_goal but is still far too long to actually walk: a relay that
-# takes 100+ turns to lay is worse than no relay (the builder is committed,
-# bot.inRelay, and unavailable to defend/econ the whole time), and it can
-# graze past and incidentally capture titanium from unrelated enemy
-# harvesters purely because the route happens to pass near them (the engine
-# pulls from any adjacent conveyor regardless of team — see
-# STEAL_HARVESTER_MAX_CHEBYSHEV, which only bounds a *deliberate* steal pick
-# and can't catch this). A ratio, not a flat cap, so long-but-genuine trips on
-# big maps aren't punished the same as a short trip that produced a huge
-# detour; the flat slack covers legitimately-walled short trips a pure ratio
-# would reject. 3x + 15 is a first guess, not a tuned value.
-RELAY_MAX_PATH_RATIO = 3
+# manhattan-to-nearest-merge-anchor. Intended as a backstop against a
+# pathological route that satisfies is_goal but is still far too long to
+# actually walk. Disabled by default (RELAY_MAX_PATH_RATIO = None) after
+# direct measurement showed straight-line manhattan distance is not a
+# reliable proxy for "how long a legitimate path should be" on a wall-heavy
+# map: on `heart`, two perfectly ordinary domestic relays (one 13 tiles from
+# the core in a straight line, one whose nearest merge anchor was 4 tiles
+# away by manhattan) needed real, A*-verified paths of 62 and 77 tiles
+# respectively to actually walk around the walls — both got wrongly rejected
+# at a 3x+15 cap, silently abandoning two already-built harvesters (20 Ti
+# each) while the builder wandered off to build more instead of retrying
+# them. The values below are what was being tested when that was found —
+# kept as a starting point, not a tuned setting, if this is revisited with a
+# passability-aware distance estimate instead of raw manhattan. The
+# _mergeAnchorCandidates heuristic fix (this constant's neighbor,
+# RELAY_MERGE_ANCHOR_CHEBYSHEV) is what actually fixes the original
+# pathological-wander bug report — it corrects A*'s search order rather than
+# rejecting results after the fact, so it doesn't share this failure mode.
+RELAY_MAX_PATH_RATIO = None
 RELAY_MAX_PATH_SLACK = 15
 
 # --- Steal enemy harvesters (False disables) ---
