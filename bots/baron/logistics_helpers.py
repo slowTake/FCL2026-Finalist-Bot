@@ -29,7 +29,7 @@ from geometry import (
     nearCore,
 )
 from logistics import clearRelay, coreThreatened, relayToCore
-from movement import moveToward, pathKnownBlocked
+from movement import allyOccupied, moveToward, pathKnownBlocked
 from pathing import CARDINALS, inBounds, manhattan, walkPassable
 
 _ORE_BLOCK_CLEAR = (
@@ -981,6 +981,11 @@ def _safeCoreStandTile(bot, ct: Controller, core: Position) -> Position | None:
     Returns None when every side is covered, which is a deliberate refusal: healing
     restores 4 HP/turn, and standing in a gunner's line to do it feeds a 40 HP
     builder to 10 dmg/turn. Losing a 30 Ti builder to heal 16 HP is not a defence.
+
+    Also skips a side another guardian is already standing on (`allyOccupied`):
+    without this, both guardians independently converge on the same "nearest"
+    tile when reacting to the same attack, and the second one just re-targets
+    an occupied tile every turn forever instead of taking the next-best side.
     """
     from offense import _enemyGunners, _tileUnderGunnerFire
 
@@ -1001,6 +1006,11 @@ def _safeCoreStandTile(bot, ct: Controller, core: Position) -> Position | None:
             if cand != pos and not walkPassable(ct, cand, local_map=local_map):
                 continue
             if gunners and _tileUnderGunnerFire(ct, cand, gunners):
+                continue
+            if cand != pos and allyOccupied(ct, cand):
+                # Another guardian is already standing here — targeting it too
+                # just means walking up to an occupied tile and getting
+                # refused by can_move every turn. Prefer the next-best side.
                 continue
             key = (manhattan(pos, cand), cand.x, cand.y)
             if best_key is None or key < best_key:

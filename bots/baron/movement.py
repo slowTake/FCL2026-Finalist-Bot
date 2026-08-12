@@ -167,6 +167,25 @@ def _blockedByEnemyBot(ct: Controller, p: Position) -> bool:
     return occ is not None and ct.get_team(occ) != ct.get_team()
 
 
+def allyOccupied(ct: Controller, p: Position) -> bool:
+    """True if a visible ally builder bot other than self currently stands on `p`.
+
+    Distinct from `_blockedByEnemyBot` / A*'s ally-blind pathing above: that
+    design is deliberately about routing *through* an ally, which is fine
+    since the ally will likely have moved on by the time a multi-tile path
+    gets there. Picking a *destination* tile is different — if a teammate is
+    already standing on the one good tile, targeting it anyway just means
+    walking up to it and getting refused by can_move forever. Candidate
+    selection call sites should skip an ally-occupied tile, not target it.
+    """
+    if not ct.is_in_vision(p):
+        return False
+    occ = ct.get_tile_builder_bot_id(p)
+    if occ is None or occ == ct.get_id():
+        return False
+    return ct.get_team(occ) == ct.get_team()
+
+
 def moveToward(
     bot, ct: Controller, target: Position, *, avoid: set[tuple[int, int]] | None = None
 ) -> bool:

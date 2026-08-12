@@ -847,6 +847,7 @@ def _patrolWaypoints(bot, ct: Controller) -> list[Position]:
     if core is None:
         return []
     from main import GUARDIAN_PATROL_OFFSET
+    from movement import allyOccupied
 
     o = GUARDIAN_PATROL_OFFSET
     local_map = bot.hivemind.local_map
@@ -857,6 +858,10 @@ def _patrolWaypoints(bot, ct: Controller) -> list[Position]:
         if key in claimed:
             return False
         if not inBounds(ct, tile):
+            return False
+        if allyOccupied(ct, tile):
+            # Another guardian is already parked here — list a different
+            # side instead of also cycling onto its tile.
             return False
         return walkPassable(ct, tile, local_map=local_map)
 
