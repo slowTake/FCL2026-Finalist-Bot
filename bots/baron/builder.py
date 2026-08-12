@@ -720,6 +720,12 @@ def runGuardian(bot, ct: Controller) -> None:
         # over-pull GUARDIAN_ECON_SLACK exists to prevent.
         moveTowardLeash(bot, ct, bot.corePos, radius=guardianLeash(ct))
         return
+    # Ahead of blockGunLine: a dangling belt end next to the core is exactly
+    # the kind of tile blockGunLine will barrier over if left open, which
+    # would wall off a relay mid-line instead of just blocking the gunner.
+    # Patch it first so blockGunLine never has a belt gap to barricade.
+    if patchAdjacentCoreBelt(bot, ct):
+        return
     # Cheapest answer first: a barrier in the gunner's line of fire (~3 Ti) costs
     # far less than fielding a gunner to kill it. Gunners only — see blockGunLine.
     if blockGunLine(bot, ct):
@@ -745,15 +751,6 @@ def runGuardian(bot, ct: Controller) -> None:
     # while taking 10 is not, and neither is clearing a barrier or laying a belt.
     # goal=corePos so the dodge retreats homeward and stays inside the leash.
     if avoidFire(bot, ct, goal=bot.corePos):
-        return
-    # Zero-movement — only acts on a belt gap that already touches the core
-    # AND is already adjacent to this guardian — so it can never be the
-    # reason a guardian leaves its healing post. Ahead of defendHome because
-    # defendHome returns True every turn it heals, which otherwise starves
-    # reconnectBelts (parked well below) for as long as the core stays
-    # damaged, and a gap right against the core is usually the one tile a
-    # shelled corridor is missing.
-    if patchAdjacentCoreBelt(bot, ct):
         return
     if defendHome(bot, ct):
         return
