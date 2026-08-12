@@ -90,7 +90,7 @@ GUARDIAN_ECON_SLACK = 1
 # TIGHT the moment the *core* sees an enemy turret or builder, which is the only
 # way a roaming guardian learns home is being probed (a builder's ledger is
 # personal-vision only, and its own vision is ~4.5 against the core's ~6).
-# The core writes CORE_THREAT_BIT; guardians read it via logistics.guardianLeash.
+# The core writes CORE_THREAT_BIT; guardians read it via logistics_helpers.guardianLeash.
 GUARDIAN_LEASH_WIDE = 8
 GUARDIAN_LEASH_TIGHT = 4
 # Stay tight this long after the last sighting, so an enemy skirting the edge of
@@ -110,7 +110,7 @@ DANGLING_BELT_SELF_CHEBYSHEV = 3
 # --- Harvester line verification (≤0 disables) ---
 # How long a builder waits between verification passes, and how long one of its
 # own harvesters stays "recently verified" before it is eligible again.
-# logistics.verifyHomeHarvester re-walks a harvester's belt line with
+# logistics_helpers.verifyHomeHarvester re-walks a harvester's belt line with
 # bot.relayVerify set, which forces vision-only proof — the only way to notice a
 # belt destroyed out of sight, since a ghost entry in local_map otherwise reads
 # as still-built for RELAY_LEDGER_TRUST_TURNS(30). Deliberately longer than that
@@ -415,7 +415,7 @@ CORE_THREAT_BIT = 2
 # mechanism exists (see docs/adr or CONTEXT.md's RelayToCore section for why),
 # so this is the only thing that ever frees a slot whose harvester died or got
 # reconnected some way the explicit clear-on-success hook didn't see. Mirrors
-# ORE_RECHECK_CLEAR_INTERVAL (logistics.py) rather than inventing a new figure.
+# ORE_RECHECK_CLEAR_INTERVAL (logistics_helpers.py) rather than inventing a new figure.
 ORPHAN_REGISTRY_TTL_TURNS = 50
 
 DEBUG = True
@@ -424,7 +424,8 @@ from guns import gunnerLoop, sentinelLoop, topUpAmmo
 from hivemind import CoreState, HiveMind, unpack_cores
 from respawn import Respawn, SpawnSchedule
 from builder import runBuilderRoles
-from logistics import enemyTurretInVision, setCoreThreat
+from logistics import setCoreThreat
+from logistics_helpers import enemyTurretInVision
 
 SPAWN_SCHEDULE = SpawnSchedule(
     max_builders_early=MAX_BUILDERS_EARLY,

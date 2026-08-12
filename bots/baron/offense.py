@@ -21,7 +21,7 @@ from geometry import (
     isAdjacent,
     manhattanToCore,
 )
-from logistics import moveToward, pathKnownBlocked
+from movement import moveToward, pathKnownBlocked
 from pathing import CARDINALS, inBounds, manhattan, walkPassable
 from walls import wallEnemyCore
 
@@ -857,7 +857,7 @@ def _denyOreCandidates(bot, ct: Controller) -> list[Position]:
     before anyone has scouted it.
     """
     from main import DENY_ORE_CHEBYSHEV, DENY_ORE_MIN_ALLY_CHEBYSHEV
-    from logistics import knownOreTiles, tileThreatenedByGunner
+    from logistics_helpers import knownOreTiles, tileThreatenedByGunner
 
     radius = DENY_ORE_CHEBYSHEV
     if radius is None or radius <= 0:
@@ -888,7 +888,7 @@ def _denyOreCandidates(bot, ct: Controller) -> list[Position]:
         # manhattanToCore, not raw manhattan to each core's anchor tile — see
         # _oreCloserToAlly's docstring for why raw anchor distance is biased
         # per team on a mirrored map. Must stay the same test as that helper
-        # and logistics._shouldClearAllyOreBlock (see its docstring).
+        # and logistics_helpers._shouldClearAllyOreBlock (see its docstring).
         if manhattanToCore(ore, ally) <= manhattanToCore(ore, enemy):
             continue
         # Occupied nodes are somebody else's problem: a live enemy harvester belongs

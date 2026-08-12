@@ -79,7 +79,7 @@ def defGun(bot, ct: Controller, *, homeOnly: bool = False) -> bool:
     `homeOnly` forbids any action that would need the caller to leave the leash
     — guardians pass it, defaults do not.
     """
-    from logistics import guardianLeash
+    from logistics_helpers import guardianLeash
 
     if bot.inRelay or getattr(bot, "recheckingOre", False):
         return False
@@ -299,7 +299,7 @@ def defSentinel(bot, ct: Controller) -> bool:
 
     if not DEF_SENTINEL or bot.corePos is None:
         return False
-    from logistics import guardianLeash
+    from logistics_helpers import guardianLeash
 
     if bot.inRelay or getattr(bot, "recheckingOre", False):
         return False
@@ -325,7 +325,7 @@ def clearBarriers(bot, ct: Controller) -> bool:
     snaps back to tight the moment the core sees a threat. Barriers beyond even
     the wide leash are the harassers' problem.
     """
-    from logistics import guardianLeash
+    from logistics_helpers import guardianLeash
 
     me = ct.get_team()
     pos = ct.get_position()
@@ -360,7 +360,7 @@ def clearBarriers(bot, ct: Controller) -> bool:
             return True
         return False
 
-    from logistics import moveToward
+    from movement import moveToward
 
     return moveToward(bot, ct, best)
 
@@ -635,7 +635,8 @@ def _reconnectFacing(
     `maintainHarvester` → `relayToCore` owns that repair and has an actual path
     to work from.
     """
-    from logistics import _relayReachesCore, travelFacing
+    from logistics import _relayReachesCore
+    from movement import travelFacing
 
     footprint = coreFootprint(core)
     here = chebyshevToCore(target, core)
@@ -690,7 +691,8 @@ def _tryPatchDanglingBelts(
     toward a *distant* break to chase it is a real repositioning risk and stays
     off the table until the coast is clear.
     """
-    from logistics import moveToward, placeRelayBelt
+    from logistics import placeRelayBelt
+    from movement import moveToward
 
     actionable: list[tuple[Position, Direction]] = []
     for _belt, target in candidates:
@@ -790,7 +792,7 @@ def reconnectBelts(bot, ct: Controller, *, allow_walk: bool = True) -> bool:
     if core is None or bot.inRelay or getattr(bot, "recheckingOre", False):
         return False
 
-    from logistics import guardianLeash
+    from logistics_helpers import guardianLeash
 
     candidates = _danglingBeltEnds(bot, ct, max_dist=guardianLeash(ct))
     if not candidates:
@@ -935,6 +937,6 @@ def patrolHome(bot, ct: Controller) -> bool:
         bot.patrolIdx = (idx + 1) % len(waypoints)
         target = waypoints[bot.patrolIdx]
 
-    from logistics import moveToward
+    from movement import moveToward
 
     return moveToward(bot, ct, target)

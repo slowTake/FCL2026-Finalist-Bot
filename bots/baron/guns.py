@@ -429,7 +429,7 @@ def placeGun(bot, ct: Controller, target: Position) -> bool:
     best_site = pads[0][0]
     if manhattan(pos, best_site) <= 1:
         return False
-    from logistics import moveToward
+    from movement import moveToward
 
     return moveToward(bot, ct, best_site)
 
@@ -688,7 +688,7 @@ def placeSentinel(bot, ct: Controller, target: Position) -> bool:
     best_site = pads[0][0]
     if manhattan(pos, best_site) <= 1:
         return False
-    from logistics import moveToward
+    from movement import moveToward
 
     return moveToward(bot, ct, best_site)
 
@@ -793,7 +793,7 @@ def placeDefSentinel(
     best_site = pads[0][0]
     if manhattan(pos, best_site) <= 1:
         return False
-    from logistics import moveToward
+    from movement import moveToward
 
     return moveToward(bot, ct, best_site)
 

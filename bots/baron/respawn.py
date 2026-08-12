@@ -195,7 +195,7 @@ class Respawn:
                 # corner of the 2x2 footprint, so raw distance is biased by up
                 # to 2 tiles depending which corner a team's core happens to
                 # occupy. On a mirrored map that bias flips per team: the same
-                # pitfall fixed in logistics.py's ore pickers (see
+                # pitfall fixed in logistics_helpers.py's ore pickers (see
                 # geometry.manhattanToCore's docstring), just here for which
                 # ore a fresh default's spawn tile gets biased toward.
                 spawn_goal = min(side_pool, key=lambda o: manhattanToCore(o, core_pos))
