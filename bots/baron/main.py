@@ -59,7 +59,7 @@ MAX_GUARDIANS: int | None = 2
 
 # --- Wave attack (≤0 / None = unset; positive = active gate) ---
 WAVE_ATTACK_TURN: int | None = -1  # e.g. 300 → all builders harass from that turn
-WAVE_ATTACK_TI: int | None = 2000  # e.g. 2000 → all harass once bank ≥ this
+WAVE_ATTACK_TI: int | None = 1000  # e.g. 2000 → all harass once bank ≥ this
 
 # --- Default early defend (age after birth_round; ≤0 disables) ---
 # Only applies inside runDefault — harassers/guardians never see this.
@@ -276,7 +276,7 @@ HARASS_DEADLOCK_TURNS = 8
 # threats against). Keeps snipeHarvester/offGun/denyOre/denyBelt/seekHarvester
 # from reaching far-out enemy harvesters that a steal-relay could claim alive
 # instead of the harasser destroying them.
-HARASS_LEASH_CHEBYSHEV = 7
+HARASS_LEASH_CHEBYSHEV = 5
 
 # --- Blocked-route breaker (False disables) ---
 # When A* proves the ore claim unreachable, replan with enemy barriers passable to
@@ -376,7 +376,15 @@ OSCILLATION_DISTINCT_LIMIT = 3
 MAX_PATH_SEARCHES_PER_TURN = 3
 
 # --- Gun placement (≤0 disables) ---
-GUN_PLACE_MIN_TI = 60 # need bank ≥ this to place gunner/sentinel
+GUN_PLACE_MIN_TI = 100 # need bank ≥ this to place gunner/sentinel
+
+# --- Gunner idle self-destruct (≤0 disables) ---
+# Consecutive turns a gunner may go without firing before it self_destructs.
+# A gunner that never gets a shot is a dead 60+ Ti sunk on a tile with nothing
+# to answer — usually the front it was covering shifted or the enemy stopped
+# probing there. self_destruct deals no explosion damage, so this is purely
+# about freeing the unit cap / bank, not a weapon.
+GUNNER_IDLE_TURNS = 15
 
 # --- React-freeze cap (≤0 / None disables) ---
 # _reactEnemyTurret's skipEconomy branch consumes a default builder's whole turn,
@@ -485,6 +493,9 @@ class Player:
         self.cachedPathTarget: Position | None = None
         self.lastPos: Position | None = None
         self.stuck = 0
+        # Gunner-only: consecutive turns since this gunner last fired. Drives
+        # GUNNER_IDLE_TURNS self-destruct in gunnerLoop.
+        self.turnsSinceFire = 0
         # Exact-standstill only, never reset by anything but real movement — unlike
         # `stuck` (also trips on oscillation, and gets reset by several consumers,
         # e.g. _reactEnemyTurret's freeze branch, breakOreDeadlock). breakEncirclement
@@ -511,7 +522,7 @@ class Player:
         elif etype == EntityType.BUILDER_BOT:
             self._run_builder(ct)
         elif etype == EntityType.GUNNER:
-            gunnerLoop(ct)
+            gunnerLoop(self, ct)
         elif etype == EntityType.SENTINEL:
             sentinelLoop(ct)
 

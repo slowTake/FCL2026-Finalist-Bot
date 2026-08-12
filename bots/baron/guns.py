@@ -508,13 +508,31 @@ def _bestRotateTarget(ct: Controller, priority: dict) -> Position | None:
     return best
 
 
-def gunnerLoop(ct: Controller) -> None:
-    """Fire hostiles on facing; else rotate toward high-value target."""
+def gunnerLoop(bot, ct: Controller) -> None:
+    """Fire hostiles on facing; else rotate toward high-value target.
+
+    Self-destructs after GUNNER_IDLE_TURNS consecutive turns without a fire —
+    see GUNNER_IDLE_TURNS in main.py. `bot` is this gunner's persistent Player
+    instance, carrying turnsSinceFire across turns the same way builder.py
+    carries bot.stuck.
+    """
+    from main import GUNNER_IDLE_TURNS
+
     if ct.get_action_cooldown() != 0:
         return
     hit = _hostileOnFacing(ct, _GUNNER_PRIORITY)
     if hit is not None and ct.can_fire(hit):
         ct.fire(hit)
+        bot.turnsSinceFire = 0
+        return
+
+    bot.turnsSinceFire += 1
+    if (
+        GUNNER_IDLE_TURNS is not None
+        and GUNNER_IDLE_TURNS > 0
+        and bot.turnsSinceFire >= GUNNER_IDLE_TURNS
+    ):
+        ct.self_destruct()
         return
 
     target = _bestRotateTarget(ct, _GUNNER_PRIORITY)
