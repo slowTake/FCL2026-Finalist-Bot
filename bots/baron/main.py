@@ -67,6 +67,9 @@ class Player:
         # ledger fallback so the line is proven by eye, not by memory. Cleared by
         # clearRelay so it can never leak into an ordinary relay.
         self.relayVerify = False
+        # Set only while relayOrigin came from the hijack registry, not the
+        # harvester one — see logistics.pursueHijackTarget / _reportAndAbort.
+        self.hijackOrigin = False
         self.lastHarvesterVerifyRound = -999
         # (x, y) -> round this builder last verified that harvester's line.
         self.verifiedHarvesters: dict[tuple[int, int], int] = {}

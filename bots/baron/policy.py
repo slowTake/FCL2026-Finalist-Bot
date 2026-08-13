@@ -183,6 +183,49 @@ RELAY_MERGE_ENABLED = True
 # a long belt line, generous enough to span a normal relay's length.
 RELAY_MERGE_MAX_HOPS = 10
 
+# --- Relay merge anchor heuristic (≤0 / None disables) ---
+# Chebyshev radius around the relay's origin that logistics._mergeAnchorCandidates
+# scans for already-built, provably core-connected ally CONVEYOR tiles to feed
+# pickRelayPath's search heuristic. Without this, the heuristic is plain
+# manhattan(p, core_pos), which *overestimates* true remaining cost whenever a
+# nearer merge target exists (is_goal accepts that closer point too) —
+# inadmissible, and it silently starves A* of any pull toward a nearby line:
+# the search keeps preferring nodes that look closer to the raw core position
+# even when walking toward a provably-connected line a few tiles away would
+# resolve the search far cheaper. Observed directly: a relay planned near an
+# already-built, provably-connected line ~7 tiles away instead wandered 130+
+# tiles around a wall maze before reaching any goal at all. A heuristic aid
+# only — the real proof is still _relayReachesCore, run here per candidate the
+# same way is_goal runs it per node — so this only needs to be cheap and
+# roughly useful, not exhaustive. 20 comfortably covers the observed miss (7
+# tiles) with room to spare without scanning the whole map's local_map.
+RELAY_MERGE_ANCHOR_CHEBYSHEV = 20
+
+# --- Relay path length cap (≤0 / None disables — currently disabled) ---
+# pickRelayPath can reject a found path (treats it as "no route", same as A*
+# finding nothing) if it's longer than straight_line_distance * RATIO + SLACK,
+# where straight_line_distance is the shorter of manhattan-to-core and
+# manhattan-to-nearest-merge-anchor. Intended as a backstop against a
+# pathological route that satisfies is_goal but is still far too long to
+# actually walk. Disabled by default (RELAY_MAX_PATH_RATIO = None) after
+# direct measurement showed straight-line manhattan distance is not a
+# reliable proxy for "how long a legitimate path should be" on a wall-heavy
+# map: on `heart`, two perfectly ordinary domestic relays (one 13 tiles from
+# the core in a straight line, one whose nearest merge anchor was 4 tiles
+# away by manhattan) needed real, A*-verified paths of 62 and 77 tiles
+# respectively to actually walk around the walls — both got wrongly rejected
+# at a 3x+15 cap, silently abandoning two already-built harvesters (20 Ti
+# each) while the builder wandered off to build more instead of retrying
+# them. The values below are what was being tested when that was found —
+# kept as a starting point, not a tuned setting, if this is revisited with a
+# passability-aware distance estimate instead of raw manhattan. The
+# _mergeAnchorCandidates heuristic fix (this constant's neighbor,
+# RELAY_MERGE_ANCHOR_CHEBYSHEV) is what actually fixes the original
+# pathological-wander bug report — it corrects A*'s search order rather than
+# rejecting results after the fact, so it doesn't share this failure mode.
+RELAY_MAX_PATH_RATIO = None
+RELAY_MAX_PATH_SLACK = 15
+
 # --- Steal enemy harvesters (False disables) ---
 # A default's ore-scan (pickMaintainOre / _pickRecheckOre / checkOre) normally
 # only ever relays a harvester it owns. With this on, an enemy-owned harvester
@@ -198,9 +241,30 @@ RELAY_MERGE_MAX_HOPS = 10
 # commits. That derived signal is also what offense.py's snipeHarvester/offGun
 # read to stop shooting a harvester we're actively stealing, and what
 # denyHarvesterSupply reads to go sever the enemy's own competing belt on it
-# instead. This one knob gates every consumer — logistics._harvesterOwnerAllowed
+# instead. This one knob gates every consumer — logistics_helpers._harvesterOwnerAllowed
 # for the picking/relaying side, offense.denyHarvesterSupply for the supply cut.
 STEAL_ENEMY_HARVESTERS = True
+
+# --- Steal-harvester distance cap (≤0 / None disables the bound) ---
+# Chebyshev radius from the *ally* core beyond which an enemy harvester is not
+# offered as a steal target, checked in the same _harvesterOwnerAllowed choke
+# point as STEAL_ENEMY_HARVESTERS itself. Before the HiveMind ledger became
+# team-shared, a builder could only ever discover an enemy harvester it had
+# personally scouted, which implicitly kept steal targets close to wherever
+# that builder actually was. Now every builder's local_map includes every
+# teammate's sightings team-wide, so without this a builder near our own core
+# can commit to a multi-turn relay toward a harvester clear across the map
+# that only a scout ever personally saw — observed directly: team-0 conveyors
+# landing next to enemy harvesters up to Chebyshev 19 from the ally core on a
+# 28-wide map, far past anywhere team 0 actually operates. Measured from the
+# ally core, not the enemy core, and not a midline comparison like
+# offense._oreCloserToAlly (that answers "is this ore on our side," a
+# different question — enemy harvesters are almost always on their side by
+# construction) — this is "how far will we actually go for this," the same
+# shape as HARASS_LEASH_CHEBYSHEV/DEFEND_HOME_CHEBYSHEV. 12 is a first guess,
+# not a tuned value — worth adjusting after a few multiseed_eval.py passes,
+# since it directly trades economic reach against exposure.
+STEAL_HARVESTER_MAX_CHEBYSHEV = 12
 
 # --- Spread zoning (logistics_helpers.spreadZone) ---
 # Ported from bandit, which uses this as its sole anti-clumping mechanism in
@@ -284,6 +348,39 @@ HARASS_DEADLOCK_TURNS = 8
 # from reaching far-out enemy harvesters that a steal-relay could claim alive
 # instead of the harasser destroying them.
 HARASS_LEASH_CHEBYSHEV = 4
+
+# --- Hijack enemy relays (False disables) ---
+# A harasser taps a live enemy belt line near their core — clears whatever's
+# on the tile (offense.tapHijackTarget, via the same logistics.
+# clearBeltObstacle a normal relay already uses to fight through a wrong-team
+# belt, same 11-turn give-up cap) and reports it to the shared hijack
+# registry (logistics.reportHijackTarget) rather than building the return
+# line itself. A default builder (logistics.pursueHijackTarget) picks it up
+# and walks it home via the unmodified relayToCore — same trick
+# STEAL_ENEMY_HARVESTERS already uses for harvesters, just for a belt tile.
+# Split this way because a full steal-relay commit was deliberately removed
+# from the harasser role (see runHarasser's docstring) — the return line runs
+# through enemy fire the whole way, which is a cost the harasser shouldn't
+# eat on top of everything else it does; a default builder starting closer to
+# home is the same risk profile as every other relay it already builds.
+HIJACK_RELAYS_ENABLED = True
+# Chebyshev radius around the *enemy* core a hijack target may be found in —
+# narrows further *within* HARASS_LEASH_CHEBYSHEV (the harasser's own leash
+# already gates entry to every step in its chain), so we don't spend a
+# harasser's turn fighting through a belt clear across their base. Mirrors
+# DENY_ORE_CHEBYSHEV/UNDEFENDED_BELT_CHEBYSHEV's shape.
+HIJACK_TAP_CHEBYSHEV = 4
+
+# --- Disconnect core (≤0 / None disables) ---
+# Chebyshev radius around the *enemy* core a disconnectCore belt-cut target may be
+# found in. Only engages once GUN_PLACE_MIN_TI is unaffordable (offense.disconnectCore
+# gates on the same _canAffordGunPlace check offGun/placeGun use) — a harasser that
+# can't fund another gunner/sentinel severs the core's own supply lines instead of
+# falling through to seekCore's orbit-in-place fallback with nothing else to do.
+# Runs after offGun in runHarasser's chain so a harasser that *can* afford a gun still
+# shells the core first; disconnectCore is what the next one does once the bank can't
+# keep up. Mirrors HIJACK_TAP_CHEBYSHEV's shape/radius.
+DISCONNECT_CORE_CHEBYSHEV = 5
 
 # --- Blocked-route breaker (False disables) ---
 # When A* proves the ore claim unreachable, replan with enemy barriers passable to

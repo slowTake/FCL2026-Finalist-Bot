@@ -71,13 +71,17 @@ _GUNNER_PRIORITY = {
     EntityType.BARRIER: 7,
 }
 
-# Sentinel fire priority: core first, then harvester > gunner > sentinel > builder
+# Sentinel fire priority: core first, then builder > harvester > gunner > sentinel.
+# Builder ranked above the turret types to match _GUNNER_PRIORITY's own
+# core > builder > ... ordering above — a live enemy builder is both the
+# higher-value kill (30 Ti, mobile, doing something right now) and, if it's
+# the thing currently poking this sentinel, the actual threat to answer first.
 _SENTINEL_PRIORITY = {
     EntityType.CORE: 1,
-    EntityType.HARVESTER: 2,
-    EntityType.GUNNER: 3,
-    EntityType.SENTINEL: 4,
-    EntityType.BUILDER_BOT: 5,
+    EntityType.BUILDER_BOT: 2,
+    EntityType.HARVESTER: 3,
+    EntityType.GUNNER: 4,
+    EntityType.SENTINEL: 5,
     EntityType.LAUNCHER: 6,
     EntityType.BARRIER: 7,
     EntityType.CONVEYOR: 8,
