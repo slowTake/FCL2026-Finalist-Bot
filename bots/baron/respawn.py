@@ -8,6 +8,7 @@ from fcode import (
     Controller,
     Direction,
     EntityType,
+    Environment,
     GameConstants,
     Position,
 )
@@ -26,7 +27,69 @@ class SpawnSchedule:
     growth_delay_turns: int = 0
 
 
+# Entity types that permanently block movement even though a builder could
+# otherwise route through a tile they occupy — a core or harvester, ally or
+# enemy, is never a target we'd destroy to open a route (mirrors movement.
+# _ALLY_DOOR_TYPES's own CORE/HARVESTER exclusion; doubly true for an enemy
+# one, which we can't destroy as a builder at all). Everything else standing
+# on a tile — a gunner/sentinel/launcher/barrier, ours or hostile, or a belt —
+# still counts as an eventual way out: ours is free to demolish, theirs can be
+# fired down given enough turns, and a belt is already walkable.
+_ESCAPE_BLOCK_TYPES = (EntityType.CORE, EntityType.HARVESTER)
+
+
+def _canEscapeThrough(ct: Controller, tile: Position) -> bool:
+    """True if `tile` is walkable now or clearable later — a real way out.
+
+    Only genuine dead ends disqualify a neighbor: map wall, or a core/
+    harvester sitting on it. A hostile gunner or barrier still counts — it
+    isn't currently traversable, but it is breakable, so it's not the same
+    kind of trap a wall is.
+    """
+    if not inBounds(ct, tile):
+        return False
+    if ct.get_tile_env(tile) == Environment.WALL:
+        return False
+    bid = ct.get_tile_building_id(tile)
+    if bid is None:
+        return True
+    return ct.get_entity_type(bid) not in _ESCAPE_BLOCK_TYPES
+
+
+# A dead end this small (e.g. valkyrie's 2x1 apron pocket, where a spawned
+# builder's only cardinal neighbor besides the wall is the other pocket tile,
+# which itself only leads back the same way) leaves a fresh builder with just
+# the way it came in — one usable neighbor — which reads as trapped in
+# practice, since nothing in runDefault/runHarasser ever walks a builder back
+# past the core on purpose. Requiring at least this many usable neighbors is
+# the simplest check that rules that out without a full reachability search.
+# Every apron/cardinal candidate the core evaluates is well within its own
+# sqrt(36) vision (spawn radius is sqrt(8)/sqrt(2)), so this is always a
+# ground-truth check, never a fog-tolerant one.
+_MIN_ESCAPE_NEIGHBORS = 2
+
+
+def _hasEscapeRoute(ct: Controller, tile: Position) -> bool:
+    """True if `tile` has at least _MIN_ESCAPE_NEIGHBORS usable cardinal neighbors."""
+    count = 0
+    for d in CARDINALS:
+        if _canEscapeThrough(ct, tile.add(d)):
+            count += 1
+            if count >= _MIN_ESCAPE_NEIGHBORS:
+                return True
+    return False
+
+
 def _apronSites(ct: Controller, core_pos: Position) -> list[Position]:
+    """Tiles adjacent to the core's footprint a builder may spawn on.
+
+    Excludes anything without `_hasEscapeRoute` — a candidate that is itself
+    fine (in bounds, no wall, nothing standing on it) but boxed in on every
+    other side by walls/terrain is still a dead end, and the core would
+    otherwise never notice: it only ever sees the apron tile itself, not
+    what's beyond it. Spawning there wastes a builder for the rest of the
+    game rather than the turn it would take to just pick elsewhere.
+    """
     footprint = coreFootprint(core_pos)
     keys = {(t.x, t.y) for t in footprint}
     sites: list[Position] = []
@@ -39,9 +102,11 @@ def _apronSites(ct: Controller, core_pos: Position) -> list[Position]:
             key = (cand.x, cand.y)
             if key in seen or key in keys:
                 continue
+            seen.add(key)
             if not inBounds(ct, cand):
                 continue
-            seen.add(key)
+            if not _hasEscapeRoute(ct, cand):
+                continue
             sites.append(cand)
     return sites
 
@@ -204,7 +269,11 @@ class Respawn:
         sites.sort(key=lambda p: abs(p.x - spawn_goal.x) + abs(p.y - spawn_goal.y))
         safe_sites, all_sites = _safeSites(ct, sites)
 
-        cardinal_sites = [core_pos.add(d) for d in CARDINALS]
+        # Same dead-end filter as _apronSites — this is only a fallback tier,
+        # not an exemption from it.
+        cardinal_sites = [
+            p for p in (core_pos.add(d) for d in CARDINALS) if _hasEscapeRoute(ct, p)
+        ]
         safe_cardinals, all_cardinals = _safeSites(ct, cardinal_sites)
 
         # Safe pass first (apron, then cardinal fallback); only once every safe
