@@ -1,0 +1,51 @@
+SMALL - 6 Bots
+
+string			12x8 -	96
+fjordgate		10x10 -	100
+sprint			10x10 -	100
+duel			12x12 -	144
+bridge			21x8 -	168
+moonrise		21x8 -	168
+vase			11x16 - 176
+showdown		16x12 - 192
+antler			14x18 - 252
+pinch			14x18 - 252
+crossfire		16x16 - 256
+jackpot			16x16 - 256
+lighthouse		16x16 - 256
+atoll			18x18 - 324
+meander			25x15 - 375
+sweden			25x15 - 375
+auroraveil		20x20 - 400
+fjord			20x20 - 400
+frostgate		20x20 - 400
+icefloe			20x20 - 400
+royale			20x20 - 400
+yulerune		20x20 - 400
+
+MEDIUM - 8 Bots
+
+twins			21x21 - 441
+skerry			22x22 - 484
+nordkap			20x26 - 520
+strait			20x26 - 520
+eider			28x20 - 560
+heart			28x20 - 560
+longship		28x20 - 560
+quarry			24x24 - 576
+runestone		24x24 - 576
+saga			24x24 - 576
+vault			24x24 - 576
+drumlin			25x25 - 625
+hive			25x25 - 625
+
+LARGE - 10 Bots
+
+archipelago		26x26 - 676
+aurora			26x26 - 676
+snowflake		26x26 - 676
+drakkarfjord	30x30 - 900
+glacierkeep		30x30 - 900
+midgard			30x30 - 900
+ragnarok		30x30 - 900
+valkyrie		30x30 - 900

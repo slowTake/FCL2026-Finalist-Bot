@@ -25,8 +25,8 @@ from __future__ import annotations
 # a bracket leapt the target and spawned a run of builders back to back, and falling
 # back froze spawning for hundreds of rounds because it compared against a lifetime
 # counter that never decreases. Both are gone with the round arithmetic.
-MAX_BUILDERS_EARLY = 4  # unpaced rush; also the poor-state floor
-MAX_BUILDERS = 10  # hard ceiling on living builders
+# MAX_BUILDERS_EARLY = 1  # unpaced rush; also the poor-state floor
+# MAX_BUILDERS = 1  # hard ceiling on living builders
 
 # Richer bank → bigger crew. (min_ti, target); highest matching min_ti wins.
 # Below all tiers the target is MAX_BUILDERS_EARLY.
@@ -44,7 +44,7 @@ BUILDER_TARGET_BY_TI: list[tuple[int, int]] = [
 # target back to MAX_BUILDERS_EARLY until the delay elapses; the bank tiers
 # still gate everything past that point exactly as before — this only holds
 # the door shut a while longer, it doesn't replace the bank check.
-BUILDER_GROWTH_DELAY_TURNS = 80
+BUILDER_GROWTH_DELAY_TURNS = 0
 
 # --- Guardian cap (≤0 / None disables) ---
 # Guardian slots are idx % 5 in (0, 1) — 2 per 5 spawns. Guardians past this rank

@@ -38,8 +38,8 @@ from logistics_helpers import enemyTurretInVision
 from offense import OffenseMemory
 
 SPAWN_SCHEDULE = SpawnSchedule(
-    max_builders_early=MAX_BUILDERS_EARLY,
-    max_builders=MAX_BUILDERS,
+    max_builders_early=0,
+    max_builders=0,
     builder_target_by_ti=tuple(BUILDER_TARGET_BY_TI),
     growth_delay_turns=BUILDER_GROWTH_DELAY_TURNS,
 )
@@ -57,6 +57,7 @@ class Player:
         # Core-only: last round the core saw an enemy turret/builder in its own
         # vision. Drives CORE_THREAT_BIT and hence the guardian leash.
         self.coreThreatRound = -(10**9)
+        self.max_builders_early: int | None = None
         self.oreSite: Position | None = None
         self.inRelay = False
         self.relayOrigin: Position | None = None
@@ -119,12 +120,35 @@ class Player:
             sentinelLoop(ct)
 
     def _run_core(self, ct: Controller) -> None:
+        if self.max_builders_early is None:
+            self.max_builders_early = calcBuilderLimit(ct)
+
+        schedule = SpawnSchedule(
+            max_builders_early=self.max_builders_early,
+            max_builders=0,
+            builder_target_by_ti=tuple(BUILDER_TARGET_BY_TI),
+            growth_delay_turns=BUILDER_GROWTH_DELAY_TURNS,
+        )
+
         round_n = ct.get_current_round()
         min_turn = (
             DEFAULT_AMMO_START_TURN
             if round_n < RAIDER_AMMO_START_TURN
             else RAIDER_AMMO_START_TURN
         )
+
+        enemy = self._resolveEnemyCore(ct)
+        if enemy is not None and self.hivemind.map_id != 0:
+            goal = enemy
+        else:
+            goal = Position(ct.get_map_width() // 2, ct.get_map_height() // 2)
+        self.respawn.run_core_spawn(
+            ct,
+            schedule=schedule,
+            goal=goal,
+            hivemind=self.hivemind,
+        )
+
         topUpAmmo(ct, local_map=self.hivemind.local_map, min_turn=min_turn)
 
         # Guardian leash signal. The core is the right detector: its vision is
@@ -142,18 +166,6 @@ class Player:
             self.coreThreatRound = round_n
         setCoreThreat(
             ct, round_n - self.coreThreatRound <= GUARDIAN_LEASH_HOLD_TURNS
-        )
-
-        enemy = self._resolveEnemyCore(ct)
-        if enemy is not None and self.hivemind.map_id != 0:
-            goal = enemy
-        else:
-            goal = Position(ct.get_map_width() // 2, ct.get_map_height() // 2)
-        self.respawn.run_core_spawn(
-            ct,
-            schedule=SPAWN_SCHEDULE,
-            goal=goal,
-            hivemind=self.hivemind,
         )
 
     def _resolveEnemyCore(self, ct: Controller) -> Position | None:
@@ -190,3 +202,11 @@ class Player:
             self.enemyCorePos = self._resolveEnemyCore(ct)
 
         runBuilderRoles(self, ct)
+
+def calcBuilderLimit(ct: Controller) -> int:
+    area = ct.get_map_height() * ct.get_map_width()
+    if area < 401:
+        return 2
+    if area < 651:
+        return 3
+    return 100000
