@@ -73,6 +73,10 @@ class Player:
         # ledger fallback so the line is proven by eye, not by memory. Cleared by
         # clearRelay so it can never leak into an ordinary relay.
         self.relayVerify = False
+        # True once this verify pass has already extended bot.relayPath past
+        # one merge terminus — caps logistics._tryExtendThroughMerge to a
+        # single hop-bounded extension per pass. Cleared by clearRelay.
+        self.relayVerifyExtended = False
         self.lastHarvesterVerifyRound = -999
         # (x, y) -> round this builder last verified that harvester's line.
         self.verifiedHarvesters: dict[tuple[int, int], int] = {}

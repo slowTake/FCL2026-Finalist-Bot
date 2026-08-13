@@ -45,6 +45,9 @@ def clearRelay(bot) -> None:
     # builder — leaking it into the next relay would make every ordinary build
     # re-walk its own corridor. See verifyHomeHarvester.
     bot.relayVerify = False
+    # Same reasoning as relayVerify: caps _tryExtendThroughMerge to at most
+    # one hop-bounded extension per verify pass, not per builder forever.
+    bot.relayVerifyExtended = False
 
 
 def abortRelay(bot) -> None:
@@ -472,6 +475,62 @@ def _relayReachesCore(
     if cache is not None:
         cache[key0] = result
     return result
+
+
+def _walkMergeChain(
+    bot, ct: Controller, tile: Position, core_pos: Position
+) -> list[Position]:
+    """Bounded forward-walk from `tile` (exclusive) to the core, same shape as
+    `_relayReachesCore`'s reachability proof, but returning the actual tile
+    chain instead of a boolean.
+
+    Used only on a verify pass (`relayToCore`'s `bot.relayVerify`) once our
+    own segment reaches a merge point: `_relayReachesCore`'s proof that the
+    merge target reaches the core trusts the ledger's stored belt `direction`
+    up to `RELAY_LEDGER_TRUST_TURNS` old — good enough to *decide* a merge is
+    safe, but a barrier dropped on the merged-into line after that ledger
+    entry was last refreshed (and before anyone re-observes that exact tile)
+    would still read as "reaches core" and nobody ever walks it again to
+    find out otherwise; the builder that merged just marks its own relay
+    complete and leaves. Appending this chain to `bot.relayPath` and letting
+    `relayToCore`'s own per-turn loop keep walking it (with
+    `require_vision=True`, since `verify` is already threaded through
+    `beltFacingOk`/`extendRelayWatermark`) is what actually re-proves and, if
+    needed, repairs (via the same `clearBeltObstacle` path every other
+    relay tile already goes through) the tail beyond the merge — not just
+    the ledger-trusting decision to merge onto it.
+
+    Empty list if `tile` is already core-adjacent, or the chain doesn't
+    reach the core within `RELAY_MERGE_MAX_HOPS` (dead end / hop limit) — the
+    caller falls back to completing the relay as before in that case, same
+    as if this walk had never been attempted. Deliberately gated to the
+    verify pass only (see call sites) — a previous attempt at proving/
+    walking a merge target on every ordinary relay, not just a periodic
+    verify pass, measured ~9% worse Ti/turn (see the walk-time-merge branch
+    below), so this must never run on a normal, non-verify relay completion.
+    """
+    from main import RELAY_MERGE_MAX_HOPS
+
+    max_hops = RELAY_MERGE_MAX_HOPS if RELAY_MERGE_MAX_HOPS and RELAY_MERGE_MAX_HOPS > 0 else 10
+    cur = tile
+    chain: list[Position] = []
+    seen: set[tuple[int, int]] = set()
+    for _ in range(max_hops + 1):
+        if any(cur.x == t.x and cur.y == t.y for t in coreFootprint(core_pos)):
+            return chain
+        key = (cur.x, cur.y)
+        if key in seen:
+            return []  # loop — shouldn't happen on a real belt line, defensive only
+        seen.add(key)
+        d = _beltDirectionAt(bot, ct, cur)
+        if d is None or d == Direction.CENTRE:
+            return []  # dead end this far — nothing more to walk/verify
+        nxt = cur.add(d)
+        if not inBounds(ct, nxt):
+            return []
+        chain.append(nxt)
+        cur = nxt
+    return []  # hop limit hit without reaching the core
 
 
 def _mergeCandidateNeighbor(
@@ -1003,6 +1062,43 @@ def relayToCore(bot, ct: Controller) -> None:
     # shortcuts anywhere the "already built" verdict is reached.
     verify = getattr(bot, "relayVerify", False)
 
+    def _tryExtendThroughMerge(terminus: Position, *, idx: int | None = None) -> bool:
+        """On a verify pass, extend bot.relayPath past a merge terminus
+        instead of completing here — see _walkMergeChain. True if extended
+        (caller should return without completing this turn; the next call
+        walks the newly appended tiles through the normal flow, same as
+        _replanRelayOrAbort's own set-state-then-return-for-next-call
+        shape). False means complete as usual: not a verify pass, terminus
+        is genuinely core-adjacent (nothing to extend), already extended
+        once this verify pass (bot.relayVerifyExtended — caps this to a
+        single hop-bounded hop past the merge, not unbounded chasing), or
+        the chain didn't reach the core within RELAY_MERGE_MAX_HOPS.
+
+        `idx`, if given, is `terminus`'s position within `path` — used only
+        by the walk-time incidental-merge call site, where `path` may still
+        have leftover tiles beyond `idx` from our own now-abandoned plan
+        (we're merging here instead of following them); those are dropped
+        before extending. The other two call sites always pass `terminus =
+        path[-1]`, where there's nothing beyond it to drop.
+
+        Deliberately verify-only, never on an ordinary relay completion —
+        see _walkMergeChain's docstring for the measured Ti/turn cost of
+        doing this unconditionally.
+        """
+        if not verify or isCoreAdjacent(ct, terminus, core_pos):
+            return False
+        if getattr(bot, "relayVerifyExtended", False):
+            return False
+        chain = _walkMergeChain(bot, ct, terminus, core_pos)
+        if not chain:
+            return False
+        bot.relayVerifyExtended = True
+        if idx is not None:
+            del path[idx + 1 :]
+            bot.relayBuiltTo = idx
+        path.extend(chain)
+        return True
+
     path = bot.relayPath
     if path is not None:
         if _isEnemyCoreAdjacent(ct, path[-1], enemy_core):
@@ -1031,6 +1127,8 @@ def relayToCore(bot, ct: Controller) -> None:
 
     work_from = bot.relayBuiltTo + 1
     if work_from >= len(path):
+        if _tryExtendThroughMerge(path[-1]):
+            return
         markRelayComplete(ct)
         if bot.relayOrigin is not None:
             clearOrphanRelay(ct, bot.relayOrigin)
@@ -1056,6 +1154,8 @@ def relayToCore(bot, ct: Controller) -> None:
             continue
         break
     else:
+        if _tryExtendThroughMerge(path[-1]):
+            return
         markRelayComplete(ct)
         if bot.relayOrigin is not None:
             clearOrphanRelay(ct, bot.relayOrigin)
@@ -1146,6 +1246,11 @@ def relayToCore(bot, ct: Controller) -> None:
             # already anchored for exactly that.
             if _allyBeltAt(ct, tile):
                 _repairBeltIfDamaged(ct, tile)
+                # On a verify pass only, follow this merge instead of the
+                # unproven "no connectivity check" default above — see
+                # _tryExtendThroughMerge/_walkMergeChain.
+                if _tryExtendThroughMerge(tile, idx=idx):
+                    return
                 markRelayComplete(ct)
                 if bot.relayOrigin is not None:
                     clearOrphanRelay(ct, bot.relayOrigin)

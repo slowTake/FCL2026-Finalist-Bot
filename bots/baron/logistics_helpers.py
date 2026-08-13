@@ -279,13 +279,30 @@ def _oreConvenienceKey(
 
 
 def _clearStickyIfAllyClaimed(bot, ct: Controller) -> None:
-    """Drop sticky empty ore if another ally already sits on the pad."""
+    """Drop a sticky ore/harvester claim if another ally already sits on it.
+
+    Non-harvester buildings still exempt (an ally block awaiting
+    _shouldClearAllyOreBlock, a turret, etc. — those have their own handling
+    and aren't "claimed" in this sense). Harvesters used to be exempt too —
+    any building at all short-circuited this — which meant a builder blocked
+    by an ally converging on the same harvester (pre-belt, so
+    harvesterClaimedByAlly reads False) never dropped the stale claim: it
+    just re-picked the identical contested tile every turn after each
+    RELAY_STUCK_TURNS abort (abortRelay/clearRelay never touch bot.oreSite —
+    see buildHarvester's docstring for why that's deliberate elsewhere), the
+    two builders stepping around each other with no coordination
+    (relayToCore/moveToward don't treat ally builders as obstacles). Only
+    ever reached with bot.inRelay already False (pickMaintainOre's caller
+    short-circuits to relayToCore directly whenever inRelay is True), so this
+    can never yank oreSite out from under an active relay.
+    """
     site = bot.oreSite
     if site is None:
         return
     if not ct.is_in_vision(site):
         return
-    if ct.get_tile_building_id(site) is not None:
+    bid = ct.get_tile_building_id(site)
+    if bid is not None and ct.get_entity_type(bid) != EntityType.HARVESTER:
         return
     if allyBuilderNearOre(ct, site) and not _selfNearOre(ct, site):
         bot.oreSite = None
@@ -566,7 +583,18 @@ def _harvesterOwnerAllowed(bot, ct: Controller, owner_team, tile: Position) -> b
 
 
 def pickMaintainOre(bot, ct: Controller) -> Position | None:
-    """Prefer sticky site, else a reported orphan, else nearest harvester/block."""
+    """Prefer sticky site, else a reported orphan, else nearest harvester/block.
+
+    Harvester candidates already claimed by another ally builder
+    (allyBuilderNearOre) are skipped, same idea as pickEmptyOre's
+    allyBuilderOnOre check for empty ore — without it, several builders can
+    independently score the same pre-belt harvester as "best" and converge
+    on it with no coordination (relayToCore/moveToward don't treat ally
+    builders as obstacles), then keep re-picking the identical contested
+    tile after every RELAY_STUCK_TURNS abort since abortRelay never touches
+    bot.oreSite. Observed directly on glacierkeep, whose dense 3x3 central
+    ore cluster makes the convergence especially likely.
+    """
     from logistics import _pickOrphanRelay
 
     _clearStickyIfAllyClaimed(bot, ct)
@@ -635,8 +663,10 @@ def pickMaintainOre(bot, ct: Controller) -> Position | None:
             bid = ct.get_tile_building_id(ore)
             if bid is None:
                 continue  # empties via pickEmptyOre
-            if ct.get_entity_type(bid) == EntityType.HARVESTER and _harvesterOwnerAllowed(
-                bot, ct, ct.get_team(bid), ore
+            if (
+                ct.get_entity_type(bid) == EntityType.HARVESTER
+                and _harvesterOwnerAllowed(bot, ct, ct.get_team(bid), ore)
+                and not allyBuilderNearOre(ct, ore)
             ):
                 consider(ore)
             elif _shouldClearAllyOreBlock(ct, ore, bot=bot):
@@ -644,11 +674,10 @@ def pickMaintainOre(bot, ct: Controller) -> Position | None:
         else:
             entry = bot.hivemind.local_map.get((ore.x, ore.y), {})
             ent = entry.get("entity")
-            if (
-                ent
-                and ent.get("type") == EntityType.HARVESTER
-                and _harvesterOwnerAllowed(bot, ct, ent.get("team"), ore)
-            ):
+            is_harvester = ent and ent.get("type") == EntityType.HARVESTER
+            if is_harvester and allyBuilderNearOre(ct, ore):
+                continue  # ally already working this harvester
+            if is_harvester and _harvesterOwnerAllowed(bot, ct, ent.get("team"), ore):
                 consider(ore)
             elif ent:
                 # Fog: possible ally block / other — keep old consider behavior
@@ -660,8 +689,10 @@ def pickMaintainOre(bot, ct: Controller) -> Position | None:
         bid = ct.get_tile_building_id(tile)
         if bid is None:
             continue
-        if ct.get_entity_type(bid) == EntityType.HARVESTER and _harvesterOwnerAllowed(
-            bot, ct, ct.get_team(bid), tile
+        if (
+            ct.get_entity_type(bid) == EntityType.HARVESTER
+            and _harvesterOwnerAllowed(bot, ct, ct.get_team(bid), tile)
+            and not allyBuilderNearOre(ct, tile)
         ):
             consider(tile)
         elif _shouldClearAllyOreBlock(ct, tile, bot=bot):
@@ -866,7 +897,11 @@ def finishNearbyHarvester(bot, ct: Controller) -> bool:
     `harvesterClaimedByAlly` False (no ally belt touches it yet) → commit
     fresh, exactly like checkOre's own harvester branch — this is the core
     fix. True (someone's relay, in progress or complete) → don't take it over;
-    just try `_repairNearbyBeltSegment` instead.
+    just try `_repairNearbyBeltSegment` instead. Also skips (no repair
+    attempt either, just move on) a harvester an ally builder is already
+    standing on/adjacent to but hasn't belted yet (allyBuilderNearOre) —
+    without this, a passing builder could commit to the exact harvester
+    another ally is mid-approach to, the two converging with no coordination.
     """
     if bot.corePos is None or bot.inRelay or getattr(bot, "recheckingOre", False):
         return False
@@ -902,6 +937,8 @@ def finishNearbyHarvester(bot, ct: Controller) -> bool:
             if _repairNearbyBeltSegment(bot, ct, tile):
                 return True
             continue
+        if allyBuilderNearOre(ct, tile):
+            continue  # an ally is already mid-approach — don't converge on it
         bot.oreSite = tile
         return checkOre(bot, ct, tile)
     return False
@@ -1231,8 +1268,10 @@ def _pickRecheckOre(bot, ct: Controller) -> Position | None:
         bid = ct.get_tile_building_id(tile)
         if bid is None:
             consider(tile, kind="empty")
-        elif ct.get_entity_type(bid) == EntityType.HARVESTER and _harvesterOwnerAllowed(
-            bot, ct, ct.get_team(bid), tile
+        elif (
+            ct.get_entity_type(bid) == EntityType.HARVESTER
+            and _harvesterOwnerAllowed(bot, ct, ct.get_team(bid), tile)
+            and not allyBuilderNearOre(ct, tile)
         ):
             consider(tile, kind="harvester")
         elif _shouldClearAllyOreBlock(ct, tile, bot=bot):
@@ -1246,8 +1285,10 @@ def _pickRecheckOre(bot, ct: Controller) -> Position | None:
             bid = ct.get_tile_building_id(ore)
             if bid is None:
                 consider(ore, kind="empty")
-            elif ct.get_entity_type(bid) == EntityType.HARVESTER and _harvesterOwnerAllowed(
-                bot, ct, ct.get_team(bid), ore
+            elif (
+                ct.get_entity_type(bid) == EntityType.HARVESTER
+                and _harvesterOwnerAllowed(bot, ct, ct.get_team(bid), ore)
+                and not allyBuilderNearOre(ct, ore)
             ):
                 consider(ore, kind="harvester")
             elif _shouldClearAllyOreBlock(ct, ore, bot=bot):
@@ -1260,8 +1301,11 @@ def _pickRecheckOre(bot, ct: Controller) -> Position | None:
             # this is the recheck path, so leaving stale memory permanently
             # disqualifying here would be the last resort that ever rescues it.
             ent = None
-        if ent and ent.get("type") == EntityType.HARVESTER and _harvesterOwnerAllowed(
-            bot, ct, ent.get("team"), ore
+        if (
+            ent
+            and ent.get("type") == EntityType.HARVESTER
+            and _harvesterOwnerAllowed(bot, ct, ent.get("team"), ore)
+            and not allyBuilderNearOre(ct, ore)
         ):
             consider(ore, kind="harvester")
         elif not ent:
