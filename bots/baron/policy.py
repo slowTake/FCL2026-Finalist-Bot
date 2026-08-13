@@ -375,7 +375,7 @@ HARASS_DEADLOCK_TURNS = 8
 # threats against). Keeps snipeHarvester/offGun/denyOre/denyBelt/seekHarvester
 # from reaching far-out enemy harvesters that a steal-relay could claim alive
 # instead of the harasser destroying them.
-HARASS_LEASH_CHEBYSHEV = 7
+HARASS_LEASH_CHEBYSHEV = 5
 
 # --- Kill-core commit (≤0 / None disables the override) ---
 # Once a harasser lands a sentinel directly on the enemy core (offense.
