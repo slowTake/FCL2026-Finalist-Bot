@@ -550,11 +550,16 @@ def _killCoreCut(bot, ct: Controller, enemy_core: Position) -> bool:
 
 
 def offGun(bot, ct: Controller) -> bool:
-    """Attack the core (via killCore) or place a gun toward the nearest visible threat."""
+    """Attack the core (via killCore) or place a gun toward the nearest visible threat.
+
+    Falls back to orbiting the core (_orbitEnemyCore) when idle near it with
+    nothing to place and no cut in progress — see the comment further down
+    for exactly which conditions gate that."""
     enemy_core = bot.enemyCorePos
     if enemy_core is not None and killCore(bot, ct, enemy_core):
         return True
 
+    found_other_target = False
     for etype in (
         EntityType.GUNNER,
         EntityType.SENTINEL,
@@ -569,8 +574,37 @@ def offGun(bot, ct: Controller) -> bool:
             or harvesterClaimedByAlly(ct, target, local_map=bot.hivemind.local_map)
         ):
             continue
+        found_other_target = True
         if placeGun(bot, ct, target):
             return True
+
+    # Idle near a known core with nothing to place and no cut in progress —
+    # reposition around it instead of falling straight through to unrelated
+    # harasser chores (denyOre/seekHarvester/etc., several steps below this
+    # in runHarasser's chain). killCore already re-scans pads fresh every
+    # call and correctly excludes any tile already holding a built ally
+    # structure (guns._gunnerPadsNearTarget/_sentinelPadsNearTarget's
+    # is_tile_empty check) or unit (allyOccupied), so once it returns False
+    # here it's because every pad currently *visible* is taken, not because
+    # pad selection is stuck. killCoreCutTile is None both when killCore
+    # declined to cut (not committed, can still afford a gun — nothing to
+    # abandon) and when it tried to cut but found no belt candidates at all
+    # (even while committed — there's nothing live to abandon either way): a
+    # genuinely in-progress cut always leaves the tile set or returns True to
+    # hold position (see _killCoreCut/_cutAndBarrier), so this branch never
+    # fires while one is actually mid-fire. Stepping to a new orbit waypoint
+    # changes vision, which is often enough on its own to reveal a
+    # previously out-of-range pad for the next call — restores visible
+    # "circling" instead of leaving the harasser parked the instant nearby
+    # pads/targets run dry.
+    if (
+        enemy_core is not None
+        and not found_other_target
+        and bot.offense.killCoreCutTile is None
+        and _canAffordGunPlace(ct)
+    ):
+        return _orbitEnemyCore(bot, ct, enemy_core)
+
     return False
 
 

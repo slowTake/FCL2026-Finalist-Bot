@@ -288,6 +288,81 @@ def markRelayComplete(ct: Controller) -> None:
         ct.write_store(SLOT_RELAY_COMPLETE, val | RELAY_COMPLETE_BIT)
 
 
+_GUARDIAN_TS_SHIFT = {}  # populated lazily below — see _guardianTsShift
+
+
+def _guardianTsShift(rank: int) -> int:
+    """Bit offset for guardian `rank`'s (1 or 2) timestamp field in slot 0."""
+    from main import GUARDIAN1_TS_SHIFT, GUARDIAN2_TS_SHIFT
+
+    if not _GUARDIAN_TS_SHIFT:
+        _GUARDIAN_TS_SHIFT[1] = GUARDIAN1_TS_SHIFT
+        _GUARDIAN_TS_SHIFT[2] = GUARDIAN2_TS_SHIFT
+    return _GUARDIAN_TS_SHIFT[rank]
+
+
+def markGuardianAlive(ct: Controller, rank: int, my_index: int) -> None:
+    """Refresh guardian `rank`'s (1 or 2) liveness timestamp in slot 0.
+
+    Gated on `ct.read_store(13) == my_index` — store slot 13 is the
+    ledger-broadcast metronome `hivemind_v2.tick()` already uses to
+    guarantee at most one non-core unit writes shared state per round
+    (raw literal `13`, not a named constant — matches how every other
+    HiveMind-owned slot 4-15 read in this codebase is written, e.g.
+    respawn.py's `ct.read_store(4)`; those slots are "never write from
+    Player" per main.py's slot map, but reading them is already established
+    practice). Read-only reuse, no change to hivemind_v2.py needed. Guardian
+    rank 1 and rank 2 always have distinct `my_index` values by
+    construction, so their heartbeats can never collide with each other;
+    colliding with the core's own every-round CORE_THREAT_BIT write on the
+    rare round both land together is the same class of collision
+    `markRelayComplete` already accepts — self-healing, worst case one
+    round stale.
+
+    Called every turn from `runBuilderRoles`, not from inside `runGuardian`
+    itself, so it fires regardless of which of `runGuardian`'s many internal
+    early-return branches (leash recall, avoidFire, ...) execute that turn —
+    the heartbeat should reflect "this unit is alive and holds this rank",
+    not "this unit reached some specific point in its own decision chain".
+    """
+    from main import GUARDIAN_TS_MASK, SLOT_RELAY_COMPLETE
+
+    if ct.read_store(13) != my_index:
+        return
+    shift = _guardianTsShift(rank)
+    ts = ct.get_current_round() & GUARDIAN_TS_MASK
+    val = ct.read_store(SLOT_RELAY_COMPLETE)
+    new = (val & ~(GUARDIAN_TS_MASK << shift)) | (ts << shift)
+    if new != val:
+        ct.write_store(SLOT_RELAY_COMPLETE, new)
+
+
+def guardianRankAlive(ct: Controller, rank: int) -> bool:
+    """True if guardian `rank` (1 or 2) has a live, non-stale heartbeat.
+
+    `ts == 0` means "never written" — the earliest a real heartbeat can land
+    is round >= 1 (a fresh unit can't even read its own `my_index` until
+    `birth_round + 1`, see hivemind_v2.tick()), so this is an unambiguous
+    empty sentinel, same reasoning the orphan registry uses for `val == 0`.
+
+    TTL scales with `ct.read_store(4)` (total builders ever spawned) rather
+    than being a small fixed number, because heartbeats are metronome-gated
+    (see markGuardianAlive) and so only land roughly once per that many
+    rounds — a fixed small TTL would read a genuinely-alive guardian as dead
+    between its own heartbeat turns.
+    """
+    from main import GUARDIAN_ALIVE_TTL_MIN_TURNS, GUARDIAN_TS_MASK, SLOT_RELAY_COMPLETE
+
+    shift = _guardianTsShift(rank)
+    ts = (ct.read_store(SLOT_RELAY_COMPLETE) >> shift) & GUARDIAN_TS_MASK
+    if ts == 0:
+        return False
+    now = ct.get_current_round() & GUARDIAN_TS_MASK
+    age = (now - ts) & GUARDIAN_TS_MASK
+    ttl = max(GUARDIAN_ALIVE_TTL_MIN_TURNS, 2 * ct.read_store(4))
+    return age <= ttl
+
+
 # ------------------------------------------------------------------
 # Belt facing / connectivity proofs
 # ------------------------------------------------------------------

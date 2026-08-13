@@ -90,7 +90,7 @@ GUARDIAN_ECON_SLACK = 1
 # way a roaming guardian learns home is being probed (a builder's ledger is
 # personal-vision only, and its own vision is ~4.5 against the core's ~6).
 # The core writes CORE_THREAT_BIT; guardians read it via logistics_helpers.guardianLeash.
-GUARDIAN_LEASH_WIDE = 6
+GUARDIAN_LEASH_WIDE = 5
 GUARDIAN_LEASH_TIGHT = 4
 # Stay tight this long after the last sighting, so an enemy skirting the edge of
 # the core's vision can't make guardians oscillate between the two radii.
@@ -152,13 +152,15 @@ NEARBY_HARVESTER_SELF_CHEBYSHEV = 3
 # entire back half of a match, with no ally unit ever patrolling far enough
 # out to spot it and let defSentinel answer.
 #
-# Deliberately NOT raised alongside GUARDIAN_LEASH_WIDE(6). Patrol is idle
+# Deliberately NOT raised alongside GUARDIAN_LEASH_WIDE(5). Patrol is idle
 # behaviour; the chores (clearBarriers / reconnectBelts) are what need the
-# roam. Left at 3, it sits three tiles inside the wide leash — still real
-# margin for an A*-forced detour before moveTowardLeash yanks the guardian
-# home mid-patrol — and it avoids pushing waypoints out toward the leash edge,
-# where they are far likelier to be walled and fall through to the corner
-# fallbacks. Raising it is a separate, independently-testable change.
+# roam. Left at 3, it now sits only two tiles inside the wide leash — real but
+# thinning margin for an A*-forced detour before moveTowardLeash yanks the
+# guardian home mid-patrol (the exact oscillation class this offset exists to
+# avoid — see runGuardian's dodge-first fix for the related "recalled through
+# gunfire" failure mode). If patrol oscillation reappears, lowering this
+# further (not raising the leash back up) is the first thing to try. Raising
+# it is a separate, independently-testable change.
 GUARDIAN_PATROL_OFFSET = 3
 
 # --- Relay merge (False disables) ---
@@ -468,8 +470,10 @@ GUN_PLACE_MIN_TI = 100 # need bank ≥ this to place gunner/sentinel
 # A gunner that never gets a shot is a dead 60+ Ti sunk on a tile with nothing
 # to answer — usually the front it was covering shifted or the enemy stopped
 # probing there. self_destruct deals no explosion damage, so this is purely
-# about freeing the unit cap / bank, not a weapon.
-GUNNER_IDLE_TURNS = 15
+# about freeing the unit cap / bank, not a weapon. Raised from 15 to 30 —
+# observed self-destructing pre-emptively (a lull between enemy probes, not
+# an actually-abandoned front) too readily at 15.
+GUNNER_IDLE_TURNS = 30
 
 # --- React-freeze cap (≤0 / None disables) ---
 # _reactEnemyTurret's skipEconomy branch consumes a default builder's whole turn,
@@ -509,12 +513,37 @@ SLOT_ORPHAN_3 = 3
 SLOT_PACKED_CORES = 15
 
 # Slot 0 is bit-packed: no store slot is free (all 16 are allocated), but slot 0
-# only ever used 1 of its 32 bits. Bit 0 = a relay has completed (written by
+# only ever used 2 of its 32 bits. Bit 0 = a relay has completed (written by
 # builders); bit 1 = the core currently sees an enemy turret (gunner/sentinel/
 # launcher — a bare builder doesn't count; written only by the core).
 # Every reader must mask — see relayEverComplete / coreThreatened in logistics.
 RELAY_COMPLETE_BIT = 1
 CORE_THREAT_BIT = 2
+
+# --- Guardian rank liveness heartbeat (bits 2-21 of slot 0) ---
+# MAX_GUARDIANS(2) means there are only ever two real guardian ranks
+# (guardianRank 1 and 2) to track, so — same "no free slot, pack the spare
+# bits" move as RELAY_COMPLETE_BIT/CORE_THREAT_BIT above — each gets a 10-bit
+# "last refreshed at this round" timestamp field (same width as
+# ORPHAN_TURN_BITS in logistics.py, same reasoning: MAX_TURNS < 1024). See
+# logistics.markGuardianAlive/guardianRankAlive and builder.
+# _resolveAssignedGuardianRank for the mechanism this backs — a lost/dead
+# guardian rank's timestamp goes stale and gets backfilled by the next
+# eligible spawn, instead of role staying a blind, unrecoverable function of
+# birth-order index forever. ts == 0 means "never written" (the earliest a
+# real write can happen is round >= 1, same empty-sentinel reasoning the
+# orphan registry uses for val == 0) — no separate "alive" bit needed.
+GUARDIAN1_TS_SHIFT = 2
+GUARDIAN2_TS_SHIFT = 12
+GUARDIAN_TS_BITS = 10
+GUARDIAN_TS_MASK = (1 << GUARDIAN_TS_BITS) - 1
+# Heartbeat writes are gated on the ledger-broadcast metronome (slot 13 ==
+# my_index) to guarantee at most one writer per round — see
+# markGuardianAlive — so cadence is roughly once per ct.read_store(4) (total
+# builders ever spawned) rounds, not every round. The TTL must scale with
+# that instead of being a small fixed number, or a genuinely-alive guardian
+# would read as stale between its own heartbeat turns.
+GUARDIAN_ALIVE_TTL_MIN_TURNS = 20
 
 # --- Orphan relay registry (≤0 disables reporting/pickup) ---
 # How stale an orphan-registry entry (bots/baron/logistics.py) may be before a

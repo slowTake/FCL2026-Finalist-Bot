@@ -33,6 +33,14 @@ class GuardianMemory:
         self.guardianOreBarrier: Position | None = None
         self.guardianOreWaitTurns = 0
         self.patrolIdx = 0
+        # Which guardian rank (1 or 2, see logistics.markGuardianAlive/
+        # guardianRankAlive) this unit is actually filling, decided once on
+        # the first tick its my_index is known and never re-evaluated after
+        # — see builder._resolveAssignedGuardianRank. None means either not
+        # yet decided (rankDecided False) or decided-and-not-a-guardian
+        # (rankDecided True, assignedRank still None).
+        self.assignedRank: int | None = None
+        self.rankDecided = False
 
 
 def _pickDefGunTarget(

@@ -2,12 +2,25 @@
 #
 # ## Assignment (my_index > 0; idx % 5) — 2 guardians / 1 harasser / 2 defaults
 #    1 → guardian · 2 → harasser · 3 → default · 4 → default · 0 → guardian
-#    Capped: guardian slots past MAX_GUARDIANS (main.py) dispatch as non-guardians
-#    — guardianRank 1,2,3,4 = builders 1,5,6,10, so a cap of 2 first bites at
-#    builder 6. Past the cap, slots alternate by excess rank
-#    (guardianRank - MAX_GUARDIANS): odd excess → harasser, even → default —
-#    so overflow guardians split between the two roles instead of all becoming
-#    one. See guardianOverflowIsHarasser.
+#    Guardian is needs-based, not blind idx%5, as of this pass: idx%5 in
+#    (0, 1) only makes a builder guardian-*eligible* (isGuardian, the "pool").
+#    Whether it actually guards, and which rank (1..MAX_GUARDIANS), is
+#    decided by _resolveAssignedGuardianRank against a live/stale heartbeat
+#    each real guardian writes every turn (logistics.markGuardianAlive/
+#    guardianRankAlive, packed into store slot 0's spare bits — see
+#    policy.py's GUARDIAN1_TS_SHIFT/GUARDIAN2_TS_SHIFT). This exists because
+#    blind idx%5 assignment has two compounding failure modes, both
+#    confirmed live: a spawn that dies before claiming its own my_index
+#    permanently burns that index number, and even without that, a dead
+#    guardian was never proactively replaced — the next spawn's role was
+#    whatever idx%5 happened to land on, possibly never a guardian slot
+#    again that match. A pool member that doesn't get assigned a rank
+#    (both already alive and healthy, or genuinely past MAX_GUARDIANS) falls
+#    through exactly as a capped guardian always has: slots alternate by
+#    excess rank (guardianRank - MAX_GUARDIANS): odd excess → harasser, even
+#    → default — so overflow guardians split between the two roles instead
+#    of all becoming one. See guardianOverflowIsHarasser (unchanged, still
+#    pure idx arithmetic).
 #    Wave attack (WAVE_ATTACK_TURN/WAVE_ATTACK_TI, main.py): default slots
 #    alternate by defaultRank parity too — odd ranks harass, even ranks keep
 #    building — instead of the whole default cohort converting at once. See
@@ -272,7 +285,7 @@ from geometry import (
     nearCore,
 )
 from hivemind import CoreState, unpack_cores
-from logistics import abortRelay, coreThreatened, relayEverComplete
+from logistics import abortRelay, coreThreatened, markGuardianAlive, relayEverComplete
 from logistics_helpers import (
     breakOreDeadlock,
     buildHarvester,
@@ -367,20 +380,39 @@ def _enemyCoreFromLedger(bot, ct: Controller) -> Position | None:
 
 
 def isGuardian(idx: int) -> bool:
-    """True for builders 1,5,6,10,… (idx % 5 in {0, 1})."""
+    """True for builders 1,5,6,10,… (idx % 5 in {0, 1}) — the guardian *pool*.
+
+    Membership only, not guardian-ness itself: which pool member (if any)
+    actually ends up guarding is decided by _resolveAssignedGuardianRank,
+    needs-based against MAX_GUARDIANS living ranks, not by raw idx alone —
+    see that function's docstring for why this changed from being the sole
+    source of truth.
+    """
     return idx > 0 and idx % 5 in (0, 1)
 
 
 def guardianRank(idx: int) -> int:
-    """1-based position among guardian slots: 1, 5, 6, 10, 11, … → 1, 2, 3, 4, 5, …
+    """1-based position among guardian-pool slots: 1, 5, 6, 10, 11, … → 1, 2, 3, 4, 5, …
 
-    Pure index arithmetic, so every unit agrees without reading anything shared.
+    Pure index arithmetic, so every unit agrees without reading anything
+    shared. Used two ways now: guardianCapped/guardianOverflowIsHarasser
+    below (unchanged, still purely idx-based — the overflow-split logic for
+    pool members that don't end up needed), and as the iteration order
+    _resolveAssignedGuardianRank checks pool membership in (lower rank
+    checked, hence backfilled, first).
     """
     return (idx // 5) * 2 + (1 if idx % 5 else 0)
 
 
 def guardianCapped(idx: int) -> bool:
-    """True for guardian slots past MAX_GUARDIANS — they dispatch as non-guardians."""
+    """True for guardian-pool slots past MAX_GUARDIANS.
+
+    Note: with needs-based assignment (_resolveAssignedGuardianRank), a pool
+    slot can also fail to become a guardian *without* being capped — both
+    real ranks were simply already alive and healthy when it spawned. This
+    function only answers "is this rank past the ceiling", not "does this
+    unit end up guarding" — check the assigned-rank result for that.
+    """
     from main import MAX_GUARDIANS
 
     if MAX_GUARDIANS is None or MAX_GUARDIANS <= 0:
@@ -389,12 +421,14 @@ def guardianCapped(idx: int) -> bool:
 
 
 def guardianOverflowIsHarasser(idx: int) -> bool:
-    """Capped guardian slots alternate harasser / default past the cap.
+    """Capped guardian-pool slots alternate harasser / default past the cap.
 
     excess = guardianRank(idx) - MAX_GUARDIANS (1-based: 1st slot over the cap,
     2nd slot over the cap, …). Odd excess -> harasser, even excess -> default,
     so consecutive overflow slots split evenly instead of every excess
-    guardian dumping into one role.
+    guardian dumping into one role. Unchanged by needs-based assignment —
+    still applies exactly as before to whichever pool slots
+    _resolveAssignedGuardianRank didn't need.
     """
     from main import MAX_GUARDIANS
 
@@ -404,6 +438,58 @@ def guardianOverflowIsHarasser(idx: int) -> bool:
     if excess <= 0:
         return False  # not actually capped; guardianCapped(idx) is False
     return excess % 2 == 1
+
+
+def _resolveAssignedGuardianRank(bot, ct: Controller) -> int | None:
+    """Which guardian rank (1..MAX_GUARDIANS) this pool-member unit actually
+    fills, or None if it doesn't end up guarding — needs-based, not blind
+    idx%5. Decided once, on the first tick `my_index` is known, then frozen
+    for the unit's lifetime (bot.guardian.rankDecided/assignedRank) —
+    deliberately never re-evaluated later, so an idle harasser/default can
+    never flip into a guardian mid-game just because a rank opens up after
+    it was already dispatching elsewhere; that would be a much bigger
+    behavior change than this fix is scoped to.
+
+    Exists because pure idx%5 guardian assignment has two compounding
+    failure modes, both confirmed live this session: (1) a freshly-spawned
+    builder that dies before claiming its own my_index (hivemind_v2.tick's
+    birth_round+1 read) burns that index number forever — nobody else ever
+    gets it; (2) even without that, role has zero awareness of who's
+    currently alive, so a guardian lost to ordinary combat is never
+    proactively replaced — the next spawn's role is whatever idx%5 happens
+    to land on, which may be many spawns away or, at MAX_GUARDIANS=2, might
+    never recur that match. Together these can leave a team with zero
+    guardians for the rest of the game.
+
+    Restricted to guardian-pool members (isGuardian(idx)) rather than any
+    spawn: letting any index steal a vacant rank breaks the healthy case —
+    idx=2 (intended harasser) would grab a rank the instant it spawns,
+    before idx=5 ever gets a chance, corrupting normal role distribution
+    even when nothing has died. Pool-only still fully fixes both failure
+    modes above — a lost idx=5 gets backfilled by idx=6, 10, 11, … (whichever
+    pool member spawns next) instead of being gone forever; it just doesn't
+    let non-pool members participate.
+
+    Checks ranks in guardianRank order (1 before 2), so if both are
+    simultaneously vacant, this unit — and whichever pool member spawns
+    after it — fill them in order rather than racing for the same one.
+    """
+    if bot.guardian.rankDecided:
+        return bot.guardian.assignedRank
+    idx = bot.hivemind.my_index
+    if idx <= 0:
+        return None  # my_index itself not yet claimed — retry next tick
+    bot.guardian.rankDecided = True
+    if not isGuardian(idx):
+        return None  # not a pool member; never eligible
+    from logistics import guardianRankAlive
+    from main import MAX_GUARDIANS
+
+    for rank in range(1, (MAX_GUARDIANS or 0) + 1):
+        if not guardianRankAlive(ct, rank):
+            bot.guardian.assignedRank = rank
+            return rank
+    return None  # both ranks already alive and healthy
 
 
 def isHarasser(idx: int) -> bool:
@@ -983,13 +1069,22 @@ def runBuilderRoles(bot, ct: Controller) -> None:
     if breakEncirclement(bot, ct, local_map=bot.hivemind.local_map):
         return
     idx = bot.hivemind.my_index
-    # A capped guardian is simply not a guardian: it falls through to the normal
-    # non-guardian path below. Which one depends on excess rank — odd slots over
-    # the cap dispatch as harasser, even slots as default (guardianOverflowIsHarasser)
-    # — so overflow guardians split between the two instead of all becoming one.
-    if isGuardian(idx) and not guardianCapped(idx):
+    # Needs-based, not blind idx%5: a guardian-pool member only actually
+    # guards if a real rank (1..MAX_GUARDIANS) is currently vacant/stale —
+    # see _resolveAssignedGuardianRank. A pool member that doesn't get
+    # assigned a rank (both already alive and healthy — same case
+    # guardianCapped used to gate alone) falls through to the normal
+    # non-guardian path below, same as a capped guardian always has.
+    assigned_rank = isGuardian(idx) and _resolveAssignedGuardianRank(bot, ct)
+    if assigned_rank:
+        markGuardianAlive(ct, assigned_rank, idx)
         runGuardian(bot, ct)
         return
+    # Which one depends on excess rank — odd slots over the cap dispatch as
+    # harasser, even slots as default (guardianOverflowIsHarasser) — so
+    # overflow guardians split between the two instead of all becoming one.
+    # Unaffected by needs-based assignment above — still purely idx-based,
+    # applying to whichever pool slots didn't need to backfill anything.
     capped_guardian_as_harasser = isGuardian(idx) and guardianOverflowIsHarasser(idx)
     # Wave attack pulls the default cohort into harassing too, but not all of
     # it — even-ranked default slots keep building (waveDefaultStaysBuilder) so

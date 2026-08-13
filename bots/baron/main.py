@@ -4,11 +4,17 @@ Store slots (HiveMind v2):
   0  SLOT_RELAY_COMPLETE   bit-packed: bit 0 = a relay has completed (written
        by builders), bit 1 = CORE_THREAT_BIT, the core sees an enemy turret
        (gunner/sentinel/launcher — not a bare builder; written only by the
-       core). Readers must mask — no slot is free, so the guardian-leash
-       signal rides in slot 0's 31 unused bits.
+       core). Bits 2-11/12-21 = guardian rank 1/2's liveness heartbeat —
+       last-refreshed round, written every runBuilderRoles tick by whichever
+       unit currently holds that rank, gated on the slot-13 metronome so at
+       most one writer lands per round (logistics.markGuardianAlive/
+       guardianRankAlive; shifts/masks in policy.py's GUARDIAN1_TS_SHIFT/
+       GUARDIAN2_TS_SHIFT/GUARDIAN_TS_BITS). Readers must mask — no slot is
+       free, so this all rides in slot 0's spare bits (10 of 32 still unused).
   1–3 SLOT_ORPHAN_1/2/3    orphaned-harvester registry (logistics.py) — the
        last Player-free slots; nothing else may claim them
-  4–15 HiveMind-owned — never write from Player
+  4–15 HiveMind-owned — never write from Player (reading is fine and already
+       established practice — respawn.py/logistics.py both read slot 4/13)
        4 builder registry · 5–12 delta ledger · 13 metronome
        14 map id · 15 packed cores
 """
