@@ -186,6 +186,71 @@ def analyze_replay_all_detectors(
         return [], {"badge_a": f" [fcv err: {exc}]", "badge_b": f" [fcv err: {exc}]"}
 
 
+def run_standalone_replay_analysis(
+    replay_path: str,
+    bot1: str = "bot1",
+    bot2: str = "bot2",
+    config_path: str | None = None,
+    profile_name: str | None = None,
+    json_output_path: str | None = None,
+    csv_metrics_path: str | None = None,
+    markdown_report_path: str | None = None,
+) -> int:
+    """Analyze a single .replay26 file directly without running matches."""
+    p = Path(replay_path)
+    if not p.is_file():
+        print(f"Error: replay file not found at {replay_path}", file=sys.stderr)
+        return 1
+
+    cfg = load_config(config_path, profile_name or bot1)
+    run_id = f"single-{uuid.uuid4().hex[:8]}"
+    now_str = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    map_name = p.stem
+
+    events, metrics = analyze_replay_all_detectors(str(p), map_name, "A", bot1, bot2, cfg)
+    causal_chains = build_causal_chains(events)
+
+    report_data = build_full_report_dict(
+        run_id=run_id,
+        timestamp=now_str,
+        candidate_bot=bot1,
+        opponent_bot=bot2,
+        maps=[map_name],
+        games=[{
+            "map": map_name, "side": "A", "team_a_bot": bot1, "team_b_bot": bot2,
+            "ti_rate_a": metrics.get("ti_rate_a", 0.0), "ti_rate_b": metrics.get("ti_rate_b", 0.0),
+        }],
+        events=events,
+        causal_chains=causal_chains,
+        verdict_counts={"SINGLE_REPLAY": 1},
+    )
+
+    if json_output_path:
+        write_json_report(report_data, json_output_path)
+    if csv_metrics_path:
+        write_csv_metrics(report_data["games"], csv_metrics_path)
+    if markdown_report_path:
+        write_markdown_report(report_data, markdown_report_path)
+
+    tot_loss = total_estimated_loss(events)
+    print(f"FCV Standalone Replay Diagnostic: {replay_path}")
+    print(f"Total Estimated Ti Loss: {tot_loss} Ti | Diagnostic Badges: {metrics.get('badge_a', '')}")
+
+    leaks = top_cost_leaks(events, top_n=5)
+    if leaks:
+        print("\n=== Top 5 Estimated Ti Leaks ===")
+        for l in leaks:
+            bname = l.metadata.get("bot_name", f"Side {l.side}")
+            print(f"  • [{bname}] {l.detector} at {l.map_name}: {l.message} (Est Loss: {l.estimated_ti_loss} Ti)")
+
+    if causal_chains:
+        print("\n=== Causal Chains Identified ===")
+        for c in causal_chains[:5]:
+            print(f"  • [{c.chain_id}] {c.summary}")
+
+    return 0
+
+
 def run_full_gauntlet(
     bot_name: str,
     opponent_name: str,
