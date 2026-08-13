@@ -287,6 +287,20 @@ def moveTowardLeash(
 
     Targeting the *region* (any walkable tile within `radius`) instead of a
     single unreachable point lets A* actually route around the wall.
+
+    Cached on `bot.cachedLeashPath` (own slot, separate from `moveToward`'s
+    `bot.cachedPath` — that one is point-goal-shaped, this one is
+    region-goal-shaped, and each was clobbering the other's cache every time a
+    guardian alternated between the two, defeating both). Also spends from the
+    same `bot.pathSearchesThisTurn`/`MAX_PATH_SEARCHES_PER_TURN` budget
+    `moveToward` already respects: this used to run an uncached, unbudgeted
+    full `astarFromSeeds` call on *every single turn* a guardian sat outside
+    its leash — exactly the "one search alone already costs 15-19ms, over the
+    ~10ms turn budget with no stacking needed" cost `moveToward`'s own budget
+    guard exists to bound (see policy.MAX_PATH_SEARCHES_PER_TURN), except this
+    recall path had no guard at all. That made it likeliest to TLE at the
+    worst possible moment: exactly when `coreThreatened` trips and every
+    guardian outside the leash needs to path home in the same turn.
     """
     if ct.get_move_cooldown() != 0:
         return False
@@ -304,13 +318,38 @@ def moveTowardLeash(
             return False
         return walkPassable(ct, p, local_map=local_map)
 
-    path = astarFromSeeds(
-        [pos],
-        is_passable=ok,
-        is_goal=lambda p: chebyshevToCore(p, core_pos) <= radius,
-        heuristic=lambda p: max(0, chebyshevToCore(p, core_pos) - radius),
-        max_iters=PATH_MAX_ITERS,
-    )
+    from main import MAX_PATH_SEARCHES_PER_TURN
+
+    path = None
+    cached = getattr(bot, "cachedLeashPath", None)
+    cached_core = getattr(bot, "cachedLeashCore", None)
+    cached_radius = getattr(bot, "cachedLeashRadius", None)
+    if (
+        cached
+        and cached_core == core_pos
+        and cached_radius == radius
+        and len(cached) > 1
+        and cached[0] == pos
+    ):
+        path = cached  # cache hit — no search spent
+    else:
+        searches = getattr(bot, "pathSearchesThisTurn", 0)
+        if MAX_PATH_SEARCHES_PER_TURN and searches >= MAX_PATH_SEARCHES_PER_TURN:
+            # Budget already spent elsewhere this turn — fall straight to the
+            # direct-step fallback below rather than run an unbudgeted search.
+            path = None
+        else:
+            bot.pathSearchesThisTurn = searches + 1
+            path = astarFromSeeds(
+                [pos],
+                is_passable=ok,
+                is_goal=lambda p: chebyshevToCore(p, core_pos) <= radius,
+                heuristic=lambda p: max(0, chebyshevToCore(p, core_pos) - radius),
+                max_iters=PATH_MAX_ITERS,
+            )
+            bot.cachedLeashPath = path
+            bot.cachedLeashCore = core_pos
+            bot.cachedLeashRadius = radius
 
     if not path or len(path) < 2:
         # Last resort only — no obstacle avoidance, same as moveToward's own
@@ -325,8 +364,10 @@ def moveTowardLeash(
     step = nearestCardinal(pos.direction_to(nxt))
     if step != Direction.CENTRE and ct.can_move(step):
         ct.move(step)
+        bot.cachedLeashPath = path[1:]
         bot.cachedPath = None  # this path is region-goal-shaped, not moveToward's
         return True
+    bot.cachedLeashPath = None
     return False
 
 

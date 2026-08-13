@@ -80,6 +80,12 @@ class Player:
         self.lastPathFailedTarget: tuple[int, int] | None = None
         self.cachedPath: list[Position] | None = None
         self.cachedPathTarget: Position | None = None
+        # Own cache for moveTowardLeash — region-goal-shaped, so it can't share
+        # cachedPath/cachedPathTarget (point-goal-shaped) without each clobbering
+        # the other whenever a guardian alternates between the two.
+        self.cachedLeashPath: list[Position] | None = None
+        self.cachedLeashCore: Position | None = None
+        self.cachedLeashRadius: int | None = None
         self.lastPos: Position | None = None
         self.stuck = 0
         # Gunner-only: consecutive turns since this gunner last fired. Drives
