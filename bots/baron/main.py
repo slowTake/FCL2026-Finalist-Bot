@@ -34,13 +34,14 @@ from policy import *  # noqa: F401,F403
 
 DEBUG = True
 
+from geometry import DEFEND_HOME_CHEBYSHEV
 from guns import gunnerLoop, sentinelLoop, topUpAmmo
 from hivemind import CoreState, HiveMind, unpack_cores
 from respawn import Respawn, SpawnSchedule
 from builder import runBuilderRoles
 from defence import GuardianMemory
 from logistics import setCoreThreat
-from logistics_helpers import enemyTurretInVision
+from logistics_helpers import allyBeltDamagedNearCore, enemyTurretInVision
 from offense import OffenseMemory
 
 SPAWN_SCHEDULE = SpawnSchedule(
@@ -69,6 +70,10 @@ class Player:
         self.relayPath: list[Position] | None = None
         self.relayBuiltTo = -1
         self.relayStuck = 0
+        # Consecutive turns held (no Ti, no attack) while the next lane tile
+        # is sealed by an enemy turret — see RELAY_TURRET_WAIT_TURNS. Cleared
+        # by clearRelay.
+        self.relayTurretWaitTurns = 0
         # Set only for a verifyHomeHarvester pass: makes beltFacingOk refuse the
         # ledger fallback so the line is proven by eye, not by memory. Cleared by
         # clearRelay so it can never leak into an ordinary relay.
@@ -148,7 +153,18 @@ class Player:
         # _enemyUnitInVision's turret-or-builder — an enemy builder scouting
         # past the core isn't a threat the guardian leash needs to tighten
         # for; only something that can actually shell the core should do that.
-        if enemyTurretInVision(ct):
+        #
+        # OR'd with allyBeltDamagedNearCore: an enemy builder tearing through
+        # belts *before* it places a gun produces no turret sighting at all,
+        # so the turret-only check above missed exactly that case — a
+        # hostile builder took out belts and planted a gun near the core
+        # before any guardian reacted. A damaged ally belt near the core is
+        # unambiguous evidence of hostile action without reopening the
+        # "any scouting builder tightens the leash" false-positive the
+        # turret-only design exists to avoid.
+        if enemyTurretInVision(ct) or allyBeltDamagedNearCore(
+            ct, ct.get_position(), DEFEND_HOME_CHEBYSHEV
+        ):
             self.coreThreatRound = round_n
         setCoreThreat(
             ct, round_n - self.coreThreatRound <= GUARDIAN_LEASH_HOLD_TURNS

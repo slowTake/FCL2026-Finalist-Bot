@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from fcode import Controller, Direction, EntityType, Position
 
-from geometry import BELT_TYPES, coreFootprint, isAdjacent
+from geometry import BELT_TYPES, DEFEND_HOME_CHEBYSHEV, chebyshevToCore, coreFootprint, isAdjacent
 from movement import (
     PATH_MAX_ITERS,
     _allyCorePos,
@@ -39,6 +39,7 @@ def clearRelay(bot) -> None:
     bot.relayPath = None
     bot.relayBuiltTo = -1
     bot.relayStuck = 0
+    bot.relayTurretWaitTurns = 0
     bot.beltFireTile = None
     bot.beltFireTurns = 0
     # Vision-only proof is a property of one verification pass, never of the
@@ -251,13 +252,21 @@ def relayEverComplete(ct: Controller) -> bool:
 
 
 def coreThreatened(ct: Controller) -> bool:
-    """True while the core can see an enemy turret/builder (slot 0 bit 1).
+    """True while the core sees an enemy turret, or a nearby ally belt is
+    damaged (slot 0 bit 1).
 
     Written only by the core (`setCoreThreat` from `_run_core`), read by
     guardians via `logistics_helpers.guardianLeash`. The core's vision is
     r²=36 (~6 tiles) against a builder's ~4.5, and a builder's ledger is
     personal-vision only, so this is the only way a roaming guardian learns
     home is being probed.
+
+    Two independent triggers OR'd together in `_run_core`: `enemyTurretInVision`
+    (turret-only, not turret-or-builder — a lone enemy builder just scouting
+    past the core isn't yet a threat) and `allyBeltDamagedNearCore`, added to
+    close the gap that left open: an enemy builder tearing through belts
+    *before* it places a gun produces no turret sighting at all, so it slipped
+    past the turret-only check unreacted-to until the gun already existed.
     """
     from main import CORE_THREAT_BIT, SLOT_RELAY_COMPLETE
 
@@ -705,8 +714,20 @@ _BELT_OBSTACLE_TYPES = BELT_TYPES + (EntityType.BARRIER,)
 _BELT_FIRE_TURN_LIMIT = 11
 
 
-def clearBeltObstacle(bot, ct: Controller, tile: Position) -> str:
+def clearBeltObstacle(
+    bot, ct: Controller, tile: Position, *, extra_types: tuple = ()
+) -> str:
     """Clear a wrong-facing belt or a barrier blocking the relay lane.
+
+    `extra_types` widens what this specific call treats as clearable beyond
+    belts/barriers, without touching any other call site's behavior (the
+    type gate below is the only thing that changes). The only current user
+    is relayToCore's near-core-turret branch, passing
+    (GUNNER, SENTINEL, LAUNCHER) — but only once it's already confirmed the
+    turret sits within DEFEND_HOME_CHEBYSHEV of our own core; see that
+    branch's own comment for why a builder attacking a turret is a bad Ti
+    trade everywhere else (same lesson defendHome's docstring documents).
+    Every other call site passes nothing, so its behavior is unchanged.
 
     Returns acted|waiting|clear|failed.
     """
@@ -718,7 +739,7 @@ def clearBeltObstacle(bot, ct: Controller, tile: Position) -> str:
         bot.beltFireTurns = 0
         return "clear"
     etype = ct.get_entity_type(bid)
-    if etype not in _BELT_OBSTACLE_TYPES:
+    if etype not in _BELT_OBSTACLE_TYPES and etype not in extra_types:
         return "failed"
     pos = ct.get_position()
     ally = ct.get_team(bid) == ct.get_team()
@@ -1176,9 +1197,12 @@ def relayToCore(bot, ct: Controller) -> None:
     # half of this: healing partial damage before it's destroyed.
 
     # Barrier blocking — clear it (destroy ours, fire down theirs) instead of
-    # abandoning the planned lane. Any other non-belt building — our own
-    # gunner/sentinel/launcher (a guardian dropping defence mid-relay), an
-    # ally/enemy harvester, or an enemy turret — replans around it instead.
+    # abandoning the planned lane. An *enemy* turret is attacked the same way
+    # if it's within DEFEND_HOME_CHEBYSHEV of our own core, else waited out
+    # (see the near-core-turret branch below for both). Any other non-belt
+    # building — our own gunner/sentinel/launcher (a guardian dropping
+    # defence mid-relay) or an ally/enemy harvester — replans around it
+    # instead.
     if ct.is_in_vision(tile):
         block_id = ct.get_tile_building_id(tile)
         if block_id is not None:
@@ -1203,6 +1227,70 @@ def relayToCore(bot, ct: Controller) -> None:
                     _replanRelayOrAbort(bot, ct, core_pos, enemy_core)
                     return
                 # "clear" — fall through to place
+            elif (
+                etype in (EntityType.GUNNER, EntityType.SENTINEL, EntityType.LAUNCHER)
+                and ct.get_team(block_id) != ct.get_team()
+            ):
+                # Enemy turret sealing the lane. relayPassable already excludes
+                # turrets from a *fresh* plan, so this only ever fires when one
+                # gets placed after a plan already committed to the tile (same
+                # rare "appeared after planning" case as a barrier).
+                #
+                # Within DEFEND_HOME_CHEBYSHEV of our own core, it's already
+                # sitting inside our defensive perimeter — worth clearing
+                # regardless of who does it, so attack it (reusing
+                # clearBeltObstacle's stand-and-fire/turn-cap machinery via
+                # extra_types, same as the barrier branch above) instead of
+                # only ever waiting on defGun/defSentinel to get around to it.
+                # Outside that radius the normal Ti-trade caution still holds —
+                # a builder's own fire is ~1.0 Ti/dmg against a gunner's 0.20,
+                # trading a 30 Ti builder for ~6 damage to a 10 Ti gunner (same
+                # lesson defendHome's docstring documents for a bare "attack any
+                # visible turret" branch) — so a distant turret still just gets
+                # waited out (RELAY_TURRET_WAIT_TURNS) rather than fought.
+                if chebyshevToCore(tile, core_pos) <= DEFEND_HOME_CHEBYSHEV:
+                    result = clearBeltObstacle(
+                        bot,
+                        ct,
+                        tile,
+                        extra_types=(
+                            EntityType.GUNNER,
+                            EntityType.SENTINEL,
+                            EntityType.LAUNCHER,
+                        ),
+                    )
+                    if result == "acted":
+                        return
+                    if result == "waiting":
+                        return
+                    if result == "failed":
+                        if not _relayStuckExceeded(bot):
+                            return
+                        bot.relayStuck = 0
+                        _replanRelayOrAbort(bot, ct, core_pos, enemy_core)
+                        return
+                    # "clear" — fall through to place
+                else:
+                    # Don't immediately report-and-abort either — that just
+                    # hands the exact same doomed route to another builder via
+                    # the orphan registry to fail identically, at real Ti cost
+                    # each time. Hold the claim and keep re-checking instead:
+                    # defGun/defSentinel/harasser's offGun clear enemy turrets
+                    # independently of this relay, so waiting resumes
+                    # automatically the moment that happens. Safe to hold
+                    # passively (no move, no Ti) — _dodgeWhileRelaying already
+                    # runs ahead of this every turn and steps away first if
+                    # actually under this turret's fire, so this branch only
+                    # ever runs on a turn it isn't.
+                    from main import RELAY_TURRET_WAIT_TURNS
+
+                    waited = getattr(bot, "relayTurretWaitTurns", 0)
+                    if RELAY_TURRET_WAIT_TURNS and waited < RELAY_TURRET_WAIT_TURNS:
+                        bot.relayTurretWaitTurns = waited + 1
+                        return
+                    bot.relayTurretWaitTurns = 0
+                    _replanRelayOrAbort(bot, ct, core_pos, enemy_core)
+                    return
             elif etype not in BELT_TYPES:
                 # relayPassable already excludes these from a fresh plan, so
                 # replan immediately instead of nulling the path and waiting a

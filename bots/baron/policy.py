@@ -74,6 +74,12 @@ DEF_SENTINEL = True
 TURRET_THREAT_CHEBYSHEV = 6  # enemy turret this close to core counts as a threat
 TURRET_MEMORY_TURNS = 20  # how stale a ledger sighting may be and still count
 
+# --- Guardian apron (False disables) — EXPERIMENTAL ---
+# Guardians keep a conveyor on each of the 8 tiles cardinally touching the
+# core's footprint (sides only, corners left open — see defence.maintainApron),
+# denying an enemy gunner/sentinel a placement pad directly against the core.
+APRON_ENABLED = True
+
 # --- Guardian idle economy (False disables) ---
 # While no enemy unit is in vision, guardians build harvesters on ore inside the
 # leash and finish/repair belt relays back to core instead of only patrolling.
@@ -330,6 +336,24 @@ RELAY_LEDGER_TRUST_TURNS = 30
 # separately at each of those five sites with no shared knob at all; named
 # here so it's one dial instead of five copies of the same number.
 RELAY_STUCK_TURNS = 3
+
+# --- Relay blocked by an enemy turret (≤0 disables) ---
+# Consecutive turns relayToCore holds a relay claim (no Ti spent, no attack)
+# when the next lane tile is sealed by an enemy GUNNER/SENTINEL/LAUNCHER,
+# before finally replanning/reporting-and-aborting same as any other
+# unopenable door. Builders never attack a turret to clear one — same lesson
+# defendHome's docstring already documents (a builder's own fire is ~1.0
+# Ti/dmg against a gunner's 0.20; trading a 30 Ti builder for ~6 damage to a
+# 10 Ti gunner is a bad trade, so turrets answer turrets: defGun/defSentinel/
+# offGun, not economy). Without this wait, the immediate report-and-abort
+# handed the exact same doomed route to another builder (via the orphan
+# registry) to fail identically, over and over, at real Ti cost each time —
+# waiting in place instead lets the relay resume automatically the moment
+# defence clears that turret on its own, which it does independently of
+# this relay. Safe to hold passively: _dodgeWhileRelaying already runs ahead
+# of this every turn and steps away first if the builder is actually under
+# that turret's fire, so this branch only ever fires on a turn it isn't.
+RELAY_TURRET_WAIT_TURNS = 20
 
 # --- Ore deadlock breaker (≤0 disables) ---
 # Turns a default builder may sit motionless outside a relay before it drops its

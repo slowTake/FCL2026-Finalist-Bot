@@ -747,6 +747,102 @@ def patchAdjacentCoreBelt(bot, ct: Controller) -> bool:
     return False
 
 
+# The 8 tiles cardinally touching the core's 2x2 footprint, sides only — same
+# shape `walls.wallEnemyCore` uses for the enemy core's own perimeter, minus
+# its 4 diagonal corners. Facing points *inward*, at the nearest footprint
+# tile: a belt here does double duty as the last hop of a real relay landing
+# on this side, rather than being pure dead weight if one ever does — and it
+# means `_reconnectFacing`'s own core-footprint check (`_reconnectFacing`'s
+# first lookahead) already recognizes it as correctly connected, so nothing
+# downstream mistakes it for a break to patch over.
+def _apronTiles(core: Position) -> list[tuple[Position, Direction]]:
+    return [
+        (Position(core.x, core.y - 1), Direction.SOUTH),  # N side
+        (Position(core.x + 1, core.y - 1), Direction.SOUTH),
+        (Position(core.x, core.y + 2), Direction.NORTH),  # S side
+        (Position(core.x + 1, core.y + 2), Direction.NORTH),
+        (Position(core.x - 1, core.y), Direction.EAST),  # W side
+        (Position(core.x - 1, core.y + 1), Direction.EAST),
+        (Position(core.x + 2, core.y), Direction.WEST),  # E side
+        (Position(core.x + 2, core.y + 1), Direction.WEST),
+    ]
+
+
+def maintainApron(bot, ct: Controller, *, allow_walk: bool = True) -> bool:
+    """Keep a conveyor on each of the 8 core-side tiles — corners left open.
+
+    Occupying these tiles denies an enemy gunner/sentinel a pad directly
+    against the core: `_gunnerPadsNearTarget`/`_sentinelPadsNearTarget`
+    (guns.py) both require `ct.is_tile_empty(site)`, so a tile already
+    holding our own conveyor is never offered as a placement site — the same
+    mechanism `_allyGunnerBlockedPads` already leans on to keep gunners off
+    each other. It also happens to block *line of fire* through that tile the
+    same way `blockGunLine`'s barrier does (`can_fire_from` refuses to fire
+    through any occupied tile, ally or enemy), so an apron tile already doing
+    its job usually pre-empts `blockGunLine` ever needing to act on that side.
+
+    Belt, not barrier, on purpose: a conveyor is just as effective an
+    occupant for both of the above, but stays walkable — it doesn't block our
+    own guardian's patrol/heal movement around the core the way a ring of
+    barriers would.
+
+    Corners are deliberately left open — a footprint's 4 diagonal corners are
+    outside a gunner's/sentinel's normal approach line to any single
+    footprint tile in the first place (see `wallEnemyCore`, which uses the
+    identical 8-tile side-only shape for the same reason on the enemy side),
+    and leaving them open keeps a guardian's own diagonal movement around the
+    core unobstructed.
+
+    Caveat: an apron tile claims an empty core-adjacent tile pre-emptively,
+    before any real relay is known to want it. Facing inward means a relay
+    that *does* land there later finds an already-correct last hop rather
+    than an obstruction, but if a relay wants to cross that exact tile
+    without terminating there, this can still be in the way — untested at
+    scale, worth watching for in gauntlet runs.
+
+    Zero-movement build pass first (mirrors `patchAdjacentCoreBelt`), then a
+    walk to the nearest still-missing tile — capped by the same
+    `MAX_PATH_SEARCHES_PER_TURN` budget every other `moveToward` call shares.
+    `allow_walk=False` (passed while hostile is in vision, same as
+    `reconnectBelts`/`finishNearbyBelt`) keeps only the zero-movement pass —
+    fortifying a side no one is threatening isn't worth repositioning for
+    while something is actually happening.
+    """
+    from main import APRON_ENABLED
+
+    if not APRON_ENABLED:
+        return False
+    core = bot.corePos
+    if core is None or bot.inRelay or getattr(bot, "recheckingOre", False):
+        return False
+
+    from logistics import placeRelayBelt
+
+    missing: list[tuple[Position, Direction]] = []
+    for tile, facing in _apronTiles(core):
+        if not inBounds(ct, tile):
+            continue  # a core near the map edge pushes some offsets off it
+        if _isBeltOrCore(bot, ct, tile, core):
+            continue  # already ours (apron or a real relay's own last hop)
+        if not _layableTile(ct, tile):
+            continue  # not empty/known, or occupied by something else
+        missing.append((tile, facing))
+    if not missing:
+        return False
+
+    pos = ct.get_position()
+    for tile, facing in missing:
+        if isAdjacent(pos, tile) and placeRelayBelt(ct, tile, facing) == "placed":
+            return True
+
+    if not allow_walk:
+        return False
+    from movement import moveToward
+
+    missing.sort(key=lambda tf: manhattan(pos, tf[0]))
+    return moveToward(bot, ct, missing[0][0])
+
+
 def reconnectBelts(bot, ct: Controller, *, allow_walk: bool = True) -> bool:
     """Patch a cut belt line near the core back toward the core, one tile a turn.
 

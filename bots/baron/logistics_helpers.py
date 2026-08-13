@@ -17,6 +17,7 @@ from __future__ import annotations
 from fcode import Controller, Direction, EntityType, Environment, GameConstants, Position
 
 from geometry import (
+    BELT_TYPES,
     DEFEND_HOME_CHEBYSHEV,
     TURRET_TYPES,
     angleBucket,
@@ -97,6 +98,41 @@ def contestTurret(bot, ct: Controller) -> bool:
     from guns import placeGun
 
     return placeGun(bot, ct, target)
+
+
+def allyBeltDamagedNearCore(ct: Controller, core_pos: Position, radius: int) -> bool:
+    """True if an ally conveyor/splitter within `radius` Chebyshev of the core is hurt.
+
+    Second guardian-leash trigger, alongside `enemyTurretInVision` in
+    `_run_core` (main.py) — that one is deliberately turret-only, since a
+    lone enemy builder merely scouting past the core isn't yet a threat worth
+    tightening the leash for. That leaves a real gap: an enemy builder
+    actively tearing through belts *before* it ever places a gun is exactly a
+    threat, and produces no turret sighting at all until the gun already
+    exists — by which point the belts it walked past are already gone. A
+    damaged ally belt is unambiguous evidence something hostile just hit it
+    (belts don't lose HP any other way), so this closes that gap without
+    reopening the "any scouting builder tightens the leash" false-positive
+    the turret-only design exists to avoid — an enemy builder that hasn't hit
+    anything yet still doesn't trip it.
+
+    Core-only, same as `enemyTurretInVision` there: the core's own vision
+    (r²=36, ~6 tiles) already covers `radius` (DEFEND_HOME_CHEBYSHEV, 4) with
+    room to spare, and `HiveMind.tick` has already enumerated
+    `get_nearby_entities()` this turn, so the scan is effectively free.
+    """
+    me = ct.get_team()
+    for eid in ct.get_nearby_entities():
+        if ct.get_team(eid) != me:
+            continue
+        if ct.get_entity_type(eid) not in BELT_TYPES:
+            continue
+        epos = ct.get_position(eid)
+        if chebyshevToCore(epos, core_pos) > radius:
+            continue
+        if ct.get_hp(eid) < ct.get_max_hp(eid):
+            return True
+    return False
 
 
 # ------------------------------------------------------------------

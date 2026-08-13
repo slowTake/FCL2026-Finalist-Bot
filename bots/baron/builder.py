@@ -79,6 +79,19 @@
 #        1.0 Ti/dmg against a gunner's 0.20, and the approach walked a 40 HP
 #        builder into something dealing 10 dmg/turn. Turrets answer turrets.
 # 5. healAlly — core → gunner/sentinel → harvester
+# 5b. maintainApron (EXPERIMENTAL, main.APRON_ENABLED) — keep a conveyor on
+#        each of the 8 tiles cardinally touching the core footprint (sides
+#        only, corners open — same shape as walls.wallEnemyCore's own
+#        perimeter, mirrored for defence). Denies an enemy gunner/sentinel a
+#        placement pad directly against the core (both pad pickers in
+#        guns.py require an empty tile) and, as a side effect, blocks line of
+#        fire through that tile the same way blockGunLine's barrier does.
+#        Belt not barrier: stays walkable, doesn't block our own movement.
+#        Facing points inward at the core, so a real relay landing on that
+#        tile later finds an already-correct last hop instead of an
+#        obstruction. allow_walk=not underAttack, same as reconnectBelts
+#        below — zero-movement build pass always runs, the walk to the
+#        nearest still-missing tile backs off while hostile.
 #    Steps 6-8 are chores and share one gate, `not underAttack`: enemy turret OR
 #    builder in vision, relaxed to turret-only until the team's first relay
 #    completes (relayEverComplete, slot 0) — before there is any economy an enemy
@@ -308,6 +321,7 @@ from defence import (
     defGun,
     defSentinel,
     finishNearbyBelt,
+    maintainApron,
     maintainGunLineBlock,
     patchAdjacentCoreBelt,
     patrolHome,
@@ -852,13 +866,13 @@ def _relayNearlyComplete(bot) -> bool:
 def runGuardian(bot, ct: Controller) -> None:
     """Guardian: leash (dodge-first if already under fire) → react → defGun →
     defSentinel → avoidFire → patchAdjacentCoreBelt → defendHome → healAlly →
-    buildHarvesterOnClearedBarrier → clearBarriers → reconnectBelts → economy
-    (clearBarriers and economy only while nothing hostile is in vision;
-    patchAdjacentCoreBelt/buildHarvesterOnClearedBarrier/reconnectBelts/
-    finishNearbyBelt run regardless but drop their walk-to-a-distant-break
-    fallback (n/a for patchAdjacentCoreBelt and the harvester step, which
-    never walk) while hostile, keeping only the zero-movement adjacent
-    action) → patrol.
+    maintainApron → buildHarvesterOnClearedBarrier → clearBarriers →
+    reconnectBelts → economy (clearBarriers and economy only while nothing
+    hostile is in vision; patchAdjacentCoreBelt/maintainApron/
+    buildHarvesterOnClearedBarrier/reconnectBelts/finishNearbyBelt run
+    regardless but drop their walk-to-a-distant-break fallback (n/a for
+    patchAdjacentCoreBelt and the harvester step, which never walk) while
+    hostile, keeping only the zero-movement adjacent action) → patrol.
 
     defendHome is called twice: once in its normal slot at the default
     stop_hp (_CORE_HEAL_STOP_HP, 400/500 — urgent, stops short of full to
@@ -946,6 +960,14 @@ def runGuardian(bot, ct: Controller) -> None:
     if defendHome(bot, ct):
         return
     if healAlly(bot, ct):
+        return
+    # Above the barrier/belt/ore chores below: fortifying the tiles an enemy
+    # gunner/sentinel could otherwise plant on outranks reacting to a barrier
+    # or a distant break, but every real combat/heal step above still gets
+    # first crack at the turn. allow_walk=not underAttack — same reasoning as
+    # reconnectBelts/finishNearbyBelt below: the zero-movement build pass is
+    # always safe, the walk-to-nearest-gap fallback backs off while hostile.
+    if maintainApron(bot, ct, allow_walk=not underAttack):
         return
     # Ahead of clearBarriers itself: if a barrier this guardian already killed
     # sat on ore, claim it before wandering off to the next barrier. Zero
