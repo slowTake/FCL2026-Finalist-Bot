@@ -48,9 +48,6 @@ class OffenseMemory:
         self.supplyCutTile: tuple[int, int] | None = None
         self.lastSupplyCutRound = -999
         self.supplyCutWaitTurns = 0
-        # tapHijackTarget's sticky tile — the enemy relay belt currently being
-        # cleared for hand-off to the hijack registry.
-        self.hijackTapTile: tuple[int, int] | None = None
         # killCore's core-directed belt-cut target/cooldown/fire-turn-counter —
         # formerly disconnectCore's disconnectCoreTile/lastDisconnectCoreRound,
         # renamed since killCore now owns both the gun-placement and belt-cut
@@ -1037,107 +1034,6 @@ def denyHarvesterSupply(bot, ct: Controller) -> bool:
         cooldownAttr="lastSupplyCutRound",
         pick=lambda: _nth(_claimedHarvesterSupplyTargets(bot, ct), harasserRank(bot)),
     )
-
-
-def _hijackCandidates(bot, ct: Controller) -> list[Position]:
-    """Enemy CONVEYOR tiles within HIJACK_TAP_CHEBYSHEV of their core, proven live.
-
-    Scans the ledger (bot.hivemind.local_map), not just live vision — the
-    whole point is to find a belt some other teammate spotted, not only ones
-    this harasser has personally seen. Each candidate is proven via
-    logistics._enemyBeltReachesEnemyCore before being offered: an
-    unconditional "any enemy belt near their core" would as often tap a
-    dead/orphaned stub as a genuinely flowing line, wasting the clear.
-    """
-    from logistics import _enemyBeltReachesEnemyCore
-    from main import HIJACK_TAP_CHEBYSHEV
-
-    enemy_core = getattr(bot, "enemyCorePos", None)
-    if enemy_core is None or HIJACK_TAP_CHEBYSHEV is None or HIJACK_TAP_CHEBYSHEV <= 0:
-        return []
-    me = ct.get_team()
-    pos = ct.get_position()
-    cache: dict = {}
-    out: list[Position] = []
-    for (x, y), cell in bot.hivemind.local_map.items():
-        ent = cell.get("entity")
-        if not ent or ent.get("team") == me or ent.get("type") != EntityType.CONVEYOR:
-            continue
-        tile = Position(x, y)
-        if chebyshevToCore(tile, enemy_core) > HIJACK_TAP_CHEBYSHEV:
-            continue
-        if not _enemyBeltReachesEnemyCore(bot, ct, tile, enemy_core, cache=cache):
-            continue
-        out.append(tile)
-    out.sort(key=lambda p: manhattan(pos, p))
-    return _dropSkipped(bot, out)
-
-
-def findHijackTarget(bot, ct: Controller) -> Position | None:
-    """Nearest proven-live enemy belt tile worth tapping, else None.
-
-    Also excludes tiles already sitting in the shared hijack registry — the
-    registry itself has no claim field (see logistics.reportHijackTarget), so
-    this is only a cheap duplicate-avoidance at pick time, not a real claim;
-    two harassers racing the same tile in the same turn is still possible and
-    still harmless (both clearing it is redundant work, not a conflict).
-    """
-    from logistics import _ORPHAN_KIND_HIJACK, _readOrphanRegistry
-
-    registered = {
-        (x, y) for _slot, (x, y, _t, _k) in _readOrphanRegistry(ct, kind=_ORPHAN_KIND_HIJACK)
-    }
-    for tile in _hijackCandidates(bot, ct):
-        if (tile.x, tile.y) in registered:
-            continue
-        return tile
-    return None
-
-
-def tapHijackTarget(bot, ct: Controller) -> bool:
-    """Harasser step: find, clear, and hand off a live enemy relay tap point.
-
-    A sticky-target state machine matching `denyBelt`/`denyHarvesterSupply`'s
-    shape, built almost entirely out of one existing call:
-    `logistics.clearBeltObstacle` already does the whole "walk to the tile,
-    stand adjacent, fire it down capped at 11 turns" job — calling it
-    directly here means there is no second copy of that fire loop or its
-    give-up count to write or keep in sync; the harasser and `relayToCore`'s
-    own obstacle-clearing share one implementation and one give-up count.
-
-    Deliberately never builds anything and never leaves `HIJACK_TAP_CHEBYSHEV`
-    — the harasser's whole commitment is "walk in, clear one tile, report,
-    done." `logistics.pursueHijackTarget` (a default builder) does the actual
-    return-line build from here; see `HIJACK_RELAYS_ENABLED`'s comment for why
-    the two roles split the work this way.
-    """
-    from main import HIJACK_RELAYS_ENABLED
-
-    if not HIJACK_RELAYS_ENABLED:
-        return False
-    from logistics import clearBeltObstacle, reportHijackTarget
-
-    sticky = bot.offense.hijackTapTile
-    if sticky is None:
-        target = findHijackTarget(bot, ct)
-        if target is None:
-            return False
-        sticky = (target.x, target.y)
-        bot.offense.hijackTapTile = sticky
-
-    tile = Position(sticky[0], sticky[1])
-    result = clearBeltObstacle(bot, ct, tile)
-    if result == "clear":
-        reportHijackTarget(bot, ct, tile)
-        bot.offense.hijackTapTile = None
-        return True
-    if result == "failed":
-        _skippedTargets(bot).add(sticky)
-        bot.offense.hijackTapTile = None
-        return True
-    if result == "acted":
-        return True
-    return False  # "waiting" — nothing happened, let the rest of the chain try
 
 
 def _denyOreCandidates(bot, ct: Controller) -> list[Position]:

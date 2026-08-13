@@ -750,10 +750,10 @@ def reconnectBelts(bot, ct: Controller, *, allow_walk: bool = True) -> bool:
     never claim the ore that would carry it there. Anchoring on the belt
     instead of the ore is the whole point.
 
-    Also called by `runDefault` right before `pursueHijackTarget`, as a
-    cheap check-and-patch: a default about to walk off toward a fresh hijack
-    tap should fix a cut near-core line first if there is one, rather than
-    leaving the core's own supply broken while it goes hunting further afield.
+    Also called by `runDefault`, below every real-work step: a cheap
+    check-and-patch so a default doesn't fall straight through to
+    `exploreFrontier`'s aimless wander while a cut near-core line sits
+    unfixed right there.
 
     Greedy and deliberately unplanned: no A*, so a blocked coreward tile cannot be
     routed around. Candidates are tried in order and a failed placement falls through
