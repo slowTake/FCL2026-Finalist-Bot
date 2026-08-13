@@ -349,28 +349,6 @@ HARASS_DEADLOCK_TURNS = 8
 # instead of the harasser destroying them.
 HARASS_LEASH_CHEBYSHEV = 4
 
-# --- Hijack enemy relays (False disables) ---
-# A harasser taps a live enemy belt line near their core — clears whatever's
-# on the tile (offense.tapHijackTarget, via the same logistics.
-# clearBeltObstacle a normal relay already uses to fight through a wrong-team
-# belt, same 11-turn give-up cap) and reports it to the shared hijack
-# registry (logistics.reportHijackTarget) rather than building the return
-# line itself. A default builder (logistics.pursueHijackTarget) picks it up
-# and walks it home via the unmodified relayToCore — same trick
-# STEAL_ENEMY_HARVESTERS already uses for harvesters, just for a belt tile.
-# Split this way because a full steal-relay commit was deliberately removed
-# from the harasser role (see runHarasser's docstring) — the return line runs
-# through enemy fire the whole way, which is a cost the harasser shouldn't
-# eat on top of everything else it does; a default builder starting closer to
-# home is the same risk profile as every other relay it already builds.
-HIJACK_RELAYS_ENABLED = True
-# Chebyshev radius around the *enemy* core a hijack target may be found in —
-# narrows further *within* HARASS_LEASH_CHEBYSHEV (the harasser's own leash
-# already gates entry to every step in its chain), so we don't spend a
-# harasser's turn fighting through a belt clear across their base. Mirrors
-# DENY_ORE_CHEBYSHEV/UNDEFENDED_BELT_CHEBYSHEV's shape.
-HIJACK_TAP_CHEBYSHEV = 4
-
 # --- Kill-core commit (≤0 / None disables the override) ---
 # Once a harasser lands a sentinel directly on the enemy core (offense.
 # killCore), it keeps cutting the core's own belts for this many rounds even

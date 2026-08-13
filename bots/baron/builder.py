@@ -149,6 +149,12 @@
 #        (killing one costs the enemy more than it costs us to rebuild/heal it —
 #        see _repairBeltIfDamaged). Path → facing / clearBeltObstacle →
 #        placeRelayBelt → watermark
+# 2c. denyHarvesterSupply (offense.py) — a harvester our own steal-relay just
+#        claimed (an ally belt already lands next to it) may still have an enemy
+#        belt cardinally touching it too. Cut that so 100% of the output routes
+#        to us instead of leaking back to their network. Same call the harasser
+#        role already runs — reused here so the default builder actually doing
+#        the steal handles it itself. Unthrottled.
 # 3. defGun — near core only; enemy gunner/sentinel/launcher in vision → placeGun
 #        (gunners only — never sentinels; a builder is never a placement target,
 #        though an already-placed gunner still opportunistically fires on one)
@@ -162,19 +168,11 @@
 #        line complete without looking, and the builder drops to exploreFrontier
 #        and circles mid-map forever. Sits below every real-work step, so it only
 #        ever spends a turn that was going to be a wander anyway.
-# 5c. reconnectBelts (guard) — before committing to a fresh hijack target, a quick
-#        core-anchored check-and-patch: any near-core ally belt dangling? Fix that
-#        first (walks home if needed) and skip hijack this turn. Same call
-#        guardians already use for near-core patrol repair (defence.py) — reused
-#        here so a default doesn't go hunting for a hijack tap while the core's
-#        own supply line sits cut.
-# 5d. pursueHijackTarget — a harasser cleared and reported a live enemy relay tap
-#        point (offense.tapHijackTarget) → pick it up, walk it home via the
-#        unmodified relayToCore (same machinery STEAL_ENEMY_HARVESTERS already uses
-#        for harvesters, just for a belt tile). In the actual chain this sits right
-#        after finishNearbyHarvester, above verifyHomeHarvester — both it and
-#        finishNearbyHarvester are "start a new opportunistic commitment" steps,
-#        grouped ahead of the "check on old stuff" steps below them.
+# 5c. reconnectBelts (guard) — a quick core-anchored check-and-patch below every
+#        real-work step: any near-core ally belt dangling? Fix that (walks home
+#        if needed) rather than falling straight through to exploreFrontier's
+#        aimless wander. Same call guardians already use for near-core patrol
+#        repair (defence.py).
 # 6. recheckOreNodes — clear sticky oreSite; prefer empty → ally-blocked → harvester
 # 7. exploreFrontier(outward=False) — last resort, no ore anywhere to claim. Walks to
 #        the nearest tile absent from local_map that borders known space, preferring
@@ -251,16 +249,6 @@
 #        any of that (_cutInProgress), because a cut is 20 Ti / 10 turns and
 #        abandoning it half-way spends the Ti for nothing. A belt healed back to full
 #        HP stops counting as in-progress — that is the 4:1 heal-race bail-out.
-# 4b. tapHijackTarget — enemy CONVEYOR within HIJACK_TAP_CHEBYSHEV of their core,
-#        proven via logistics._enemyBeltReachesEnemyCore to actually reach it (not a
-#        dead stub) → clear it (logistics.clearBeltObstacle, same fire-then-done
-#        mechanic and 11-turn give-up as a normal relay fighting through a wrong-team
-#        belt) → report to the shared hijack registry (logistics.reportHijackTarget,
-#        same 3 store slots as the harvester-orphan registry, kind-tagged) for a
-#        default builder to walk home (logistics.pursueHijackTarget). The harasser
-#        never builds anything and never leaves the tap radius — see
-#        HIJACK_RELAYS_ENABLED's comment for why the return line is a separate role's
-#        job, same reasoning that removed the old direct steal-relay commit above.
 # 5. seekHarvester — local_map enemy harvesters / scout ore nodes (vision updates map)
 # 6. seekCore — moveToward enemy core; if stuck, orbit mid-side / ring waypoints
 # 7. exploreFrontier(outward=True) — last resort, enemy core unknown so everything
@@ -282,7 +270,7 @@ from geometry import (
     nearCore,
 )
 from hivemind import CoreState, unpack_cores
-from logistics import abortRelay, coreThreatened, pursueHijackTarget, relayEverComplete
+from logistics import abortRelay, coreThreatened, relayEverComplete
 from logistics_helpers import (
     breakOreDeadlock,
     buildHarvester,
@@ -322,7 +310,6 @@ from offense import (
     seekCore,
     seekHarvester,
     snipeHarvester,
-    tapHijackTarget,
     wallCore,
 )
 
@@ -617,6 +604,17 @@ def runDefault(bot, ct: Controller) -> None:
         return
     if maintainHarvester(bot, ct):
         return
+    # A harvester our own steal-relay just claimed (an ally belt already lands
+    # next to it — geometry.harvesterClaimedByAlly) may still have an enemy
+    # belt cardinally touching it too, leaking part of its output back into
+    # their network instead of routing 100% to us. Same cut-and-barrier this
+    # harasser role already runs (offense.denyHarvesterSupply, step 1b there)
+    # — reused here so the default builder actually doing the steal handles
+    # it itself the moment it's in position, instead of waiting on a harasser
+    # that may be busy elsewhere or never pass by. Unthrottled, like the
+    # harasser call — defends an asset already being captured for free.
+    if denyHarvesterSupply(bot, ct):
+        return
     if defGun(bot, ct):
         return
     if defendHome(bot, ct):
@@ -633,21 +631,12 @@ def runDefault(bot, ct: Controller) -> None:
     # finishNearbyHarvester.
     if finishNearbyHarvester(bot, ct):
         return
-    # Before heading off to a fresh hijack target, make sure our own near-core
-    # belts are actually intact. If the core is under pressure and a line got
-    # cut, a default sent hunting for a hijack tap somewhere out past the
-    # frontier is exactly the wrong unit to be doing that. reconnectBelts is
-    # the same core-anchored check-and-patch guardians already use (see its
-    # docstring) — a quick, cheap call that walks home to fix a break when it
-    # finds one and returns True, or returns False and costs nothing when
-    # everything's fine. Only pursue a hijack target once it reports all good.
+    # A quick core-anchored check-and-patch before falling through to the
+    # last-resort steps below: any near-core ally belt dangling? Fix that
+    # first. Same call guardians already use for near-core patrol repair
+    # (defence.py) — reused here so a default doesn't wander off to
+    # exploreFrontier while the core's own supply line sits cut nearby.
     if reconnectBelts(bot, ct):
-        return
-    # A harasser cleared and reported a live enemy relay tap point
-    # (offense.tapHijackTarget) — pick it up and walk the return line home.
-    # See HIJACK_RELAYS_ENABLED's comment for why this is a default builder's
-    # job rather than the harasser finishing what it started.
-    if pursueHijackTarget(bot, ct):
         return
     # Below every real-work step, above the last-resort ones: this only fires on
     # a builder that would otherwise fall through to exploreFrontier's aimless
@@ -725,14 +714,23 @@ def _harassLeashOk(bot, ct: Controller) -> bool:
 
 
 def _guardianEconomy(bot, ct: Controller) -> bool:
-    """Idle-time economy inside the leash: build harvesters, finish relays."""
+    """Idle-time economy inside the leash: build harvesters, finish relays.
+
+    denyHarvesterSupply after maintainHarvester for the same reason runDefault
+    calls it (see runDefault's 2c) — a guardian can team-blind-steal an enemy
+    harvester inside its leash same as any other role, and should cut the
+    enemy's own supply belt off it once claimed rather than leave that to a
+    harasser that may never come by.
+    """
     if not guardianEconomyOn():
         return False
     bot.nearCoreEconomy = True  # _allowOreSite → ore within the leash only
     breakOreDeadlock(bot, ct)  # state-only; picks below re-choose this turn
     if buildHarvester(bot, ct):
         return True
-    return maintainHarvester(bot, ct)
+    if maintainHarvester(bot, ct):
+        return True
+    return denyHarvesterSupply(bot, ct)
 
 
 _RELAY_ABORT_EXEMPT_TILES = 1
@@ -894,7 +892,7 @@ def runGuardian(bot, ct: Controller) -> None:
 def runHarasser(bot, ct: Controller) -> None:
     """Harasser: leash → snipe → denyHarvesterSupply → offGun →
     wallCore → denyBelt (only if already mid-cut) → avoidFire → denyOre →
-    denyBelt → tapHijackTarget → seek → seekCore.
+    denyBelt → seek → seekCore.
 
     Used to start a steal-relay via `finishNearbyHarvester` (belting a nearby
     un-relayed harvester, ally or enemy, all the way back to our own core) and
@@ -951,11 +949,6 @@ def runHarasser(bot, ct: Controller) -> None:
     if denyOre(bot, ct):
         return
     if denyBelt(bot, ct):
-        return
-    # Same tier as denyOre/denyBelt: cheap, opportunistic, no attrition — walk
-    # in, clear one tile, hand off to a default builder to walk home. See
-    # HIJACK_RELAYS_ENABLED's comment for why the harasser stops there.
-    if tapHijackTarget(bot, ct):
         return
     if seekHarvester(bot, ct):
         return
