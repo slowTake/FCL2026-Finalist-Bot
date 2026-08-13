@@ -1022,6 +1022,15 @@ def denyHarvesterSupply(bot, ct: Controller) -> bool:
     Reuses `_cutAndBarrier` under its own `supplyCutTile`/`lastSupplyCutRound`
     pair, independent of `denyBelt`'s. Unthrottled — this defends an asset
     already being captured for free, not an opportunistic denial.
+
+    `runHarasser`-only. `_claimedHarvesterSupplyTargets` scans the *entire*
+    team ledger every call it actually runs (no sticky target yet, or the
+    sticky one went bad) looking for any claimed harvester anywhere on the
+    map — fine for the one or two harassers that have always called this,
+    roaming far enough that a full scan is the point. `runDefault` /
+    `_guardianEconomy` call `denyOwnHarvesterSupply` instead — seven-plus
+    non-harasser builders each paying this same O(map) scan every turn was a
+    real TLE source (observed live, match 618a31ad, turn ~155).
     """
     from main import STEAL_ENEMY_HARVESTERS
 
@@ -1033,6 +1042,54 @@ def denyHarvesterSupply(bot, ct: Controller) -> bool:
         attr="supplyCutTile",
         cooldownAttr="lastSupplyCutRound",
         pick=lambda: _nth(_claimedHarvesterSupplyTargets(bot, ct), harasserRank(bot)),
+    )
+
+
+def _ownHarvesterSupplyTarget(bot, ct: Controller) -> Position | None:
+    """Enemy belt cardinally touching *this builder's own* claimed harvester.
+
+    O(1) counterpart to `_claimedHarvesterSupplyTargets` — checks only
+    `bot.oreSite` (the harvester this builder is itself relaying from;
+    `maintainHarvester` sets it before every `checkOre` call) instead of
+    scanning the whole team ledger for any claimed harvester on the map. See
+    `denyOwnHarvesterSupply`.
+    """
+    tile = bot.oreSite
+    if tile is None or not ct.is_in_vision(tile):
+        return None
+    bid = ct.get_tile_building_id(tile)
+    me = ct.get_team()
+    if bid is None or ct.get_entity_type(bid) != EntityType.HARVESTER or ct.get_team(bid) == me:
+        return None
+    local_map = bot.hivemind.local_map
+    if not harvesterClaimedByAlly(ct, tile, local_map=local_map):
+        return None
+    for n, belt_ent in beltNeighbors(ct, tile, local_map=local_map):
+        if belt_ent.get("team") != me:
+            return n
+    return None
+
+
+def denyOwnHarvesterSupply(bot, ct: Controller) -> bool:
+    """Cut an enemy belt still feeding *this builder's own* claimed harvester.
+
+    Self-anchored, O(1) counterpart to `denyHarvesterSupply` for
+    `runDefault`/`_guardianEconomy` — see `_ownHarvesterSupplyTarget` and
+    `denyHarvesterSupply`'s docstring for why the full-scan version isn't
+    safe to call from every non-harasser builder every turn. Same
+    `supplyCutTile`/`lastSupplyCutRound` state pair — safe to share since a
+    given bot only ever runs one role's chain per turn.
+    """
+    from main import STEAL_ENEMY_HARVESTERS
+
+    if not STEAL_ENEMY_HARVESTERS:
+        return False
+    return _cutAndBarrier(
+        bot,
+        ct,
+        attr="supplyCutTile",
+        cooldownAttr="lastSupplyCutRound",
+        pick=lambda: _ownHarvesterSupplyTarget(bot, ct),
     )
 
 

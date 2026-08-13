@@ -89,7 +89,7 @@ GUARDIAN_ECON_SLACK = 1
 # way a roaming guardian learns home is being probed (a builder's ledger is
 # personal-vision only, and its own vision is ~4.5 against the core's ~6).
 # The core writes CORE_THREAT_BIT; guardians read it via logistics_helpers.guardianLeash.
-GUARDIAN_LEASH_WIDE = 8
+GUARDIAN_LEASH_WIDE = 6
 GUARDIAN_LEASH_TIGHT = 4
 # Stay tight this long after the last sighting, so an enemy skirting the edge of
 # the core's vision can't make guardians oscillate between the two radii.
@@ -151,11 +151,12 @@ NEARBY_HARVESTER_SELF_CHEBYSHEV = 3
 # entire back half of a match, with no ally unit ever patrolling far enough
 # out to spot it and let defSentinel answer.
 #
-# Deliberately NOT raised alongside GUARDIAN_LEASH_WIDE(8). Patrol is idle
+# Deliberately NOT raised alongside GUARDIAN_LEASH_WIDE(6). Patrol is idle
 # behaviour; the chores (clearBarriers / reconnectBelts) are what need the
-# roam. Left at 3 it now sits five tiles inside the wide leash instead of one,
-# i.e. strictly more margin than before, and it avoids pushing waypoints out
-# to 7 where they are far likelier to be walled and fall through to the corner
+# roam. Left at 3, it sits three tiles inside the wide leash — still real
+# margin for an A*-forced detour before moveTowardLeash yanks the guardian
+# home mid-patrol — and it avoids pushing waypoints out toward the leash edge,
+# where they are far likelier to be walled and fall through to the corner
 # fallbacks. Raising it is a separate, independently-testable change.
 GUARDIAN_PATROL_OFFSET = 3
 

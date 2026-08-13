@@ -149,12 +149,14 @@
 #        (killing one costs the enemy more than it costs us to rebuild/heal it —
 #        see _repairBeltIfDamaged). Path → facing / clearBeltObstacle →
 #        placeRelayBelt → watermark
-# 2c. denyHarvesterSupply (offense.py) — a harvester our own steal-relay just
+# 2c. denyOwnHarvesterSupply (offense.py) — a harvester our own steal-relay just
 #        claimed (an ally belt already lands next to it) may still have an enemy
 #        belt cardinally touching it too. Cut that so 100% of the output routes
-#        to us instead of leaking back to their network. Same call the harasser
-#        role already runs — reused here so the default builder actually doing
-#        the steal handles it itself. Unthrottled.
+#        to us instead of leaking back to their network. O(1) — checks only
+#        bot.oreSite, not the whole ledger like the harasser's
+#        denyHarvesterSupply does; that full scan is fine for one or two
+#        harassers but was a real TLE source once every non-harasser builder
+#        started calling it too. Unthrottled.
 # 3. defGun — near core only; enemy gunner/sentinel/launcher in vision → placeGun
 #        (gunners only — never sentinels; a builder is never a placement target,
 #        though an already-placed gunner still opportunistically fires on one)
@@ -306,6 +308,7 @@ from offense import (
     denyBelt,
     denyHarvesterSupply,
     denyOre,
+    denyOwnHarvesterSupply,
     offGun,
     seekCore,
     seekHarvester,
@@ -607,13 +610,14 @@ def runDefault(bot, ct: Controller) -> None:
     # A harvester our own steal-relay just claimed (an ally belt already lands
     # next to it — geometry.harvesterClaimedByAlly) may still have an enemy
     # belt cardinally touching it too, leaking part of its output back into
-    # their network instead of routing 100% to us. Same cut-and-barrier this
-    # harasser role already runs (offense.denyHarvesterSupply, step 1b there)
-    # — reused here so the default builder actually doing the steal handles
-    # it itself the moment it's in position, instead of waiting on a harasser
-    # that may be busy elsewhere or never pass by. Unthrottled, like the
-    # harasser call — defends an asset already being captured for free.
-    if denyHarvesterSupply(bot, ct):
+    # their network instead of routing 100% to us. Same cut-and-barrier idea
+    # the harasser role already runs (offense.denyHarvesterSupply, step 1b
+    # there), but denyOwnHarvesterSupply — checking only bot.oreSite, O(1) —
+    # not the full-scan version: with 7+ non-harasser builders now calling
+    # this every turn, the harasser's whole-ledger scan turned into a real
+    # TLE source (match 618a31ad, turn ~155). Unthrottled — defends an asset
+    # already being captured for free.
+    if denyOwnHarvesterSupply(bot, ct):
         return
     if defGun(bot, ct):
         return
@@ -716,11 +720,12 @@ def _harassLeashOk(bot, ct: Controller) -> bool:
 def _guardianEconomy(bot, ct: Controller) -> bool:
     """Idle-time economy inside the leash: build harvesters, finish relays.
 
-    denyHarvesterSupply after maintainHarvester for the same reason runDefault
-    calls it (see runDefault's 2c) — a guardian can team-blind-steal an enemy
-    harvester inside its leash same as any other role, and should cut the
-    enemy's own supply belt off it once claimed rather than leave that to a
-    harasser that may never come by.
+    denyOwnHarvesterSupply after maintainHarvester for the same reason
+    runDefault calls it (see runDefault's 2c) — a guardian can team-blind-steal
+    an enemy harvester inside its leash same as any other role, and should cut
+    the enemy's own supply belt off it once claimed rather than leave that to
+    a harasser that may never come by. The O(1) own-tile-only version, not the
+    full-scan one — see denyHarvesterSupply's docstring.
     """
     if not guardianEconomyOn():
         return False
@@ -730,7 +735,7 @@ def _guardianEconomy(bot, ct: Controller) -> bool:
         return True
     if maintainHarvester(bot, ct):
         return True
-    return denyHarvesterSupply(bot, ct)
+    return denyOwnHarvesterSupply(bot, ct)
 
 
 _RELAY_ABORT_EXEMPT_TILES = 1
