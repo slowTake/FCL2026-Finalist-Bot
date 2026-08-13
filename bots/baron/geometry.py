@@ -38,14 +38,40 @@ def _inBounds(ct: Controller, pos: Position) -> bool:
     return 0 <= pos.x < ct.get_map_width() and 0 <= pos.y < ct.get_map_height()
 
 
+_coreFootprintCache: dict[tuple[int, int], list[Position]] = {}
+
+
 def coreFootprint(core_pos: Position) -> list[Position]:
-    """The four tiles of a 2x2 core, anchored at its min-x/min-y corner."""
-    return [
-        core_pos,
-        Position(core_pos.x + 1, core_pos.y),
-        Position(core_pos.x, core_pos.y + 1),
-        Position(core_pos.x + 1, core_pos.y + 1),
-    ]
+    """The four tiles of a 2x2 core, anchored at its min-x/min-y corner.
+
+    Memoized on (x, y): `chebyshevToCore` is the A* heuristic in `astarFromSeeds`
+    (pathing.py), evaluated once per node popped off the frontier — a single
+    search near `PATH_MAX_ITERS` (800) calls it, and therefore this, over a
+    thousand times. Core position is fixed for the whole game once known (ally
+    and enemy — at most 2 distinct keys), so caching it is free and can never
+    go stale.
+
+    Measured via cProfile on a live mirror match: this cache is a small,
+    correct win, but not the fix for the guardian TLE investigation it was
+    added during — a single `astarFromSeeds` call was measured costing
+    15-19ms outright (the search itself, not this list churn), already over
+    the ~10ms per-turn budget on its own with no stacking of multiple
+    searches required. See [[guardian-tle-danglingbeltends-scans]] memory:
+    that scan-count hypothesis was measured and ruled out (sub-millisecond
+    even at max observed map size); the real cost sits inside a single A*
+    search and is still unresolved.
+    """
+    key = (core_pos.x, core_pos.y)
+    cached = _coreFootprintCache.get(key)
+    if cached is None:
+        cached = [
+            core_pos,
+            Position(core_pos.x + 1, core_pos.y),
+            Position(core_pos.x, core_pos.y + 1),
+            Position(core_pos.x + 1, core_pos.y + 1),
+        ]
+        _coreFootprintCache[key] = cached
+    return cached
 
 
 def chebyshevToCore(pos: Position, core_pos: Position) -> int:
