@@ -186,6 +186,52 @@ def analyze_replay_all_detectors(
         return [], {"badge_a": f" [fcv err: {exc}]", "badge_b": f" [fcv err: {exc}]"}
 
 
+def run_json_conversion(
+    json_input_path: str,
+    markdown_report_path: str | None = None,
+) -> int:
+    """Convert an existing JSON report file into Markdown and terminal output."""
+    p = Path(json_input_path)
+    if not p.is_file():
+        print(f"Error: JSON report file not found at {json_input_path}", file=sys.stderr)
+        return 1
+
+    try:
+        import json
+        with open(p, "r", encoding="utf-8") as f:
+            report_data = json.load(f)
+
+        if markdown_report_path:
+            write_markdown_report(report_data, markdown_report_path)
+            print(f"Successfully converted {json_input_path} -> {markdown_report_path}")
+        else:
+            # Default markdown path if not specified
+            out_path = p.with_suffix(".md")
+            write_markdown_report(report_data, out_path)
+            print(f"Successfully converted {json_input_path} -> {out_path}")
+
+        summary = report_data.get("summary", {})
+        print(f"\nTotal Estimated Titanium Loss: {summary.get('total_estimated_ti_loss', 0.0)} Ti")
+
+        leaks = report_data.get("top_cost_leaks", [])[:5]
+        if leaks:
+            print("\n=== Top 5 Estimated Ti Leaks ===")
+            for l in leaks:
+                bname = l.get("metadata", {}).get("bot_name", l.get("team", "Side"))
+                print(f"  • [{bname}] {l.get('detector')} at {l.get('map_name')}: {l.get('message')} (Est Loss: {l.get('estimated_ti_loss')} Ti)")
+
+        chains = report_data.get("causal_chains", [])[:5]
+        if chains:
+            print("\n=== Causal Chains Identified ===")
+            for c in chains:
+                print(f"  • [{c.get('chain_id')}] {c.get('summary')}")
+
+        return 0
+    except Exception as exc:
+        print(f"Error reading JSON report {json_input_path}: {exc}", file=sys.stderr)
+        return 1
+
+
 def run_standalone_replay_analysis(
     replay_path: str,
     bot1: str = "bot1",
@@ -201,8 +247,6 @@ def run_standalone_replay_analysis(
     if not p.is_file():
         print(f"Error: replay file not found at {replay_path}", file=sys.stderr)
         return 1
-
-    cfg = load_config(config_path, profile_name or bot1)
     run_id = f"single-{uuid.uuid4().hex[:8]}"
     now_str = datetime.datetime.now(datetime.timezone.utc).isoformat()
     map_name = p.stem

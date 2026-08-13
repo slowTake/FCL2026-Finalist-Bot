@@ -10,14 +10,15 @@ root_dir = Path(__file__).resolve().parent.parent
 if str(root_dir) not in sys.path:
     sys.path.insert(0, str(root_dir))
 
-from fcv_gauntlet.runner import run_full_gauntlet, run_standalone_replay_analysis
+from fcv_gauntlet.runner import run_full_gauntlet, run_standalone_replay_analysis, run_json_conversion
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="FCV Bot Gauntlet & Diagnostic Engine")
     
-    # Standalone replay analysis
+    # Direct Input Modes
     parser.add_argument("--replay", type=str, help="Analyze a single existing .replay26 file directly without running matches")
+    parser.add_argument("--from-json", type=str, help="Convert an existing JSON report file directly into Markdown & summary")
 
     # Positional bot arguments (optional if --replay is used)
     parser.add_argument("bot_name", type=str, nargs="?", default="baron", help="Name of candidate bot")
@@ -49,6 +50,12 @@ def main() -> int:
     parser.add_argument("--warn-on-oscillation", type=int, metavar="COUNT", help="Warn if path oscillation count exceeds threshold")
 
     args = parser.parse_args()
+
+    if args.from_json:
+        return run_json_conversion(
+            json_input_path=args.from_json,
+            markdown_report_path=args.markdown_report,
+        )
 
     if args.replay:
         return run_standalone_replay_analysis(
