@@ -46,6 +46,10 @@ class OffenseMemory:
         # tapHijackTarget's sticky tile — the enemy relay belt currently being
         # cleared for hand-off to the hijack registry.
         self.hijackTapTile: tuple[int, int] | None = None
+        # disconnectCore's own cut target/cooldown, independent of denyBelt's
+        # and denyHarvesterSupply's — see disconnectCore.
+        self.disconnectCoreTile: tuple[int, int] | None = None
+        self.lastDisconnectCoreRound = -999
 
 
 _AVOID_RADIUS = 4
@@ -935,6 +939,65 @@ def tapHijackTarget(bot, ct: Controller) -> bool:
     if result == "acted":
         return True
     return False  # "waiting" — nothing happened, let the rest of the chain try
+
+
+def _disconnectCoreCandidates(bot, ct: Controller) -> list[Position]:
+    """Enemy belt tiles within DISCONNECT_CORE_CHEBYSHEV of their core.
+
+    Ledger-scanned like `_hijackCandidates` (any teammate's sighting counts, not
+    only this harasser's own vision) but without that function's "proven live"
+    check — disconnectCore isn't investing a return line in the tile, only
+    cutting it, so a stale/orphaned stub is still worth severing and not worth
+    the extra scan cost to rule out.
+    """
+    from main import DISCONNECT_CORE_CHEBYSHEV
+
+    enemy_core = bot.enemyCorePos
+    if (
+        enemy_core is None
+        or DISCONNECT_CORE_CHEBYSHEV is None
+        or DISCONNECT_CORE_CHEBYSHEV <= 0
+    ):
+        return []
+    me = ct.get_team()
+    pos = ct.get_position()
+    out: list[Position] = []
+    for (x, y), cell in bot.hivemind.local_map.items():
+        ent = cell.get("entity")
+        if not ent or ent.get("team") == me or ent.get("type") not in BELT_TYPES:
+            continue
+        tile = Position(x, y)
+        if chebyshevToCore(tile, enemy_core) > DISCONNECT_CORE_CHEBYSHEV:
+            continue
+        out.append(tile)
+    out.sort(key=lambda p: manhattan(pos, p))
+    return _dropSkipped(bot, out)
+
+
+def disconnectCore(bot, ct: Controller) -> bool:
+    """Harasser step: cut enemy belts feeding their core once a gun is unaffordable.
+
+    Sits right after `offGun` in `runHarasser`'s chain: while the bank can fund
+    another gunner/sentinel, offGun keeps shelling the core and this never
+    triggers (`_canAffordGunPlace` gate below). Once it can't, this fills the
+    turn instead of falling through to `seekCore`'s orbit-in-place fallback —
+    cutting the core's own supply lines keeps the pressure on while the bank
+    recovers, rather than idling a harasser with nothing left to build.
+
+    Same sticky-target shape as `denyBelt`/`denyHarvesterSupply`, built on the
+    same `_cutAndBarrier`. Unthrottled like `denyHarvesterSupply`: it only ever
+    starts while Ti is already too low for a gun, and each cut itself costs 20
+    Ti / 10 turns of the harasser's own time, which throttles it in practice.
+    """
+    if _canAffordGunPlace(ct):
+        return False
+    return _cutAndBarrier(
+        bot,
+        ct,
+        attr="disconnectCoreTile",
+        cooldownAttr="lastDisconnectCoreRound",
+        pick=lambda: _nth(_disconnectCoreCandidates(bot, ct), harasserRank(bot)),
+    )
 
 
 def _denyOreCandidates(bot, ct: Controller) -> list[Position]:

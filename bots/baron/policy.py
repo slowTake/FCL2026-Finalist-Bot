@@ -371,6 +371,17 @@ HIJACK_RELAYS_ENABLED = True
 # DENY_ORE_CHEBYSHEV/UNDEFENDED_BELT_CHEBYSHEV's shape.
 HIJACK_TAP_CHEBYSHEV = 4
 
+# --- Disconnect core (≤0 / None disables) ---
+# Chebyshev radius around the *enemy* core a disconnectCore belt-cut target may be
+# found in. Only engages once GUN_PLACE_MIN_TI is unaffordable (offense.disconnectCore
+# gates on the same _canAffordGunPlace check offGun/placeGun use) — a harasser that
+# can't fund another gunner/sentinel severs the core's own supply lines instead of
+# falling through to seekCore's orbit-in-place fallback with nothing else to do.
+# Runs after offGun in runHarasser's chain so a harasser that *can* afford a gun still
+# shells the core first; disconnectCore is what the next one does once the bank can't
+# keep up. Mirrors HIJACK_TAP_CHEBYSHEV's shape/radius.
+DISCONNECT_CORE_CHEBYSHEV = 5
+
 # --- Blocked-route breaker (False disables) ---
 # When A* proves the ore claim unreachable, replan with enemy barriers passable to
 # find which one seals the lane, and answer it with a gunner: 3 shots / 6 Ti and ~3

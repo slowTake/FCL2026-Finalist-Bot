@@ -301,6 +301,7 @@ from offense import (
     denyBelt,
     denyHarvesterSupply,
     denyOre,
+    disconnectCore,
     offGun,
     seekCore,
     seekHarvester,
@@ -817,8 +818,8 @@ def runGuardian(bot, ct: Controller) -> None:
 
 
 def runHarasser(bot, ct: Controller) -> None:
-    """Harasser: leash → snipe → denyHarvesterSupply → offGun → wallCore →
-    avoidFire → denyOre → denyBelt → tapHijackTarget → seek → seekCore.
+    """Harasser: leash → snipe → denyHarvesterSupply → offGun → disconnectCore →
+    wallCore → avoidFire → denyOre → denyBelt → tapHijackTarget → seek → seekCore.
 
     Used to start a steal-relay via `finishNearbyHarvester` (belting a nearby
     un-relayed harvester, ally or enemy, all the way back to our own core) and
@@ -853,6 +854,13 @@ def runHarasser(bot, ct: Controller) -> None:
     if denyHarvesterSupply(bot, ct):
         return
     if offGun(bot, ct):
+        return
+    # Below offGun: while the bank can fund another gunner/sentinel, offGun
+    # keeps shelling the core and this is a no-op (its own _canAffordGunPlace
+    # gate). Once it can't, this fills the turn severing the core's own belt
+    # lines instead of falling through all the way to seekCore's
+    # orbit-in-place fallback with nothing left to build.
+    if disconnectCore(bot, ct):
         return
     #if wallCore(bot, ct):
     #    return
