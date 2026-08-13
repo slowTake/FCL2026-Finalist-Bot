@@ -371,16 +371,17 @@ HIJACK_RELAYS_ENABLED = True
 # DENY_ORE_CHEBYSHEV/UNDEFENDED_BELT_CHEBYSHEV's shape.
 HIJACK_TAP_CHEBYSHEV = 4
 
-# --- Disconnect core (≤0 / None disables) ---
-# Chebyshev radius around the *enemy* core a disconnectCore belt-cut target may be
-# found in. Only engages once GUN_PLACE_MIN_TI is unaffordable (offense.disconnectCore
-# gates on the same _canAffordGunPlace check offGun/placeGun use) — a harasser that
-# can't fund another gunner/sentinel severs the core's own supply lines instead of
-# falling through to seekCore's orbit-in-place fallback with nothing else to do.
-# Runs after offGun in runHarasser's chain so a harasser that *can* afford a gun still
-# shells the core first; disconnectCore is what the next one does once the bank can't
-# keep up. Mirrors HIJACK_TAP_CHEBYSHEV's shape/radius.
-DISCONNECT_CORE_CHEBYSHEV = 5
+# --- Kill-core commit (≤0 / None disables the override) ---
+# Once a harasser lands a sentinel directly on the enemy core (offense.
+# killCore), it keeps cutting the core's own belts for this many rounds even
+# if the bank recovers enough to afford another gun — without this, offGun's
+# gun-place branch would reclaim the turn from the belt-cut the instant
+# _canAffordGunPlace flips back to True, abandoning a cut mid-fire. Belt
+# candidates are restricted to tiles directly touching the core's own
+# footprint (geometry.coreFootprint + isAdjacent), not a chebyshev radius —
+# DISCONNECT_CORE_CHEBYSHEV is removed since "near the core" is no longer
+# the criterion, only "touching" is.
+KILL_CORE_COMMIT_TURNS = 25
 
 # --- Blocked-route breaker (False disables) ---
 # When A* proves the ore claim unreachable, replan with enemy barriers passable to

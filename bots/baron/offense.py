@@ -46,10 +46,24 @@ class OffenseMemory:
         # tapHijackTarget's sticky tile — the enemy relay belt currently being
         # cleared for hand-off to the hijack registry.
         self.hijackTapTile: tuple[int, int] | None = None
-        # disconnectCore's own cut target/cooldown, independent of denyBelt's
-        # and denyHarvesterSupply's — see disconnectCore.
-        self.disconnectCoreTile: tuple[int, int] | None = None
-        self.lastDisconnectCoreRound = -999
+        # killCore's core-directed belt-cut target/cooldown/fire-turn-counter —
+        # formerly disconnectCore's disconnectCoreTile/lastDisconnectCoreRound,
+        # renamed since killCore now owns both the gun-placement and belt-cut
+        # branches against the core.
+        self.killCoreCutTile: tuple[int, int] | None = None
+        self.lastKillCoreCutRound = -999
+        # Turns killCoreCutTile has been stand-and-fired, mirroring
+        # logistics.py's bot.beltFireTile/bot.beltFireTurns cap. Reset to 0
+        # whenever the sticky tile changes (new pick, or cleared to None).
+        # Scoped to killCore's own cut path only — _cutAndBarrier's other
+        # callers (denyBelt, denyHarvesterSupply) are untouched and stay
+        # uncapped.
+        self.killCoreCutTurns = 0
+        # Round number a sentinel-armed commitment runs until (see killCore) —
+        # None when no commitment is active. Set on a successful
+        # placeSentinel against the core; overrides _canAffordGunPlace's
+        # normal gate on the belt-cut branch until it expires.
+        self.killCoreCommitUntilRound: int | None = None
 
 
 _AVOID_RADIUS = 4
@@ -383,14 +397,146 @@ def _corePushReady(ct: Controller) -> bool:
     return ct.get_global_resources() >= CORE_PUSH_MIN_TI
 
 
-def offGun(bot, ct: Controller) -> bool:
-    """Place gunner/sentinel toward core (once CORE_PUSH_MIN_TI) or visible threats."""
+def killCore(bot, ct: Controller, target: Position) -> bool:
+    """Attack the enemy core: place a sentinel/gun on it, or cut its belts.
+
+    Sentinel placement is tried first, ahead of the gunner (bank-gated by
+    _corePushReady / _canAffordGunPlace, same as before) — sentinels have
+    proven more effective against the core, especially once an enemy builder
+    is standing in front of one. If a sentinel lands, a KILL_CORE_COMMIT_TURNS
+    commitment is armed so the harasser keeps cutting the core's own belts for
+    a while even once the bank recovers, instead of offGun's gun-placement
+    branch immediately reclaiming the turn the moment _canAffordGunPlace flips
+    back to True and abandoning a cut mid-fire. A landed gunner (the fallback,
+    when a sentinel can't be placed) does not arm the commitment.
+
+    Belt-cutting only ever runs when `target` is the known enemy core
+    (`target == bot.enemyCorePos`) — this is a core-only attack, not a
+    general single-target version of offGun. Candidates are restricted to
+    belt tiles directly/cardinally touching the core's own footprint (see
+    _killCoreCutCandidates), not a chebyshev radius.
+    """
+    is_core = bot.enemyCorePos is not None and target == bot.enemyCorePos
+
+    if is_core and _corePushReady(ct):
+        # Sentinel tried first against the core, ahead of the gunner —
+        # sentinels have proven more effective here, especially once an
+        # enemy builder is standing in front of one (range-only, so it isn't
+        # blocked the way a gunner's line can be). A landed sentinel also
+        # arms the belt-cut commitment below; a landed gunner does not.
+        if placeSentinel(bot, ct, target):
+            from main import KILL_CORE_COMMIT_TURNS
+
+            if KILL_CORE_COMMIT_TURNS and KILL_CORE_COMMIT_TURNS > 0:
+                bot.offense.killCoreCommitUntilRound = (
+                    ct.get_current_round() + KILL_CORE_COMMIT_TURNS
+                )
+            return True
+        if placeGun(bot, ct, target):
+            return True
+
+    if not is_core:
+        return False  # non-core targets: gun-only, handled by offGun's own loop
+
+    committed = (
+        bot.offense.killCoreCommitUntilRound is not None
+        and ct.get_current_round() < bot.offense.killCoreCommitUntilRound
+    )
+    if bot.offense.killCoreCommitUntilRound is not None and not committed:
+        bot.offense.killCoreCommitUntilRound = None  # expired — clear it
+
+    if not committed and _canAffordGunPlace(ct):
+        return False
+
+    return _killCoreCut(bot, ct, target)
+
+
+# Turns killCore may stand-and-fire the same core-adjacent belt tile before
+# giving up on it and re-picking. Mirrors logistics.py's
+# _BELT_FIRE_TURN_LIMIT/clearBeltObstacle (a heal-racing enemy builder can
+# hold a belt up indefinitely with no cap) but is local to killCore's own
+# cut path — _cutAndBarrier itself stays uncapped for denyBelt/
+# denyHarvesterSupply, which don't share this problem.
+_KILL_CORE_CUT_TURN_LIMIT = 11
+
+
+def _killCoreCutCandidates(bot, ct: Controller) -> list[Position]:
+    """Enemy belt tiles directly (cardinally) touching the enemy core's footprint.
+
+    Only offers belts actually feeding the core, one of its 4 footprint
+    tiles' cardinal neighbors, via coreFootprint + isAdjacent (same shape of
+    check movement._isEnemyCoreAdjacent uses internally for the relay side;
+    that helper is private to movement.py, so the loop is replicated here
+    rather than imported).
+    """
     enemy_core = bot.enemyCorePos
-    if enemy_core is not None and _corePushReady(ct):
-        if placeGun(bot, ct, enemy_core):
-            return True
-        if placeSentinel(bot, ct, enemy_core):
-            return True
+    if enemy_core is None:
+        return []
+    me = ct.get_team()
+    pos = ct.get_position()
+    footprint = coreFootprint(enemy_core)
+    out: list[Position] = []
+    for (x, y), cell in bot.hivemind.local_map.items():
+        ent = cell.get("entity")
+        if not ent or ent.get("team") == me or ent.get("type") not in BELT_TYPES:
+            continue
+        tile = Position(x, y)
+        if not any(isAdjacent(tile, corner) for corner in footprint):
+            continue
+        out.append(tile)
+    out.sort(key=lambda p: manhattan(pos, p))
+    return _dropSkipped(bot, out)
+
+
+def _killCoreCut(bot, ct: Controller, enemy_core: Position) -> bool:
+    """disconnectCore's old belt-cut, now capped at _KILL_CORE_CUT_TURN_LIMIT turns/tile.
+
+    The dodge-vs-fire decision itself lives in `_cutAndBarrier` now (see
+    `_CUT_DODGE_HP_FRACTION`), shared with `denyBelt`'s Mode B and
+    `denyHarvesterSupply` — it only breaks off once actually hurt, not on
+    every turn spent under a defending gunner's LoS, so a committed cut can
+    still finish instead of "pecking" forever. A dodge turn does not advance
+    killCoreCutTurns — the cap tracks turns actually spent trying to burn
+    the tile down, not turns lost to defensive movement.
+
+    _cutAndBarrier has no return signal for "fired this turn" vs "moved" vs
+    "barriered", so the cap counts the same way clearBeltObstacle does:
+    track the sticky tile ourselves and bump a counter once per call while
+    it's still a live enemy belt, reset to 0 whenever the tile changes.
+    """
+    before = bot.offense.killCoreCutTile
+    still_belt = before is not None and _enemyBeltAt(ct, Position(*before))
+    # Cheap pre-check mirroring _cutAndBarrier's own dodge gate: below this
+    # HP fraction it may dodge instead of firing this call, so don't count
+    # the turn against the cap on the strength of a guess it's about to
+    # spend defending itself rather than shooting.
+    hurt = ct.get_hp() < ct.get_max_hp() * _CUT_DODGE_HP_FRACTION
+    if still_belt and not hurt:
+        if bot.offense.killCoreCutTurns >= _KILL_CORE_CUT_TURN_LIMIT:
+            _skippedTargets(bot).add(before)
+            bot.offense.killCoreCutTile = None
+            bot.offense.killCoreCutTurns = 0
+            return False  # give up this turn; _killCoreCutCandidates re-picks next call
+        bot.offense.killCoreCutTurns += 1
+
+    result = _cutAndBarrier(
+        bot,
+        ct,
+        attr="killCoreCutTile",
+        cooldownAttr="lastKillCoreCutRound",
+        pick=lambda: _nth(_killCoreCutCandidates(bot, ct), harasserRank(bot)),
+    )
+
+    if bot.offense.killCoreCutTile != before:
+        bot.offense.killCoreCutTurns = 0  # new pick, or cleared — resync
+    return result
+
+
+def offGun(bot, ct: Controller) -> bool:
+    """Attack the core (via killCore) or place a gun toward the nearest visible threat."""
+    enemy_core = bot.enemyCorePos
+    if enemy_core is not None and killCore(bot, ct, enemy_core):
+        return True
 
     for etype in (
         EntityType.GUNNER,
@@ -705,6 +851,20 @@ def _worthwhileCutTarget(bot, ct: Controller) -> Position | None:
     return None
 
 
+# HP fraction below which _cutAndBarrier dodges instead of continuing a cut.
+# Dodging on every turn merely spent under a defending gunner's LoS — the
+# original behavior for denyBelt's Mode B, since the chain-level avoidFire
+# step (builder.py's runHarasser) sits above it — meant a harasser fled
+# before landing more than a shot or two of the ~10 a belt needs, "pecking"
+# forever without ever finishing a cut. A committed cut is supposed to trade
+# some risk for guaranteed damage, the same "worth eating a shot for" call
+# CONTEXT.md's guardian section makes for placing a counter-gunner — so this
+# only breaks off once actually hurt, not merely in range, and keeps firing
+# through incoming fire at full/near-full HP the rest of the time. Shared by
+# all three `_cutAndBarrier` callers (denyBelt, denyHarvesterSupply, killCore).
+_CUT_DODGE_HP_FRACTION = 0.5
+
+
 def _cutAndBarrier(
     bot,
     ct: Controller,
@@ -718,11 +878,21 @@ def _cutAndBarrier(
     Staying adjacent lets the barrier go down the instant the belt dies, with
     no move onto the tile and no step off afterwards.
 
+    Dodges first, but only once actually hurt (`_CUT_DODGE_HP_FRACTION`) —
+    see that constant's comment for why an unconditional dodge-on-any-LoS
+    check was the wrong default for a cut already underway.
+
     `attr`/`cooldownAttr` name the sticky-target/last-start fields on
     `bot.offense`; `pick` overrides the default nearest-enemy-belt target
     search — see `denyHarvesterSupply`, which reuses this under its own
-    `supplyCutTile`/`lastSupplyCutRound` pair, independent of `denyBelt`'s.
+    `supplyCutTile`/`lastSupplyCutRound` pair, independent of `denyBelt`'s,
+    and `_killCoreCut`, which reuses it a third time under
+    `killCoreCutTile`/`lastKillCoreCutRound` and layers its own
+    `_KILL_CORE_CUT_TURN_LIMIT` turn cap on top.
     """
+    if ct.get_hp() < ct.get_max_hp() * _CUT_DODGE_HP_FRACTION and avoidFire(bot, ct):
+        return True
+
     sticky = getattr(bot.offense, attr, None)
     tile: Position | None = None
     if sticky is not None:
@@ -939,65 +1109,6 @@ def tapHijackTarget(bot, ct: Controller) -> bool:
     if result == "acted":
         return True
     return False  # "waiting" — nothing happened, let the rest of the chain try
-
-
-def _disconnectCoreCandidates(bot, ct: Controller) -> list[Position]:
-    """Enemy belt tiles within DISCONNECT_CORE_CHEBYSHEV of their core.
-
-    Ledger-scanned like `_hijackCandidates` (any teammate's sighting counts, not
-    only this harasser's own vision) but without that function's "proven live"
-    check — disconnectCore isn't investing a return line in the tile, only
-    cutting it, so a stale/orphaned stub is still worth severing and not worth
-    the extra scan cost to rule out.
-    """
-    from main import DISCONNECT_CORE_CHEBYSHEV
-
-    enemy_core = bot.enemyCorePos
-    if (
-        enemy_core is None
-        or DISCONNECT_CORE_CHEBYSHEV is None
-        or DISCONNECT_CORE_CHEBYSHEV <= 0
-    ):
-        return []
-    me = ct.get_team()
-    pos = ct.get_position()
-    out: list[Position] = []
-    for (x, y), cell in bot.hivemind.local_map.items():
-        ent = cell.get("entity")
-        if not ent or ent.get("team") == me or ent.get("type") not in BELT_TYPES:
-            continue
-        tile = Position(x, y)
-        if chebyshevToCore(tile, enemy_core) > DISCONNECT_CORE_CHEBYSHEV:
-            continue
-        out.append(tile)
-    out.sort(key=lambda p: manhattan(pos, p))
-    return _dropSkipped(bot, out)
-
-
-def disconnectCore(bot, ct: Controller) -> bool:
-    """Harasser step: cut enemy belts feeding their core once a gun is unaffordable.
-
-    Sits right after `offGun` in `runHarasser`'s chain: while the bank can fund
-    another gunner/sentinel, offGun keeps shelling the core and this never
-    triggers (`_canAffordGunPlace` gate below). Once it can't, this fills the
-    turn instead of falling through to `seekCore`'s orbit-in-place fallback —
-    cutting the core's own supply lines keeps the pressure on while the bank
-    recovers, rather than idling a harasser with nothing left to build.
-
-    Same sticky-target shape as `denyBelt`/`denyHarvesterSupply`, built on the
-    same `_cutAndBarrier`. Unthrottled like `denyHarvesterSupply`: it only ever
-    starts while Ti is already too low for a gun, and each cut itself costs 20
-    Ti / 10 turns of the harasser's own time, which throttles it in practice.
-    """
-    if _canAffordGunPlace(ct):
-        return False
-    return _cutAndBarrier(
-        bot,
-        ct,
-        attr="disconnectCoreTile",
-        cooldownAttr="lastDisconnectCoreRound",
-        pick=lambda: _nth(_disconnectCoreCandidates(bot, ct), harasserRank(bot)),
-    )
 
 
 def _denyOreCandidates(bot, ct: Controller) -> list[Position]:

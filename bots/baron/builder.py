@@ -191,8 +191,11 @@
 #        independent of denyBelt's own state/cooldown) so 100% of the output
 #        routes to us instead of leaking back to their network. Unthrottled —
 #        defends an asset already being captured for free.
-# 2. offGun — placeGun/placeSentinel: core (only once bank ≥ CORE_PUSH_MIN_TI; harvesters
-#        are the cheaper kill until then) → gunner → sentinel → harvester → launcher;
+# 2. offGun — killCore: core (only once bank ≥ CORE_PUSH_MIN_TI; harvesters are the
+#        cheaper kill until then) tries placeSentinel then placeGun; a landed sentinel
+#        arms a KILL_CORE_COMMIT_TURNS belt-cut commitment (offense.killCore) that
+#        keeps cutting belts touching the core even once the bank recovers. Falls back
+#        to gunner → sentinel → harvester → launcher on the nearest visible threat;
 #        ≤1 ally gunner covering each enemy harvester; harvester branch also skips
 #        one already claimed by our own steal-relay, same as snipeHarvester
 # 2b. wallCore — enemy core known → wallEnemyCore: barrier one empty tile of its
@@ -296,12 +299,12 @@ from defence import (
 )
 from pathing import breakEncirclement
 from offense import (
+    _cutInProgress,
     avoidFire,
     breakBeltDeadlock,
     denyBelt,
     denyHarvesterSupply,
     denyOre,
-    disconnectCore,
     offGun,
     seekCore,
     seekHarvester,
@@ -818,8 +821,9 @@ def runGuardian(bot, ct: Controller) -> None:
 
 
 def runHarasser(bot, ct: Controller) -> None:
-    """Harasser: leash → snipe → denyHarvesterSupply → offGun → disconnectCore →
-    wallCore → avoidFire → denyOre → denyBelt → tapHijackTarget → seek → seekCore.
+    """Harasser: leash → snipe → denyHarvesterSupply → offGun →
+    wallCore → denyBelt (only if already mid-cut) → avoidFire → denyOre →
+    denyBelt → tapHijackTarget → seek → seekCore.
 
     Used to start a steal-relay via `finishNearbyHarvester` (belting a nearby
     un-relayed harvester, ally or enemy, all the way back to our own core) and
@@ -853,17 +857,22 @@ def runHarasser(bot, ct: Controller) -> None:
     # steps already ahead of avoidFire in this chain.
     if denyHarvesterSupply(bot, ct):
         return
+    # offGun now covers both gun/sentinel placement on the core and (once
+    # unaffordable, or for KILL_CORE_COMMIT_TURNS after a sentinel lands) the
+    # core belt-cut, via killCore — see offense.killCore.
     if offGun(bot, ct):
-        return
-    # Below offGun: while the bank can fund another gunner/sentinel, offGun
-    # keeps shelling the core and this is a no-op (its own _canAffordGunPlace
-    # gate). Once it can't, this fills the turn severing the core's own belt
-    # lines instead of falling through all the way to seekCore's
-    # orbit-in-place fallback with nothing left to build.
-    if disconnectCore(bot, ct):
         return
     #if wallCore(bot, ct):
     #    return
+    # A denyBelt Mode B cut already committed to gets the same chain priority
+    # denyHarvesterSupply/offGun already have, ahead of avoidFire below —
+    # otherwise the generic avoidFire step preempts it on every turn spent
+    # under any gunner's LoS near the target and the cut never finishes
+    # ("pecking" instead of the ~10 shots a belt needs). _cutAndBarrier's own
+    # dodge (offense._CUT_DODGE_HP_FRACTION) still lets it bail once actually
+    # hurt, so this isn't an unconditional stand-and-tank.
+    if _cutInProgress(bot, ct) and denyBelt(bot, ct):
+        return
     if avoidFire(bot, ct):
         return
     # Above denyBelt: 3 Ti and no attrition to deny a whole future line beats 20 Ti of
