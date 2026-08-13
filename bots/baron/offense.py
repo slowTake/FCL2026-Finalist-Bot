@@ -39,10 +39,15 @@ class OffenseMemory:
         self.denyBeltTile: tuple[int, int] | None = None
         self.lastCutRound = -999
         self.lastDenyBeltRound = -999
+        # Consecutive turns denyBeltTile has been held Ti-starved (bank below
+        # _FIRE_TI_COST) — see CUT_TI_WAIT_TURNS in _cutAndBarrier. Reset to 0
+        # the moment the bank covers a shot again.
+        self.denyBeltWaitTurns = 0
         # denyHarvesterSupply's cut target/cooldown — kept independent of the
         # pair above so the two cuts never collide on bookkeeping.
         self.supplyCutTile: tuple[int, int] | None = None
         self.lastSupplyCutRound = -999
+        self.supplyCutWaitTurns = 0
         # tapHijackTarget's sticky tile — the enemy relay belt currently being
         # cleared for hand-off to the hijack registry.
         self.hijackTapTile: tuple[int, int] | None = None
@@ -52,6 +57,7 @@ class OffenseMemory:
         # branches against the core.
         self.killCoreCutTile: tuple[int, int] | None = None
         self.lastKillCoreCutRound = -999
+        self.killCoreCutWaitTurns = 0
         # Turns killCoreCutTile has been stand-and-fired, mirroring
         # logistics.py's bot.beltFireTile/bot.beltFireTurns cap. Reset to 0
         # whenever the sticky tile changes (new pick, or cleared to None).
@@ -69,6 +75,20 @@ class OffenseMemory:
 _AVOID_RADIUS = 4
 _ORBIT_OFFSET = 3
 _FIRE_TI_COST = 2
+
+# Turns _cutAndBarrier may hold its position Ti-starved (bank < _FIRE_TI_COST)
+# before giving the cut up, mirroring defence.py's GUARDIAN_ORE_WAIT_TURNS
+# pattern (`_buildHarvesterOnClearedBarrier`). Without this, a harasser mid-cut
+# that catches the bank on a bad turn (e.g. right after a builder spawn) used
+# to bail out immediately — `_cutAndBarrier` returned False, the sticky target
+# stayed set, but the turn was ceded to whatever runs below it in the role
+# chain (denyOre/seekHarvester/seekCore), which can walk the harasser away from
+# the belt it was standing next to. By the time Ti recovers it may no longer be
+# adjacent, so it never actually finishes — a cut is 20 Ti/10 turns already
+# spent, and abandoning position over a single starved turn throws that away
+# for nothing. Holding position for a few turns lets a harvester delivery or a
+# spent builder-spawn refill the bank without moving.
+_CUT_TI_WAIT_TURNS = 3
 
 # How long a tile we just fled stays blacklisted from future dodges, in turns.
 # A stationary gunner just rotates to track us, so the tile we left reads as
@@ -936,8 +956,17 @@ def _cutAndBarrier(
         setattr(bot.offense, attr, None)
         return False
 
+    wait_attr = attr.replace("Tile", "") + "WaitTurns"
     if ct.get_global_resources() < _FIRE_TI_COST:
+        waited = getattr(bot.offense, wait_attr, 0)
+        if _CUT_TI_WAIT_TURNS and waited < _CUT_TI_WAIT_TURNS:
+            setattr(bot.offense, wait_attr, waited + 1)
+            return True  # hold position; Ti may still arrive next turn
+        # Waited long enough — give the cut up rather than sit here forever.
+        setattr(bot.offense, wait_attr, 0)
+        setattr(bot.offense, attr, None)
         return False
+    setattr(bot.offense, wait_attr, 0)  # Ti available again — reset the wait
 
     # Preferred: shoot the belt from beside it, so we stay in place to barrier
     if adjacent:
