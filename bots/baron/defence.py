@@ -742,13 +742,18 @@ def patchAdjacentCoreBelt(bot, ct: Controller) -> bool:
 def reconnectBelts(bot, ct: Controller, *, allow_walk: bool = True) -> bool:
     """Patch a cut belt line near the core back toward the core, one tile a turn.
 
-    Guardian-only idle work. Exists because the normal repair path is
+    Originally guardian idle work. Exists because the normal repair path is
     *ore-anchored*: `maintainHarvester` re-enters `relayToCore` and the
     watermark rebuilds from the first gap, but a guardian's `_allowOreSite`
     confines it to ore inside the leash. A break near the core that belongs to
     a harvester outside the leash is therefore unreachable — the guardian can
     never claim the ore that would carry it there. Anchoring on the belt
     instead of the ore is the whole point.
+
+    Also called by `runDefault` right before `pursueHijackTarget`, as a
+    cheap check-and-patch: a default about to walk off toward a fresh hijack
+    tap should fix a cut near-core line first if there is one, rather than
+    leaving the core's own supply broken while it goes hunting further afield.
 
     Greedy and deliberately unplanned: no A*, so a blocked coreward tile cannot be
     routed around. Candidates are tried in order and a failed placement falls through
