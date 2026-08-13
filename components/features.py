@@ -90,3 +90,39 @@ ORE_LOCATIONS = {
     14: [(5, 3), (24, 3), (2, 7), (27, 7), (9, 9), (20, 9), (6, 14), (11, 14), (18, 14), (23, 14), (11, 15), (18, 15), (4, 20), (25, 20), (2, 22), (27, 22), (8, 26), (21, 26)],
     15: [(2, 2), (9, 2), (10, 2), (4, 3), (15, 3), (6, 6), (13, 6), (6, 13), (13, 13), (4, 16), (15, 16), (9, 17), (10, 17), (17, 17)],
 }
+
+
+def oreSideBuckets(
+    map_id: int, core_pos: Position, target_pos: Position
+) -> tuple[list[Position], list[Position]]:
+    """Split this map's static ore tiles into two sides of the core->target axis.
+
+    `target_pos` is the enemy core (or map-center fallback, same as respawn's
+    `goal`) — the perpendicular component of each ore tile relative to that
+    axis buckets it "left"/"right" of the approach direction. Maps are
+    ~180deg-point-symmetric (team starts at diagonally opposite corners, see
+    builder.py's enemy-core-guess fallback), not left/right-mirrored, so the
+    split axis must come from map geometry, not a hardcoded compass direction.
+
+    The axis is drawn through the core's true *centre*, not `core_pos` itself
+    (the core's top-left/min-corner anchor tile of its 2x2 footprint). A line
+    built from the anchor is skewed half a tile toward whichever corner the
+    engine's anchor convention happens to land on — harmless for ore well off
+    the line, but on a point-mirrored map it can flip which side a
+    near-boundary ore tile buckets to relative to its mirror-equivalent tile
+    for the other team (the same anchor-vs-footprint pitfall
+    `geometry.chebyshevToCore`/`manhattanToCore` exist to avoid for magnitude
+    comparisons — this is that issue for a direction/side test instead).
+    """
+    ore = ORE_LOCATIONS.get(map_id, ())
+    if not ore:
+        return [], []
+    cx, cy = core_pos.x + 0.5, core_pos.y + 0.5
+    dx, dy = target_pos.x - cx, target_pos.y - cy
+    nx, ny = -dy, dx  # perpendicular to the core->target axis
+    left: list[Position] = []
+    right: list[Position] = []
+    for ox, oy in ore:
+        side = (ox - cx) * nx + (oy - cy) * ny
+        (left if side >= 0 else right).append(Position(ox, oy))
+    return left, right
