@@ -1,4 +1,4 @@
-"""Phase 6 — Structured JSON & CSV Reporting for FCV Bot Gauntlet."""
+"""Phase 6 — Structured JSON, CSV, and Markdown Reporting for FCV Bot Gauntlet."""
 
 from __future__ import annotations
 
@@ -43,6 +43,76 @@ def write_csv_metrics(games_data: list[dict[str, Any]], path: str | Path) -> Non
                 "churn": g.get("churn", 0),
                 "osc": g.get("osc", 0),
             })
+
+
+def write_markdown_report(report_data: dict[str, Any], path: str | Path) -> None:
+    """Generate an automated, self-contained Markdown Diagnostic Audit Report."""
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+
+    summary = report_data.get("summary", {})
+    tot_loss = summary.get("total_estimated_ti_loss", 0.0)
+    counts = summary.get("detector_counts", {})
+    leaks = report_data.get("top_cost_leaks", [])[:10]
+    chains = report_data.get("causal_chains", [])[:5]
+
+    lines: list[str] = []
+    lines.append(f"# 🛡️ Automated FCV Diagnostic Audit Report")
+    lines.append(f"**Run ID**: `{report_data.get('run_id')}` | **Timestamp**: `{report_data.get('timestamp')}`")
+    lines.append(f"**Bots**: `{report_data.get('candidate_bot')}` vs `{report_data.get('opponent_bot')}`\n")
+
+    lines.append(f"## 📊 Executive Summary")
+    lines.append(f"- **Total Estimated Titanium Loss**: **{tot_loss} Ti**")
+    lines.append(f"- **Total Games Analyzed**: {len(report_data.get('games', []))}")
+    lines.append(f"- **Primary Failure Modes**:")
+
+    sorted_counts = sorted(counts.items(), key=lambda x: x[1], reverse=True)
+    for det, count in sorted_counts[:6]:
+        lines.append(f"  - `{det}`: **{count} incidents**")
+
+    lines.append("\n## 🚨 Top 10 Estimated Titanium Leaks")
+    lines.append("| Detector | Map (Side) | Message | Est. Loss |")
+    lines.append("| :--- | :--- | :--- | :---: |")
+    for l in leaks:
+        lines.append(f"| `{l.get('detector')}` | {l.get('map_name')} ({l.get('side')}) | {l.get('message')} | **{l.get('estimated_ti_loss')} Ti** |")
+
+    if chains:
+        lines.append("\n## 🔗 Identified Causal Chains")
+        for c in chains:
+            lines.append(f"- **[{c.get('chain_id')}]**: {c.get('summary')}")
+
+    lines.append("\n## 💡 Automated Actionable Fix Suggestions")
+
+    suggestions = 0
+    if counts.get("orphan_harvester", 0) > 10 or counts.get("harvester_no_output", 0) > 10:
+        suggestions += 1
+        lines.append("### 1. ⚠️ Un-Routed Harvester & Relay Lock (`bots/baron/builder.py`)")
+        lines.append("- **Issue**: Builders abort active relay claims when non-threatening enemy units enter vision, stranding harvesters.")
+        lines.append("- **Fix**: Require builders to complete conveyor lines before starting new tasks; do not abort relays unless an enemy turret specifically threatens the relay path.\n")
+
+    if counts.get("crash", 0) > 0:
+        suggestions += 1
+        lines.append("### 2. 💥 Crash Prevention & Safety Valve (`bots/baron/defence.py` & `pathing.py`)")
+        lines.append("- **Issue**: Tile placement near Core footprint or unbudgeted A* loops causing TLEs/exceptions.")
+        lines.append("- **Fix**: Exclude Core footprint `(14,2)` in `patchAdjacentCoreBelt`; enforce a 3ms `time.perf_counter()` limit in `astarFromSeeds`.\n")
+
+    if counts.get("friendly_fire", 0) > 5:
+        suggestions += 1
+        lines.append("### 3. 🔥 Friendly Fire Raycasting (`bots/baron/guns.py`)")
+        lines.append("- **Issue**: Turrets firing through friendly builders or structures.")
+        lines.append("- **Fix**: Enforce `_isFriendlyInLineOfFire` raycast checks before building sentinel turrets or gunners.\n")
+
+    if counts.get("oscillation", 0) > 10:
+        suggestions += 1
+        lines.append("### 4. 🔀 Path Hysteresis & Conveyor Navigation (`bots/baron/movement.py`)")
+        lines.append("- **Issue**: Builders oscillating between fleeing and harvesting, or getting trapped behind friendly conveyors.")
+        lines.append("- **Fix**: Add a 3-turn target lock during threat avoidance; allow A* to cross friendly conveyors when no open path exists.\n")
+
+    if suggestions == 0:
+        lines.append("No critical behavioral flaws detected. Code is performing cleanly!")
+
+    with open(p, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
 
 
 def build_full_report_dict(

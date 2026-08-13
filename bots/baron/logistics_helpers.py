@@ -14,7 +14,7 @@ imports back from here, so there is no cycle.
 
 from __future__ import annotations
 
-from fcode import Controller, Direction, EntityType, Environment, Position
+from fcode import Controller, Direction, EntityType, Environment, GameConstants, Position
 
 from geometry import (
     DEFEND_HOME_CHEBYSHEV,
@@ -586,13 +586,39 @@ def pickMaintainOre(bot, ct: Controller) -> Position | None:
     best: Position | None = None
     best_key = None
 
+    # Known ally belt tiles, snapshotted once per call — a cheap proximity
+    # proxy (not a connectivity proof; that's logistics._relayReachesCore,
+    # run once relayToCore actually plans the path) so scoring below can
+    # prefer a candidate near an already-built line over one merely closer
+    # to the core in straight-line terms. See score()'s connect_d.
+    me = ct.get_team()
+    ally_belts = [
+        Position(x, y)
+        for (x, y), cell in bot.hivemind.local_map.items()
+        if (ent := cell.get("entity")) is not None
+        and ent.get("team") == me
+        and ent.get("type") == EntityType.CONVEYOR
+    ]
+
     def score(ore: Position) -> tuple:
         # manhattanToCore, not raw manhattan to the core's anchor tile — see
         # _oreConvenienceKey's docstring for why raw anchor distance is biased
         # per team on a mirrored map.
         spread = _spreadScore(bot, ore)
         if core is not None:
-            return (manhattanToCore(ore, core) + spread, manhattan(ore, pos))
+            connect_d = manhattanToCore(ore, core)
+            # A candidate near an existing, already-core-connected belt line is
+            # about as cheap to reach as walking to that belt — RELAY_MERGE_*
+            # (logistics.pickRelayPath) finishes the rest in a few tiles
+            # instead of a fresh line all the way back to core. Without this,
+            # a harvester (most visibly an enemy one worth stealing) that
+            # merely reads "closer to the core" in straight-line terms but
+            # sits relay-isolated deep in unclaimed territory could get
+            # picked over one that's actually a short merge away, costing a
+            # full-length relay's worth of Ti to reach the same result.
+            if ally_belts:
+                connect_d = min(connect_d, min(manhattan(ore, b) for b in ally_belts))
+            return (connect_d + spread, manhattan(ore, pos))
         return (manhattan(ore, pos) + spread,)
 
     def consider(ore: Position) -> None:
@@ -1051,7 +1077,11 @@ def _safeCoreStandTile(bot, ct: Controller, core: Position) -> Position | None:
     return best
 
 
-def defendHome(bot, ct: Controller) -> bool:
+# Stop healing 100 HP short of GameConstants.CORE_MAX_HP (500) — see defendHome.
+_CORE_HEAL_STOP_HP = GameConstants.CORE_MAX_HP - 100
+
+
+def defendHome(bot, ct: Controller, stop_hp: int = _CORE_HEAL_STOP_HP) -> bool:
     """Near-core only: keep a damaged ally core alive.
 
     This used to lead with an attack branch — nearest enemy turret (else builder),
@@ -1066,6 +1096,14 @@ def defendHome(bot, ct: Controller) -> bool:
     *because* something is shelling it; the old gate meant any enemy builder
     wandering into view flipped the guardian into the attack branch and it
     abandoned the core to give chase.
+
+    `stop_hp` defaults to `_CORE_HEAL_STOP_HP` (400 of 500) everywhere this is
+    called as an urgent response, so chip damage during a fight doesn't
+    re-trigger healing every turn at the expense of belt repair/economy below
+    it. `runGuardian` also calls this a second time, last in its chain and
+    gated `not underAttack`, with `stop_hp=GameConstants.CORE_MAX_HP` — once
+    there's genuinely nothing else to do, top the core the rest of the way up
+    instead of leaving it parked 100 HP short forever.
     """
     if bot.inRelay or getattr(bot, "recheckingOre", False):
         return False
@@ -1082,7 +1120,7 @@ def defendHome(bot, ct: Controller) -> bool:
             continue
         if ct.get_team(bid) != ct.get_team():
             continue
-        if ct.get_hp(bid) >= 400:
+        if ct.get_hp(bid) >= stop_hp:
             return False
         pos = ct.get_position()
         # Heal any adjacent core footprint tile

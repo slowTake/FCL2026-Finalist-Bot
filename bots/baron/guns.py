@@ -14,6 +14,7 @@ from fcode import (
 )
 
 from geometry import chebyshevToCore, coreFootprint, isAdjacent
+from movement import allyOccupied
 from pathing import inBounds, manhattan
 
 # Gunner attack r²=13; sentinel r²=32 (GameConstants).
@@ -386,6 +387,16 @@ def _gunnerPadsNearTarget(
                 continue
             if (site.x, site.y) in blocked:
                 continue
+            if allyOccupied(ct, site):
+                # Another builder (e.g. a second harasser also converging on
+                # this target) is already standing on the nearest pad. Without
+                # this, both independently keep re-picking the same "best" site
+                # every turn — the walk-up is refused by can_move forever, and
+                # the repeated full moveToward search behind it is exactly the
+                # exec-time cost that shows up as a TLE. Same fix as guardian's
+                # _safeCoreStandTile (logistics_helpers.py): skip an
+                # ally-occupied candidate, don't target it.
+                continue
             facing = _bestGunnerFacing(ct, site, target, cache=cache)
             if facing is None:
                 continue
@@ -668,6 +679,11 @@ def _sentinelPadsNearTarget(
                 continue
             if not ct.is_tile_empty(site):
                 continue
+            if allyOccupied(ct, site):
+                # See _gunnerPadsNearTarget's identical guard — two harassers
+                # (or a harasser and a wave sentinel) converging on the same
+                # nearest pad otherwise re-pick it forever.
+                continue
             facing = _bestSentinelFacing(ct, site, target)
             if facing is None:
                 continue
@@ -761,6 +777,11 @@ def _defSentinelPads(
             if env == Environment.WALL or env == Environment.ORE_TITANIUM:
                 continue
             if not ct.is_tile_empty(site):
+                continue
+            if allyOccupied(ct, site):
+                # See _gunnerPadsNearTarget's identical guard — two guardians
+                # converging on the same nearest defence pad otherwise re-pick
+                # it forever.
                 continue
             facing = None
             preferred = facing8way(site, target)

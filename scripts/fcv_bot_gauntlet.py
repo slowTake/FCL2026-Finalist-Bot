@@ -34,6 +34,7 @@ def main() -> None:
     # Phase 6 Flags
     parser.add_argument("--json-output", type=str, help="Path to write structured JSON report")
     parser.add_argument("--csv-metrics", type=str, help="Path to write CSV per-game metrics")
+    parser.add_argument("--markdown-report", type=str, help="Path to write automated Markdown audit report")
     parser.add_argument("--badges-only", action="store_true", help="Compact output mode")
 
     # Phase 7 Flags
@@ -63,6 +64,7 @@ def main() -> None:
         profile_name=args.profile,
         json_output_path=args.json_output,
         csv_metrics_path=args.csv_metrics,
+        markdown_report_path=args.markdown_report,
         save_baseline_path=args.save_baseline,
         compare_baseline_path=args.compare_baseline,
         fail_on_crash=args.fail_on_crash,

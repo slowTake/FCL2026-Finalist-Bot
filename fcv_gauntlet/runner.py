@@ -34,7 +34,7 @@ from fcv_gauntlet.detectors.economy import (
 )
 from fcv_gauntlet.impact import compute_event_impact, top_cost_leaks, total_estimated_loss
 from fcv_gauntlet.causal import build_causal_chains
-from fcv_gauntlet.reporting import build_full_report_dict, write_json_report, write_csv_metrics
+from fcv_gauntlet.reporting import build_full_report_dict, write_json_report, write_csv_metrics, write_markdown_report
 from fcv_gauntlet.baseline import save_baseline, compare_baseline, evaluate_ci_gates
 
 COMPETITIVE_MAPS = [
@@ -197,6 +197,7 @@ def run_full_gauntlet(
     csv_metrics_path: str | None = None,
     save_baseline_path: str | None = None,
     compare_baseline_path: str | None = None,
+    markdown_report_path: str | None = None,
     fail_on_crash: bool = False,
     fail_on_orphan: int | None = None,
     fail_on_cpu: int | None = None,
@@ -404,6 +405,8 @@ def run_full_gauntlet(
         write_csv_metrics(games_summary, csv_metrics_path)
     if save_baseline_path:
         save_baseline(report_data, save_baseline_path)
+    if markdown_report_path:
+        write_markdown_report(report_data, markdown_report_path)
 
     # Print GitHub Actions annotations if in CI
     for err in gate_errors:

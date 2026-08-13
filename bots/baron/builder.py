@@ -8,6 +8,10 @@
 #    (guardianRank - MAX_GUARDIANS): odd excess → harasser, even → default —
 #    so overflow guardians split between the two roles instead of all becoming
 #    one. See guardianOverflowIsHarasser.
+#    Wave attack (WAVE_ATTACK_TURN/WAVE_ATTACK_TI, main.py): default slots
+#    alternate by defaultRank parity too — odd ranks harass, even ranks keep
+#    building — instead of the whole default cohort converting at once. See
+#    waveDefaultStaysBuilder.
 #
 # ## all roles (runBuilderRoles, before dispatch)
 #    breakEncirclement — motionless (bot.motionless) ≥ ENCIRCLED_TURNS with no legal
@@ -158,7 +162,13 @@
 #        line complete without looking, and the builder drops to exploreFrontier
 #        and circles mid-map forever. Sits below every real-work step, so it only
 #        ever spends a turn that was going to be a wander anyway.
-# 5c. pursueHijackTarget — a harasser cleared and reported a live enemy relay tap
+# 5c. reconnectBelts (guard) — before committing to a fresh hijack target, a quick
+#        core-anchored check-and-patch: any near-core ally belt dangling? Fix that
+#        first (walks home if needed) and skip hijack this turn. Same call
+#        guardians already use for near-core patrol repair (defence.py) — reused
+#        here so a default doesn't go hunting for a hijack tap while the core's
+#        own supply line sits cut.
+# 5d. pursueHijackTarget — a harasser cleared and reported a live enemy relay tap
 #        point (offense.tapHijackTarget) → pick it up, walk it home via the
 #        unmodified relayToCore (same machinery STEAL_ENEMY_HARVESTERS already uses
 #        for harvesters, just for a belt tile). In the actual chain this sits right
@@ -177,7 +187,10 @@
 #
 # ## harasser (orchestrator: runHarasser below; helpers in offense.py)
 #    idx % 5 == 2 (builders 2,7,12,…)
-#    OR wave attack: WAVE_ATTACK_TURN / WAVE_ATTACK_TI in main.py (>0 = set)
+#    OR wave attack: WAVE_ATTACK_TURN / WAVE_ATTACK_TI in main.py (>0 = set) —
+#        but only odd-ranked default slots (defaultRank; idx % 5 in {3,4});
+#        even-ranked ones keep building (waveDefaultStaysBuilder), so the wave
+#        gate doesn't dump the whole default cohort into harasser at once.
 #    OR a capped guardian slot with odd excess rank (guardianOverflowIsHarasser)
 #    Uncapped guardians never enter this path. Capped ones with odd excess rank
 #    always do, independent of the wave gate; even-excess capped slots fall to
@@ -260,7 +273,7 @@
 
 from __future__ import annotations
 
-from fcode import Controller, EntityType, Position
+from fcode import Controller, EntityType, GameConstants, Position
 
 from geometry import (
     DEFEND_HOME_CHEBYSHEV,
@@ -269,7 +282,7 @@ from geometry import (
     nearCore,
 )
 from hivemind import CoreState, unpack_cores
-from logistics import abortRelay, pursueHijackTarget, relayEverComplete
+from logistics import abortRelay, coreThreatened, pursueHijackTarget, relayEverComplete
 from logistics_helpers import (
     breakOreDeadlock,
     buildHarvester,
@@ -438,6 +451,31 @@ def waveAttackActive(ct: Controller) -> bool:
     return False
 
 
+def defaultRank(idx: int) -> int:
+    """1-based position among default-role slots: 3, 4, 8, 9, … → 1, 2, 3, 4, …
+
+    Mirrors guardianRank's pure index arithmetic — every unit agrees without
+    reading anything shared.
+    """
+    return (idx // 5) * 2 + (2 if idx % 5 == 4 else 1)
+
+
+def waveDefaultStaysBuilder(idx: int) -> bool:
+    """True for default-role slots that keep building even once wave attack fires.
+
+    Once WAVE_ATTACK_TURN/WAVE_ATTACK_TI trips, runBuilderRoles used to send
+    every non-guardian builder into runHarasser permanently — the whole default
+    cohort (idx % 5 in {3, 4}) converts in one shot and never mines, expands, or
+    replaces losses again for the rest of the game. That starves the crew: bank
+    growth stalls right as WAVE_ATTACK_TI (which reads that same bank) fires, so
+    the trigger never un-fires either. Alternating by defaultRank parity — odd
+    ranks harass, even ranks keep building — splits the cohort instead of
+    dumping all of it into one role, the same fix guardianOverflowIsHarasser
+    applies to capped guardian slots.
+    """
+    return defaultRank(idx) % 2 == 0
+
+
 def _reactEnemyTurret(
     bot, ct: Controller, *, skipEconomy: bool = True, homeOnly: bool = False
 ) -> bool:
@@ -595,6 +633,16 @@ def runDefault(bot, ct: Controller) -> None:
     # finishNearbyHarvester.
     if finishNearbyHarvester(bot, ct):
         return
+    # Before heading off to a fresh hijack target, make sure our own near-core
+    # belts are actually intact. If the core is under pressure and a line got
+    # cut, a default sent hunting for a hijack tap somewhere out past the
+    # frontier is exactly the wrong unit to be doing that. reconnectBelts is
+    # the same core-anchored check-and-patch guardians already use (see its
+    # docstring) — a quick, cheap call that walks home to fix a break when it
+    # finds one and returns True, or returns False and costs nothing when
+    # everything's fine. Only pursue a hijack target once it reports all good.
+    if reconnectBelts(bot, ct):
+        return
     # A harasser cleared and reported a live enemy relay tap point
     # (offense.tapHijackTarget) — pick it up and walk the return line home.
     # See HIJACK_RELAYS_ENABLED's comment for why this is a default builder's
@@ -720,7 +768,13 @@ def runGuardian(bot, ct: Controller) -> None:
     buildHarvesterOnClearedBarrier/reconnectBelts/finishNearbyBelt run
     regardless but drop their walk-to-a-distant-break fallback (n/a for
     patchAdjacentCoreBelt and the harvester step, which never walk) while
-    hostile, keeping only the zero-movement adjacent action) → patrol."""
+    hostile, keeping only the zero-movement adjacent action) → patrol.
+
+    defendHome is called twice: once in its normal slot at the default
+    stop_hp (_CORE_HEAL_STOP_HP, 400/500 — urgent, stops short of full to
+    avoid thrashing on chip damage), and again last in the chain, gated
+    `not underAttack`, with stop_hp=GameConstants.CORE_MAX_HP — a pure
+    opportunistic top-off once nothing else is productive to do."""
     _resolveCores(bot, ct)
     bot.nearCoreEconomy = False
     if bot.corePos is None:
@@ -733,10 +787,18 @@ def runGuardian(bot, ct: Controller) -> None:
     # enemy *builders*, and on a small map one is in vision almost constantly, so
     # this gate keeps `_guardianEconomy` off for the whole opening. With no
     # economy yet there is nothing for the stricter reading to protect.
+    #
+    # `coreThreatened` is OR'd into both branches — it's the core's own r²=36
+    # vision (~6 tiles, vs. a builder's ~4.5), written team-wide via
+    # CORE_THREAT_BIT specifically because a guardian working a relay away
+    # from the core often can't see what's shelling it. Without this, a
+    # guardian mid-relay that never personally spots the attacker never aborts,
+    # so `bot.inRelay` stays true and `defendHome`'s inRelay gate skips healing
+    # even as the guardian walks right past a dying core.
     if relayEverComplete(ct):
-        underAttack = _enemyUnitInVision(ct)
+        underAttack = _enemyUnitInVision(ct) or coreThreatened(ct)
     else:
-        underAttack = enemyTurretInVision(ct)
+        underAttack = enemyTurretInVision(ct) or coreThreatened(ct)
     if underAttack and (bot.inRelay or bot.oreSite is not None):
         if not _relayNearlyComplete(bot):
             abortRelay(bot)
@@ -816,6 +878,15 @@ def runGuardian(bot, ct: Controller) -> None:
     if not underAttack and finishNearbyHarvester(bot, ct):
         return
     if not underAttack and _guardianEconomy(bot, ct):
+        return
+    # Opportunistic top-off: everything above — including the urgent defendHome
+    # call, which stops at _CORE_HEAL_STOP_HP (400/500) to avoid thrashing on
+    # chip damage mid-fight — already had first crack at the turn. Last in the
+    # chain and gated not underAttack, so it never preempts a real response;
+    # it only spends a turn here when there's truly nothing else productive to
+    # do, healing the remaining 100 HP instead of leaving the core parked short
+    # of full indefinitely.
+    if not underAttack and defendHome(bot, ct, stop_hp=GameConstants.CORE_MAX_HP):
         return
     patrolHome(bot, ct)
 
@@ -910,7 +981,13 @@ def runBuilderRoles(bot, ct: Controller) -> None:
         runGuardian(bot, ct)
         return
     capped_guardian_as_harasser = isGuardian(idx) and guardianOverflowIsHarasser(idx)
-    if waveAttackActive(ct) or isHarasser(idx) or capped_guardian_as_harasser:
+    # Wave attack pulls the default cohort into harassing too, but not all of
+    # it — even-ranked default slots keep building (waveDefaultStaysBuilder) so
+    # the crew doesn't stall out with zero builders the moment the gate fires.
+    wave_as_harasser = waveAttackActive(ct) and not (
+        isDefaultRole(idx) and waveDefaultStaysBuilder(idx)
+    )
+    if wave_as_harasser or isHarasser(idx) or capped_guardian_as_harasser:
         runHarasser(bot, ct)
         return
     runDefault(bot, ct)
