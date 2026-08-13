@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Run a bot against starter on its live map pool. Pass only on a clean sweep."""
+"""Run a bot against starter on its live map pool. Pass only on a clean sweep.
+
+Enforces the server's real per-turn time limit by default (--tle 10) — a
+change that's cheap for one or two units can still be a real TLE regression
+once it's added to a role that runs on many; a pass with TLE off (--tle 0)
+doesn't catch that class of bug.
+"""
 
 from __future__ import annotations
 
@@ -117,7 +123,7 @@ def write_github_output(wins: int, total: int, passed: bool, bot_name: str) -> N
     )
 
 
-def run_gauntlet(bot_name: str, map_names: list[str] | None) -> int:
+def run_gauntlet(bot_name: str, map_names: list[str] | None, tle: int = 10) -> int:
     config, project_root = find_config()
     bots_dir = (project_root / config.bots_dir).resolve()
     maps_dir = (project_root / config.maps_dir).resolve()
@@ -139,7 +145,8 @@ def run_gauntlet(bot_name: str, map_names: list[str] | None) -> int:
         print(f"Error: no maps found in {maps_dir}", file=sys.stderr)
         return 1
 
-    print(f"Bot gauntlet: {bot_name} vs starter ({len(maps)} maps, seed={seed})")
+    tle_label = "off" if tle == 0 else f"{tle}ms"
+    print(f"Bot gauntlet: {bot_name} vs starter ({len(maps)} maps, seed={seed}, TLE={tle_label})")
     print()
     print(
         f"{'Map':<12} {'Result':<8} {'Condition':<24} {'Ally Ti':>8} "
@@ -159,7 +166,7 @@ def run_gauntlet(bot_name: str, map_names: list[str] | None) -> int:
             str(map_path.resolve()),
             replay_path,
             seed,
-            0,
+            tle,
         )
 
         won = result["winner"] == "A"
@@ -223,8 +230,21 @@ def main() -> None:
             "*.map26 in maps/ if the bot has none)"
         ),
     )
+    parser.add_argument(
+        "--tle",
+        type=int,
+        default=10,
+        help=(
+            "Turn time limit in ms, matching the server's real enforcement "
+            "(0 disables it). Defaults to 10 — a win on this gauntlet with "
+            "TLE disabled says nothing about whether a change made some "
+            "unit's per-turn cost too expensive; a change that's cheap for "
+            "one or two units can still be a real regression once it's added "
+            "to a role that runs on many."
+        ),
+    )
     args = parser.parse_args()
-    raise SystemExit(run_gauntlet(args.bot, args.maps))
+    raise SystemExit(run_gauntlet(args.bot, args.maps, args.tle))
 
 
 if __name__ == "__main__":
