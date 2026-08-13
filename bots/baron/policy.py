@@ -48,12 +48,13 @@ BUILDER_GROWTH_DELAY_TURNS = 80
 
 # --- Guardian cap (≤0 / None disables) ---
 # Guardian slots are idx % 5 in (0, 1) — 2 per 5 spawns. Guardians past this rank
-# dispatch as non-guardians instead. Inert while MAX_BUILDERS is 10: guardians at a
-# crew of 10 are ranks 1-4, so the cap first binds at builder 11. Kept as a safety
-# net for raising the crew ceiling later. Rank is derived from my_index alone
-# (builder.guardianRank), so role stays a pure function of the index: deterministic,
-# permanent per unit, no coordination, no oscillation.
-MAX_GUARDIANS: int | None = 4
+# dispatch as non-guardians instead. Deliberately 2, not 4: at a crew of 10 that
+# caps home defence at builders 1 and 5 (guardianRank 1-2) and pushes builders 6
+# and 10 (rank 3-4) into the harasser/default overflow-split instead — fewer
+# guardians sitting idle at home, more units out working the map. Rank is derived
+# from my_index alone (builder.guardianRank), so role stays a pure function of
+# the index: deterministic, permanent per unit, no coordination, no oscillation.
+MAX_GUARDIANS: int | None = 2
 
 # --- Wave attack (≤0 / None = unset; positive = active gate) ---
 WAVE_ATTACK_TURN: int | None = -1  # e.g. 300 → all builders harass from that turn

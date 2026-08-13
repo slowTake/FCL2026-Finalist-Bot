@@ -764,14 +764,15 @@ def _relayNearlyComplete(bot) -> bool:
 
 
 def runGuardian(bot, ct: Controller) -> None:
-    """Guardian: leash → react → defGun → defSentinel → avoidFire →
-    patchAdjacentCoreBelt → defendHome → healAlly → buildHarvesterOnClearedBarrier
-    → clearBarriers → reconnectBelts → economy (clearBarriers and economy only
-    while nothing hostile is in vision; patchAdjacentCoreBelt/
-    buildHarvesterOnClearedBarrier/reconnectBelts/finishNearbyBelt run
-    regardless but drop their walk-to-a-distant-break fallback (n/a for
-    patchAdjacentCoreBelt and the harvester step, which never walk) while
-    hostile, keeping only the zero-movement adjacent action) → patrol.
+    """Guardian: leash (dodge-first if already under fire) → react → defGun →
+    defSentinel → avoidFire → patchAdjacentCoreBelt → defendHome → healAlly →
+    buildHarvesterOnClearedBarrier → clearBarriers → reconnectBelts → economy
+    (clearBarriers and economy only while nothing hostile is in vision;
+    patchAdjacentCoreBelt/buildHarvesterOnClearedBarrier/reconnectBelts/
+    finishNearbyBelt run regardless but drop their walk-to-a-distant-break
+    fallback (n/a for patchAdjacentCoreBelt and the harvester step, which
+    never walk) while hostile, keeping only the zero-movement adjacent
+    action) → patrol.
 
     defendHome is called twice: once in its normal slot at the default
     stop_hp (_CORE_HEAL_STOP_HP, 400/500 — urgent, stops short of full to
@@ -808,6 +809,17 @@ def runGuardian(bot, ct: Controller) -> None:
             bot.oreSite = None
 
     if not _guardianLeashOk(bot, ct):
+        # Dodge first if already under fire. moveTowardLeash's own A* has no
+        # gunner-LoS awareness at all — passability-only, same as moveToward's
+        # blind fallback (see its docstring) — so an out-of-leash guardian
+        # recalled straight through a covered tile just walks into it. Every
+        # other guardian step below gets to reach avoidFire (further down this
+        # chain) before committing to a move; this branch is the one place
+        # that returns unconditionally before any of them, including that
+        # check, ever runs — so it needs its own copy right here instead of
+        # relying on the one below.
+        if avoidFire(bot, ct, goal=bot.corePos):
+            return
         # Recall target must be the *same* dynamic leash the test above used —
         # recalling to a narrower radius than the test tolerates is exactly the
         # over-pull GUARDIAN_ECON_SLACK exists to prevent.
