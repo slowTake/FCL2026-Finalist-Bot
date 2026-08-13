@@ -8,6 +8,10 @@
 #    (guardianRank - MAX_GUARDIANS): odd excess → harasser, even → default —
 #    so overflow guardians split between the two roles instead of all becoming
 #    one. See guardianOverflowIsHarasser.
+#    Wave attack (WAVE_ATTACK_TURN/WAVE_ATTACK_TI, main.py): default slots
+#    alternate by defaultRank parity too — odd ranks harass, even ranks keep
+#    building — instead of the whole default cohort converting at once. See
+#    waveDefaultStaysBuilder.
 #
 # ## all roles (runBuilderRoles, before dispatch)
 #    breakEncirclement — motionless (bot.motionless) ≥ ENCIRCLED_TURNS with no legal
@@ -177,7 +181,10 @@
 #
 # ## harasser (orchestrator: runHarasser below; helpers in offense.py)
 #    idx % 5 == 2 (builders 2,7,12,…)
-#    OR wave attack: WAVE_ATTACK_TURN / WAVE_ATTACK_TI in main.py (>0 = set)
+#    OR wave attack: WAVE_ATTACK_TURN / WAVE_ATTACK_TI in main.py (>0 = set) —
+#        but only odd-ranked default slots (defaultRank; idx % 5 in {3,4});
+#        even-ranked ones keep building (waveDefaultStaysBuilder), so the wave
+#        gate doesn't dump the whole default cohort into harasser at once.
 #    OR a capped guardian slot with odd excess rank (guardianOverflowIsHarasser)
 #    Uncapped guardians never enter this path. Capped ones with odd excess rank
 #    always do, independent of the wave gate; even-excess capped slots fall to
@@ -436,6 +443,31 @@ def waveAttackActive(ct: Controller) -> bool:
     if ti is not None and ti > 0 and ct.get_global_resources() >= ti:
         return True
     return False
+
+
+def defaultRank(idx: int) -> int:
+    """1-based position among default-role slots: 3, 4, 8, 9, … → 1, 2, 3, 4, …
+
+    Mirrors guardianRank's pure index arithmetic — every unit agrees without
+    reading anything shared.
+    """
+    return (idx // 5) * 2 + (2 if idx % 5 == 4 else 1)
+
+
+def waveDefaultStaysBuilder(idx: int) -> bool:
+    """True for default-role slots that keep building even once wave attack fires.
+
+    Once WAVE_ATTACK_TURN/WAVE_ATTACK_TI trips, runBuilderRoles used to send
+    every non-guardian builder into runHarasser permanently — the whole default
+    cohort (idx % 5 in {3, 4}) converts in one shot and never mines, expands, or
+    replaces losses again for the rest of the game. That starves the crew: bank
+    growth stalls right as WAVE_ATTACK_TI (which reads that same bank) fires, so
+    the trigger never un-fires either. Alternating by defaultRank parity — odd
+    ranks harass, even ranks keep building — splits the cohort instead of
+    dumping all of it into one role, the same fix guardianOverflowIsHarasser
+    applies to capped guardian slots.
+    """
+    return defaultRank(idx) % 2 == 0
 
 
 def _reactEnemyTurret(
@@ -910,7 +942,13 @@ def runBuilderRoles(bot, ct: Controller) -> None:
         runGuardian(bot, ct)
         return
     capped_guardian_as_harasser = isGuardian(idx) and guardianOverflowIsHarasser(idx)
-    if waveAttackActive(ct) or isHarasser(idx) or capped_guardian_as_harasser:
+    # Wave attack pulls the default cohort into harassing too, but not all of
+    # it — even-ranked default slots keep building (waveDefaultStaysBuilder) so
+    # the crew doesn't stall out with zero builders the moment the gate fires.
+    wave_as_harasser = waveAttackActive(ct) and not (
+        isDefaultRole(idx) and waveDefaultStaysBuilder(idx)
+    )
+    if wave_as_harasser or isHarasser(idx) or capped_guardian_as_harasser:
         runHarasser(bot, ct)
         return
     runDefault(bot, ct)
