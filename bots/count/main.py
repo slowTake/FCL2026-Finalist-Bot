@@ -23,8 +23,10 @@ for _sub in ("hivemind", "roles"):
 
 from fcode import Controller, EntityType, Position  # noqa: E402
 
+import raid  # noqa: E402
 from ecoBot import runEcoBot  # noqa: E402
 from hivemind import CoreState, HiveMind, unpack_cores  # noqa: E402
+from raidBot import runRaidBot  # noqa: E402
 from respawn import runCoreSpawn  # noqa: E402
 from telemetry import ENABLED as CPU_TELEMETRY, CpuMeter  # noqa: E402
 
@@ -87,6 +89,9 @@ class Player:
     def _runCore(self, ct: Controller) -> None:
         self.corePos = ct.get_position()
         runCoreSpawn(self, ct)
+        # Emplacement selection lives here because the core has the budget for it
+        # — it peaks near 1.6ms where builders sit at 9.4ms against a 10ms limit.
+        raid.publishTarget(self, ct)
 
     def _runBuilder(self, ct: Controller) -> None:
         if self.corePos is None:
@@ -94,6 +99,13 @@ class Player:
             if ally[0] != CoreState.UNKNOWN:
                 self.corePos = Position(ally[1], ally[2])
         if self.corePos is None:
+            return
+
+        # The raider is named by index rather than by anything it can see, so the
+        # role survives losing sight of the core and never changes mid-match.
+        index = self.hivemind.my_index
+        if index and index == ct.read_store(raid.SLOT_RAIDER_INDEX):
+            runRaidBot(self, ct)
             return
 
         runEcoBot(self, ct)

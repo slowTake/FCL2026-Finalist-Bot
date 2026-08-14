@@ -42,10 +42,14 @@ def stepToward(bot, ct: Controller, tile: Position) -> bool:
 
     bot.walkPath = None
 
-    # A builder will move on its own; anything else the planner priced as
-    # traversable but the engine refuses is a standing obstacle, and retrying the
-    # same illegal step every turn is how a unit deadlocks for the whole match.
-    if not ph.readTile(ct, bot.hivemind, tile).builder:
+    # An *ally* builder will move on its own, so waiting one out is cheaper than
+    # walking around it. An enemy one will not: it is pursuing its own goal, and
+    # in a mirror match that goal is the tile we are standing on, which is how two
+    # raiders end up re-issuing the same illegal step at each other for the rest of
+    # the match. Enemy builders are standing obstacles, priced like anything else
+    # the planner called traversable and the engine refused.
+    t = ph.readTile(ct, bot.hivemind, tile)
+    if not t.builder or t.builderEnemy:
         bot.walkAvoid.add((tile.x, tile.y))
 
     return holdTask(bot, "walkBlocked", BLOCKED_WAIT_TURNS)
