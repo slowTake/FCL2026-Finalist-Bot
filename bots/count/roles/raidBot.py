@@ -16,6 +16,7 @@ from __future__ import annotations
 from fcode import Controller, Position
 
 import pathfindingHelpers as ph
+from ecoBot import runEcoBot
 from movement import walkTo
 from pathing import manhattan
 from raid import SLOT_RAID_TARGET, readTarget
@@ -71,7 +72,11 @@ def _waypoint(bot, ct: Controller, target: Position) -> Position | None:
 def runRaidBot(bot, ct: Controller) -> None:
     target = readTarget(ct)
     if target is None:
-        return  # core has not picked an emplacement yet
+        # No emplacement published — either the map was never fingerprinted, or
+        # the core is one round behind re-picking after the last sentinel went up.
+        # Either way the body is worth more on ore than standing still.
+        runEcoBot(bot, ct)
+        return
 
     site, facing = target
     pos = ct.get_position()

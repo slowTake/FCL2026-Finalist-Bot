@@ -27,16 +27,12 @@ MAX_BUILDERS = 5
 MIN_BUILDERS = 2
 BUILDER_RESERVE = 60
 
-# The raider is a sixth body rather than one of the five. Slot 4 is a lifetime
-# allocator and nothing is ever respawned, so reassigning an eco builder would cut
-# the economy by 20% for the rest of the match; adding one costs titanium only.
-RAID_BUILDERS = 1
-# Late enough that the relays are earning. Raiding before that trades a working
-# economy for a sentinel, which is the wrong way round.
-RAID_START_ROUND = 200
-# On top of the builder's own cost: a raider that arrives with nothing to build
-# with has walked across the map to stand still.
-RAID_RESERVE = 200
+# The last of the opening batch is the raider, so it leaves with the same cost
+# scale as its siblings rather than paying +20% for being an afterthought. It is a
+# reassignment, not an extra body: the economy runs on four builders once this one
+# departs. On a map we cannot fingerprint there is no enemy core to aim at, so the
+# designation is skipped and the fifth stays on eco.
+RAID_INDEX = MAX_BUILDERS
 
 # A spawn tile needs somewhere to go. One open neighbour is a corridor the builder
 # can still be pushed back into; below that it is a pocket.
@@ -118,14 +114,11 @@ def _towards(target: Position):
 
 
 def _raidReady(bot, ct: Controller) -> bool:
-    """Is it worth spending a body on raiding yet.
+    """Is there anything for a raider to aim at.
 
-    Conservative on purpose. The five eco builders and their relays are what
-    actually win on titanium, and a raider launched at an unknown enemy core just
-    wanders — `enemy_core_pos` only exists on a fingerprinted map.
+    `enemy_core_pos` only exists on a fingerprinted map; without it a raider just
+    wanders, and the body is worth more on ore.
     """
-    if ct.get_current_round() < RAID_START_ROUND:
-        return False
     return raid.enemyCorePos(bot, ct) is not None
 
 
@@ -135,16 +128,11 @@ def runCoreSpawn(bot, ct: Controller) -> None:
         return
 
     built = ct.read_store(4)
-    raiding = built >= MAX_BUILDERS
-    if raiding and not _raidReady(bot, ct):
-        return
-    if built >= MAX_BUILDERS + RAID_BUILDERS:
+    if built >= MAX_BUILDERS:
         return
 
     cost = ct.get_builder_bot_cost()
     reserve = BUILDER_RESERVE if built >= MIN_BUILDERS else 0
-    if raiding:
-        reserve = RAID_RESERVE + ct.get_sentinel_cost()
     if ct.get_global_resources() < cost + reserve:
         return
 
@@ -162,7 +150,7 @@ def runCoreSpawn(bot, ct: Controller) -> None:
         # spawn_builder here, not ct.spawn_builder: it increments slot 4, which is
         # what gives each builder its my_index and metronome turn.
         if bot.hivemind.spawn_builder(ct, tile):
-            if raiding:
+            if built + 1 == RAID_INDEX and _raidReady(bot, ct):
                 # spawn_builder just wrote slot 4 = built + 1, and that value is
                 # the my_index this newborn will read for itself, so it is the
                 # name to publish it under.
