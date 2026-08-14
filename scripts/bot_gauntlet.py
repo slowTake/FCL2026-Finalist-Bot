@@ -43,14 +43,27 @@ def live_map_pool(bot_dir: Path) -> list[str] | None:
     ever matched MAP_ID_TO_NAME's count; maps_dir just grew past it over time
     without this script being updated to filter back down.
 
+    Searched recursively: bots may group shared components into a subdirectory
+    (count/ keeps them in hivemind/). Missing it silently is expensive — the
+    fallback quietly runs every map in maps/, which is three times the pool and
+    exhausts the run's CPU budget partway through.
+
     Executed in an isolated namespace (not sys.modules) rather than imported,
     so gauntlet-ing multiple bots in one process can't cross-contaminate via
     Python's module cache — every bot's features.py shares the same module
     name. None if the bot has no features.py or no MAP_ID_TO_NAME, so callers
     can fall back to a full directory scan.
     """
-    features_path = bot_dir / "features.py"
-    if not features_path.is_file():
+    features_path = next(
+        (p for p in sorted(bot_dir.rglob("features.py")) if "__pycache__" not in p.parts),
+        None,
+    )
+    if features_path is None:
+        print(
+            f"Warning: no features.py under {bot_dir} — falling back to every map in "
+            "maps/, which is a much larger and differently-shaped pool",
+            file=sys.stderr,
+        )
         return None
     ns: dict = {"__file__": str(features_path)}
     try:

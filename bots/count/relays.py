@@ -57,12 +57,22 @@ def relayToHome(bot, ct: Controller) -> bool:
     return _walkBeside(bot, ct, tile)
 
 
-def hijackRelay(bot, ct: Controller) -> bool:
-    """Enemy harvester encountered: take over its output instead of building our own.
+def hijackRelay(bot, ct: Controller, harvester: Position) -> bool:
+    """Tap an enemy harvester instead of building our own.
 
-    Will call cutRelay(bot, ct) first once that exists — sever the enemy's line so
-    the ore we're about to tap stops feeding their core — then relay it to ours.
+    A harvester delivers its stack to any cardinally adjacent building regardless
+    of team, so a belt beside it feeds our network without its ownership ever
+    changing — the node costs us belts alone.
+
+    Will call cutRelay(bot, ct, harvester) first once that exists: sever the
+    enemy's own line out of the node so the stack has nowhere to go but ours.
     """
+    bot.relayFrom = harvester
+    bot.inRelay = True
+    bot.walkPath = None
+    # Tap it, don't demolish it — keep the route off the harvester's own tile.
+    bot.relayAvoid.add((harvester.x, harvester.y))
+    clearHold(bot)
     return relayToHome(bot, ct)
 
 

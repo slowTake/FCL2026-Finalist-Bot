@@ -7,10 +7,24 @@ Store slots: 0 harvester count (ecoBot). 1-3 free. 4-15 owned by HiveMind
 
 from __future__ import annotations
 
-from fcode import Controller, Direction, EntityType, Position
+import os
+import sys
 
-from ecoBot import runEcoBot
-from hivemind import CoreState, HiveMind, unpack_cores
+# Put the subdirectories on the path so every module can keep importing flat.
+# This is not cosmetic: hivemind.py is a frozen shared component that does
+# `from features import ...`, so those files have to be importable by bare name.
+# The submission zip is flattened by scripts/zip_bot.py, where these directories
+# do not exist — hence the isdir guard, which makes this a no-op there.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+for _sub in ("hivemind", "roles"):
+    _path = os.path.join(_HERE, _sub)
+    if os.path.isdir(_path) and _path not in sys.path:
+        sys.path.insert(0, _path)
+
+from fcode import Controller, Direction, EntityType, Position  # noqa: E402
+
+from ecoBot import runEcoBot  # noqa: E402
+from hivemind import CoreState, HiveMind, unpack_cores  # noqa: E402
 
 SLOT_PACKED_CORES = 15
 
@@ -43,6 +57,7 @@ class Player:
 
         # Economy state (ecoBot.py)
         self.oreTarget: Position | None = None
+        self.oreSkip: dict[tuple[int, int], int] = {}
 
         # Patience (patience.py)
         self.holdReason: str | None = None

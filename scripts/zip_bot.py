@@ -21,8 +21,30 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 BOTS_DIR = REPO_ROOT / "bots"
 
 
-def localImports(path: Path, botDir: Path) -> set[str]:
-    """Module names imported by `path` that resolve to a .py file in botDir."""
+def moduleIndex(botDir: Path) -> dict[str, Path]:
+    """Map module name -> .py file, searching subdirectories too.
+
+    Bots may group modules into folders (count/ uses hivemind/, roles/) while
+    still importing them by bare name, because main.py puts those folders on
+    sys.path and this zip is flat. A name defined twice is ambiguous once
+    flattened, so that's an error rather than a silent pick.
+    """
+    index: dict[str, Path] = {}
+    for path in sorted(botDir.rglob("*.py")):
+        if "__pycache__" in path.parts:
+            continue
+        if path.stem in index:
+            sys.exit(
+                f"error: two modules named {path.stem}.py "
+                f"({index[path.stem].relative_to(botDir)} and "
+                f"{path.relative_to(botDir)}) — the zip is flat, so names must be unique"
+            )
+        index[path.stem] = path
+    return index
+
+
+def localImports(path: Path, index: dict[str, Path]) -> set[str]:
+    """Module names imported by `path` that resolve to a .py file in the bot."""
     tree = ast.parse(path.read_text(), filename=str(path))
     names: set[str] = set()
     for node in ast.walk(tree):
@@ -30,23 +52,23 @@ def localImports(path: Path, botDir: Path) -> set[str]:
             names.update(alias.name.split(".")[0] for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
             names.add(node.module.split(".")[0])
-    return {n for n in names if (botDir / f"{n}.py").is_file()}
+    return {n for n in names if n in index}
 
 
 def reachableModules(botDir: Path) -> list[Path]:
     """main.py plus every local module reachable from it, breadth-first."""
-    entry = botDir / "main.py"
-    if not entry.is_file():
-        sys.exit(f"error: {entry} not found — a bot needs a main.py")
+    index = moduleIndex(botDir)
+    if "main" not in index or index["main"].parent != botDir:
+        sys.exit(f"error: {botDir / 'main.py'} not found — a bot needs a main.py")
 
     seen = {"main"}
     queue = ["main"]
     while queue:
-        for name in sorted(localImports(botDir / f"{queue.pop()}.py", botDir)):
+        for name in sorted(localImports(index[queue.pop()], index)):
             if name not in seen:
                 seen.add(name)
                 queue.append(name)
-    return sorted(botDir / f"{n}.py" for n in seen)
+    return sorted(index[n] for n in seen)
 
 
 def main() -> None:
@@ -64,7 +86,7 @@ def main() -> None:
         sys.exit(f"error: no bot directory {botDir}\navailable: {available}")
 
     if args.all:
-        files = sorted(p for p in botDir.glob("*.py") if p.is_file())
+        files = sorted(moduleIndex(botDir).values())
     else:
         files = reachableModules(botDir)
 
@@ -76,7 +98,7 @@ def main() -> None:
             files.append(path)
 
     if not args.all:
-        skipped = sorted(p.name for p in botDir.glob("*.py") if p not in files)
+        skipped = sorted(p.name for p in moduleIndex(botDir).values() if p not in files)
         if skipped:
             print(f"skipping unimported: {', '.join(skipped)}")
 

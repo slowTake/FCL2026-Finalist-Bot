@@ -24,6 +24,13 @@ and would be expensive to relearn.
   rest of the match. Timeouts only skip the turn. Always wrap.
 - Passive income is 10 Ti every 4 rounds. A conveyor is 3 Ti.
 - The core is a 2x2 footprint.
+- **A harvester feeds any cardinally adjacent building regardless of team.** A
+  belt beside an enemy harvester pulls its stack into our network without
+  ownership ever changing — the node costs us belts alone. Confirmed working on
+  fjordgate. Diagonal adjacency does **not** work.
+- The repo-level `observations/combat_findings.md` says a builder may only target
+  its own tile. That is **stale** — fcode 2.3.7 is the opposite: orthogonally
+  adjacent, never its own tile. Check the installed stub, not that file.
 - **`is_tile_passable` lies about the allied core.** Its docstring says a builder
   can stand on it; the engine refuses the move. Pricing the core as traversable
   made every route out of a cramped spawn plan straight through it, and five
@@ -54,6 +61,19 @@ and would be expensive to relearn.
   tile or drop an ore claim — passive income is guaranteed, so waiting always
   beats tearing up a good plan. Getting this wrong made builders progressively
   blacklist their own route until no path home existed.
+- **A target must be abandonable.** A builder that commits to a node it cannot
+  reach will hold that target for the rest of the match — four of them sat on the
+  same enemy harvester for 400+ turns. `ecoBot._skipOre` expires the claim so the
+  builder moves on, and expires the skip so a transient blocker doesn't cost the
+  node permanently.
+- **`walkTo` reports arrival and failure both as False.** Callers must check
+  "am I already there?" themselves, or the builder wanders off on the exact turn
+  it arrives.
+- **Filter at the point of choice, not at the point of gathering.** `knownOre`
+  originally dropped every ore tile carrying a harvester — including enemy ones —
+  so the picker never saw a hijack target and the whole feature was dead. Tiering
+  hostile strictly below free had the same effect: it was never reached while any
+  free ore was known. Hostile now competes on distance with a bonus.
 - **A blocked step must change something.** If the planner prices a tile as
   traversable and the engine then refuses the move, retrying the same step every
   turn deadlocks the unit for the match. `movement.stepToward` waits on builders
