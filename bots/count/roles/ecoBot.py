@@ -27,11 +27,12 @@ ORE_RECHECK_TURNS = 120
 ORE_SKIP_TURNS = 150
 
 # How far from our core we will chase an enemy harvester to tap it. Past this the
-# belt run home costs more than the ore returns. Measured from the core's *edge*
-# (chebyshevToCore), so the reach on the east and south sides grew by one tile when
-# that replaced the old anchor-only distance — first place to look if this needs
-# retuning.
-HIJACK_MAX_CHEBYSHEV = 12
+# belt run home costs more than the ore returns — so the thing being bounded is belt
+# count, which is 4-connected, hence Manhattan and measured from the core's *edge*.
+# This is a strictly tighter leash than the Chebyshev it replaced, tightest at 45°
+# (a node at (12, 12) used to read 12 and now reads 24, which is what it actually
+# costs). 12 has not been re-tuned since the metric changed — first place to look.
+HIJACK_MAX_MANHATTAN = 12
 
 # Tiles of head start a tappable enemy harvester gets over free ore when picking a
 # target. It saves the (scaling) harvester cost and denies them the node, so it is
@@ -221,4 +222,4 @@ def _withinHijackRange(bot, ore: Position) -> bool:
     core = bot.corePos
     if core is None:
         return True
-    return ph.chebyshevToCore(ore, core) <= HIJACK_MAX_CHEBYSHEV
+    return ph.manhattanToCore(ore, core) <= HIJACK_MAX_MANHATTAN

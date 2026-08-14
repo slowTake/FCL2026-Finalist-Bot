@@ -271,8 +271,8 @@ def coreFootprint(corePos: Position) -> list[Position]:
     ]
 
 
-def chebyshevToCore(pos: Position, corePos: Position) -> int:
-    """Chebyshev distance to the nearest tile of the 2x2, not to its anchor.
+def manhattanToCore(pos: Position, corePos: Position) -> int:
+    """Manhattan distance to the nearest tile of the 2x2, not to its anchor.
 
     `get_position()` on a core returns its min-x/min-y tile, and the mirror of that
     corner is the *opposite* corner of the reflected core — so a distance measured
@@ -280,10 +280,15 @@ def chebyshevToCore(pos: Position, corePos: Position) -> int:
     leash built on it favours whichever team's core sits on the near side of the
     mirror. Point-to-box clamp rather than a min over `coreFootprint`: same answer,
     and it allocates nothing in `pickOre`'s per-ore loop.
+
+    Manhattan and not Chebyshev because builders move cardinal-only and belts chain
+    cardinally, so both the walk and the belt run home are 4-connected. Chebyshev
+    under-reads that badly at 45°: a node 12 east is ~12 belts, but a node at
+    (12, 12) is ~24 and Chebyshev calls them both 12.
     """
     dx = max(corePos.x - pos.x, 0, pos.x - (corePos.x + 1))
     dy = max(corePos.y - pos.y, 0, pos.y - (corePos.y + 1))
-    return max(dx, dy)
+    return dx + dy
 
 
 def coreRing(corePos: Position) -> list[Position]:

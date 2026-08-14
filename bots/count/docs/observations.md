@@ -93,6 +93,16 @@ and would be expensive to relearn.
   traversable and the engine then refuses the move, retrying the same step every
   turn deadlocks the unit for the match. `movement.stepToward` waits on builders
   (they move on their own) and blacklists anything else.
+- **The distance metric is Manhattan, everywhere.** Builders move cardinal-only and
+  belts chain cardinally, so both travel time and belt cost are 4-connected — the
+  metric has to match the connectivity or the threshold built on it is anisotropic.
+  Chebyshev and octile belong to engines with diagonal movement and have no place
+  here: `_withinHijackRange` measured Chebyshev, which reads a node at (12, 12) as
+  12 when it costs ~24 belts, so the leash admitted a diamond's worth of budget over
+  a square's worth of area. The only squared-Euclidean quantities in the game are
+  engine-side radii (vision r²=36, core action r²=8, spawn r²=2); never re-derive
+  those, ask `is_in_vision` / `can_spawn` — see the `is_tile_passable` entry above
+  for what trusting our own copy of an engine rule costs.
 
 ## Performance
 
