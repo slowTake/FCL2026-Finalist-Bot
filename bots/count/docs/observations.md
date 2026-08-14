@@ -93,6 +93,26 @@ and would be expensive to relearn.
   traversable and the engine then refuses the move, retrying the same step every
   turn deadlocks the unit for the match. `movement.stepToward` waits on builders
   (they move on their own) and blacklists anything else.
+- **Builders are born facing where they are going, but are told nothing.** The core
+  runs the same `chooseOre` the newborn will run — with the index that builder is
+  about to be allocated (`read_store(4) + 1`) — and spawns it on the ring tile
+  nearest that node. The guess is then discarded: nothing goes in the store, the
+  builder re-picks from scratch, so a wrong guess costs one tile and never a
+  commitment. Spread comes free from `ORE_SPREAD`, which already fans consecutive
+  indices across nodes, so no task registry or claim table is needed.
+- **Only steer on a fingerprinted map.** The prediction is only as good as the core's
+  ore picture, and that comes from `ORE_LOCATIONS` at turn 0 — on an unfingerprinted
+  map `map_id` stays 0, it never loads, and the core is left guessing from a radius-6
+  keyhole while it spawns its opening builders. Steering off that sample is *worse
+  than not steering*: saga (not in `MAP_ID_TO_NAME`) went from an even mirror to
+  1.64:1 skewed, and lost ~6k titanium, until `_predictTarget` was gated on `map_id`.
+  Note the live-map pool and the fingerprint table are not the same set —
+  `mirror_gauntlet`'s default maps include three the hivemind cannot identify.
+- **Mirror matches are deterministic.** Five seeds of the same matchup return
+  identical titanium on antler and saga, and vary only in the third digit on
+  drakkarfjord. A single run is therefore a real measurement, not a sample — do not
+  dismiss an unwelcome result as seed noise, and do not average runs expecting the
+  spread to mean anything.
 - **The distance metric is Manhattan, everywhere.** Builders move cardinal-only and
   belts chain cardinally, so both travel time and belt cost are 4-connected — the
   metric has to match the connectivity or the threshold built on it is anisotropic.
@@ -140,12 +160,19 @@ the first success and both the old and new orderings start at (x, y-1), so the t
 actually chosen never changed. The fix is correct and it removes a real bias in the
 candidate *set*; it just is not what the numbers were about.
 
-**The fixed N/E/S/W ordering is the real driver (still open).** Reversing
-`coreRing`'s output — nothing else — moved drakkarfjord from 21910/11900 to
-16560/18450: the skew flipped sides and fell from 1.84:1 to 1.11:1. So the ordering
-is worth ~10k titanium on a 30x30 point-mirrored map. antler stayed balanced under
-both (14720/14680 → 14670/14730), which is why an axis-mirrored sample alone hides
-this; always include a point-mirrored map when measuring symmetry.
+**The fixed N/E/S/W ordering is the real driver (largely addressed at the spawn
+site; still open everywhere else).** Reversing `coreRing`'s output — nothing else —
+moved drakkarfjord from 21910/11900 to 16560/18450: the skew flipped sides and fell
+from 1.84:1 to 1.11:1. So the ordering is worth ~10k titanium on a 30x30
+point-mirrored map. antler stayed balanced under both (14720/14680 → 14670/14730),
+which is why an axis-mirrored sample alone hides this; always include a
+point-mirrored map when measuring symmetry.
+
+Ordering the ring by proximity to the newborn's predicted first node (`respawn.py`)
+rather than by compass took drakkarfjord to 16640/18640 — 1.12:1, and ~1500 *more*
+titanium in total, so this was not a case of trading output for fairness. The
+compass order now only survives as a tie-break, and `_towards` adds a Euclidean
+second key so few ties reach it.
 
 The fix is to order against something that mirrors with the map instead of against
 the compass — the core→enemy-core axis is the natural choice, and

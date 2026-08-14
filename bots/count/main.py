@@ -23,18 +23,11 @@ for _sub in ("hivemind", "roles"):
 
 from fcode import Controller, EntityType, Position  # noqa: E402
 
-import pathfindingHelpers as ph  # noqa: E402
 from ecoBot import runEcoBot  # noqa: E402
 from hivemind import CoreState, HiveMind, unpack_cores  # noqa: E402
+from respawn import runCoreSpawn  # noqa: E402
 
 SLOT_PACKED_CORES = 15
-
-MAX_BUILDERS = 6
-# Builders cost +20% each and are useless without titanium to build with. Past the
-# opening pair, keep enough banked for a harvester and its line — spending the
-# whole 500 on bodies starves every relay at once.
-MIN_BUILDERS = 2
-BUILDER_RESERVE = 60
 
 
 class Player:
@@ -80,24 +73,7 @@ class Player:
 
     def _runCore(self, ct: Controller) -> None:
         self.corePos = ct.get_position()
-        if ct.get_action_cooldown() != 0:
-            return
-        built = ct.read_store(4)
-        if built >= MAX_BUILDERS:
-            return
-        cost = ct.get_builder_bot_cost()
-        reserve = BUILDER_RESERVE if built >= MIN_BUILDERS else 0
-        if ct.get_global_resources() < cost + reserve:
-            return
-
-        # The whole 12-tile ring, not 8 directions offset from the anchor: the core
-        # is a 2x2, so three of those offsets land inside its own body and the five
-        # that don't are all on its north and west sides.
-        for tile in ph.coreRing(self.corePos):
-            # spawn_builder here, not ct.spawn_builder: it increments slot 4,
-            # which is what gives each builder its my_index and metronome turn.
-            if self.hivemind.spawn_builder(ct, tile):
-                return
+        runCoreSpawn(self, ct)
 
     def _runBuilder(self, ct: Controller) -> None:
         if self.corePos is None:

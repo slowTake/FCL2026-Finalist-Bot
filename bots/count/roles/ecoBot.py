@@ -142,6 +142,23 @@ def pickOre(bot, ct: Controller) -> Position | None:
     spoken for, they go re-check the oldest sighting instead of exploring forever.
     """
     pos = ct.get_position()
+
+    # Built once per call, not once per ore — this sits inside the 10ms budget.
+    def distTo(ore: Position) -> int:
+        return abs(ore.x - pos.x) + abs(ore.y - pos.y)
+
+    return chooseOre(bot, ct, distTo, bot.hivemind.my_index)
+
+
+def rankOre(bot, ct: Controller, distTo) -> tuple[list[Position], list[Position]]:
+    """(workable nodes best-first, stale sites nearest-first), measured by `distTo`.
+
+    Takes a distance callable rather than an origin tile because the two callers
+    measure from different things: a builder from its own position, the core from its
+    2x2 footprint via `ph.manhattanToCore`. Handing the core's anchor over as a bare
+    point would put the anchor bias back — at most two tiles, but enough to flip
+    near-ties between mirror-equivalent nodes, which is exactly what symmetry rests on.
+    """
     ranked: list[tuple[int, Position]] = []
     stale: list[Position] = []
 
@@ -151,7 +168,7 @@ def pickOre(bot, ct: Controller) -> Position | None:
         t = ph.readTile(ct, bot.hivemind, ore)
         if not t.ore:
             continue
-        d = abs(ore.x - pos.x) + abs(ore.y - pos.y)
+        d = distTo(ore)
         if t.etype is None:
             ranked.append((d, ore))
         elif t.etype == EntityType.HARVESTER and t.enemy:
@@ -160,12 +177,23 @@ def pickOre(bot, ct: Controller) -> Position | None:
         elif _sightingStale(bot, ct, ore):
             stale.append(ore)
 
+    ranked.sort(key=lambda item: item[0])
+    stale.sort(key=distTo)
+    return [ore for _d, ore in ranked], stale
+
+
+def chooseOre(bot, ct: Controller, distTo, index: int) -> Position | None:
+    """Pick out of `rankOre` by `index`, fanning consecutive builders across nodes.
+
+    The spread is `index % min(len, ORE_SPREAD)` and not a claim — see observations.md
+    under Known gaps. `respawn` calls this with the index the *next* builder will be
+    given, purely to guess where it will head; that guess never reaches the builder.
+    """
+    ranked, stale = rankOre(bot, ct, distTo)
     if ranked:
-        ranked.sort(key=lambda item: item[0])
-        return ranked[bot.hivemind.my_index % min(len(ranked), ORE_SPREAD)][1]
+        return ranked[index % min(len(ranked), ORE_SPREAD)]
     if stale:
-        stale.sort(key=lambda o: abs(o.x - pos.x) + abs(o.y - pos.y))
-        return stale[bot.hivemind.my_index % min(len(stale), ORE_SPREAD)]
+        return stale[index % min(len(stale), ORE_SPREAD)]
     return None
 
 

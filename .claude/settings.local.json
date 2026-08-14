@@ -5,7 +5,8 @@
       "Bash(tee /tmp/claude-6403/-home-pnurmi-Documents-Projects-teaPot/a5a716c8-4ac1-4002-a778-8cb033b392b9/scratchpad/baseline.txt)",
       "Bash(time .venv/bin/python scripts/mirror_gauntlet.py --bot count --maps antler saga drakkarfjord)",
       "Bash(../../.venv/bin/python -)",
-      "Bash(.venv/bin/python scripts/mirror_gauntlet.py --bot count --maps antler saga drakkarfjord)"
+      "Bash(.venv/bin/python scripts/mirror_gauntlet.py --bot count --maps antler saga drakkarfjord)",
+      "Bash(.venv/bin/python /tmp/claude-6403/-home-pnurmi-Documents-Projects-teaPot/a5a716c8-4ac1-4002-a778-8cb033b392b9/scratchpad/multiseed_mirror.py --bot count --maps antler saga drakkarfjord --seeds 5 --tag after)"
     ]
   }
 }
