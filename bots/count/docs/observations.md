@@ -10,6 +10,11 @@ and would be expensive to relearn.
 - Conveyors accept from 3 sides and output the 4th. Splitters accept **only**
   from the back. Grafting onto a belt therefore means not feeding its output
   face, and grafting onto a splitter is legal only on its back tile.
+- **A belt can be built under a builder bot**, ally or enemy — a bot is not a
+  building, so the tile still counts as empty. Only the builder's *own* tile is
+  forbidden. This does **not** generalise to other structures. Treating an
+  occupied tile as an obstruction made builders blacklist it and re-path across a
+  neighbour's relay, which is what started the belt war on yulerune.
 - Builder bots move **cardinal-only**. `move(<diagonal>)` raises.
 - Build, heal, attack and destroy all require an **orthogonally adjacent** tile
   — never diagonal, never the builder's own tile. This is why belt-laying needs
@@ -74,6 +79,16 @@ and would be expensive to relearn.
   so the picker never saw a hijack target and the whole feature was dead. Tiering
   hostile strictly below free had the same effect: it was never reached while any
   free ore was known. Hostile now competes on distance with a bonus.
+- **A relay is anchored at its harvester, not at the builder.** `planRelay` seeds
+  from the placeable tiles cardinally adjacent to `relayFrom`. Seeding from the
+  builder's current position meant every mid-relay replan re-rooted the line
+  wherever the builder was standing — on yulerune that left harvester (4,3) with
+  no adjacent belt at all, its line starting two tiles away.
+- **Never point a belt into an ally belt that already points back at it.** That
+  is a closed 2-cycle reaching nothing. If the tile pointing back is our *anchor*,
+  the network told us "connected" about something that isn't — route around
+  rather than trust it. This is a local O(1) guard that holds even when two
+  builders' `local_map`s disagree, which they genuinely can.
 - **A blocked step must change something.** If the planner prices a tile as
   traversable and the engine then refuses the move, retrying the same step every
   turn deadlocks the unit for the match. `movement.stepToward` waits on builders
@@ -102,6 +117,21 @@ Mirror matches are crash-clean but not balanced: antler 14500 vs 5040, saga
 N/E/S/W tie-break order in `_ORTHO` and `_SPAWN_DIRS` is the first suspect, since
 a reflected map turns a fixed direction preference into a real advantage for one
 side. Not yet investigated.
+
+## Traps
+
+- **A successful action is not progress.** `layBelt` cleared the patience counter
+  after every successful `build_conveyor`. In a destroy-rebuild war *every turn
+  contains a successful build*, so the counter never accumulated and no give-up
+  path ever fired — two builders looped for 975 turns and one tile was rebuilt 42
+  times. Any counter meant to detect "stuck" must not be reset by work that is
+  itself the symptom. `relayRebuilds` counts re-lays of the same tile for exactly
+  this reason.
+- **A destroyed belt lives forever in `local_map`.** `hivemind._ingest_ledger`
+  writes buildings with no expiry, and the GC sweep only clears stale ally
+  *builder* ghosts. Any unit not currently looking at a tile still believes the
+  belt it saw there is present, so `buildNetwork` can close a chain through a belt
+  that no longer exists. Suspected cause of bad anchors; not yet confirmed.
 
 ## Known gaps
 

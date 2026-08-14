@@ -31,7 +31,8 @@ ENEMY_BARRIER = 75
 ENEMY_HARVESTER = 75
 ENEMY_TURRET = 500
 ALLY_BUILD = 300      # ours and worth keeping: path around, don't bulldoze
-UNIT = 8              # a builder in the way moves on its own
+UNIT = 8              # a builder in the way moves on its own (walk profile only —
+                      # a belt can be built straight under one)
 
 # Cheapest step any profile can produce. The A* heuristic is scaled by this so
 # it stays admissible; deriving it here means changing a weight above can never
@@ -482,7 +483,9 @@ def makeCostFn(ctx: CostContext):
                 pass  # ours and walkable, no surcharge
             elif t.etype != EntityType.CORE:
                 cost += ALLY_BUILD
-        elif t.builder:
+        elif t.builder and walk:
+            # Only matters when we intend to stand there. Belts can be built under
+            # a builder, so a relay route should not swerve around one.
             cost += UNIT
 
         if key in threat:

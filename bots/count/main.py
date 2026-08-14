@@ -50,6 +50,9 @@ class Player:
         self.relayCtx = None
         self.relayFrom: Position | None = None
         self.relayAvoid: set[tuple[int, int]] = set()
+        # tile -> times this relay has re-laid it, so a destroy/rebuild war with
+        # another builder is detectable (see relays.BELT_CONTEST_LIMIT)
+        self.relayRebuilds: dict[tuple[int, int], int] = {}
 
         # Walk state (movement.py)
         self.walkPath: list[Position] | None = None

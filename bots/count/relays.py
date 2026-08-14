@@ -23,9 +23,14 @@ from patience import (
     holdTask,
     waitTi,
 )
-from pathing import astarFromSeeds, bfs
+from pathing import astarFromSeeds, bfsFromSeeds
 
 _RELAY_MAX_ITERS = 450
+
+# How many times this relay will re-lay one tile before conceding it. A belt we
+# place and someone else immediately replaces is contention, not progress —
+# taking it a third time only restarts the loop.
+BELT_CONTEST_LIMIT = 2
 
 
 def relayToHome(bot, ct: Controller) -> bool:
@@ -85,30 +90,46 @@ def planRelay(bot, ct: Controller) -> bool:
 
     ctx = ph.costContext(bot, ct, "relay")
     ctx.avoid |= bot.relayAvoid
-    pos = ct.get_position()
 
-    if ctx.isNetworkMember(pos):
-        return False  # standing on the network: the harvester already feeds it
+    # Seed at the harvester, not at wherever the builder happens to be standing.
+    # A relay exists to serve one harvester, so its first belt must be cardinally
+    # adjacent to it — otherwise a mid-relay replan silently re-roots the line and
+    # leaves the harvester with nothing beside it.
+    source = bot.relayFrom
+    if source is None:
+        return False
 
-    # Goal is a tile *beside* the network, not on it. The anchor is frequently the
-    # core, which no builder can stand on or build on, so a path that had to reach
-    # it could never be walked.
+    if any(ctx.isNetworkMember(n) for n in ph.orthogonalTiles(source)):
+        return False  # already feeding a connected belt; nothing to lay
+
+    seeds = [
+        n for n in ph.orthogonalTiles(source)
+        if ph.beltPassable(ct, bot.hivemind, n) and (n.x, n.y) not in ctx.avoid
+    ]
+    if not seeds:
+        return False
+
+    # Goal is a tile *beside* the network, not on it: the anchor is frequently the
+    # core, which no builder can stand on or build on, and a working belt is not
+    # ours to overwrite.
     def isGoal(p: Position) -> bool:
+        if ctx.isNetworkMember(p):
+            return False
         return any(ctx.isNetworkMember(n) for n in ph.orthogonalTiles(p))
 
     # No heuristic: the goal is a set, not a point, and manhattan-to-core can
     # overestimate the distance to a nearer network tile. Dijkstra is correct and
     # stops the moment it reaches the network, which is usually close.
     path = astarFromSeeds(
-        [pos],
+        seeds,
         costFn=ph.makeCostFn(ctx),
         isGoal=isGoal,
         maxIters=_RELAY_MAX_ITERS,
     )
 
     if path is None:
-        path = bfs(
-            pos,
+        path = bfsFromSeeds(
+            seeds,
             isPassable=lambda p: ph.beltPassable(ct, bot.hivemind, p),
             isGoal=isGoal,
             maxIters=_RELAY_MAX_ITERS,
@@ -166,9 +187,22 @@ def layBelt(bot, ct: Controller, tile: Position, nextTile: Position) -> bool:
     if facing is None:
         return _replanAvoiding(bot, ct, tile)
 
+    if _pointsBackAtUs(bot, ct, tile, nextTile):
+        # nextTile is an ally belt already facing into `tile`. Building here would
+        # make a closed 2-cycle that reaches nothing — and if nextTile is our
+        # anchor, it means the network said "connected" about something that
+        # isn't. Route around rather than trust it.
+        return _replanAvoiding(bot, ct, tile)
+
     t = ph.readTile(ct, bot.hivemind, tile)
+    replacing = False
 
     if t.etype in ph.BELT_TYPES and not t.enemy:
+        if _contested(bot, tile):
+            # We have already rebuilt this tile more than anyone should need to.
+            # Someone else wants it facing another way; taking it again just
+            # restarts the loop. Concede the tile and go around.
+            return _replanAvoiding(bot, ct, tile) or relayDone(bot, ct)
         # ours, pointing the wrong way. destroy is free and costs no cooldown,
         # so the replacement goes down in the same turn.
         if not ct.can_destroy(tile):
@@ -177,7 +211,12 @@ def layBelt(bot, ct: Controller, tile: Position, nextTile: Position) -> bool:
             )
         ct.destroy(tile)
         ph.invalidateTile(bot.hivemind, tile)
-    elif t.etype is not None or t.builder:
+        replacing = True
+    elif t.etype is not None:
+        # Only a *building* blocks a belt. A builder standing here does not:
+        # conveyors can be built under any bot, ours or theirs. Treating an
+        # occupied tile as an obstruction is what made a builder blacklist it and
+        # re-path across a neighbour's relay.
         return clearRelayObstruction(bot, ct, tile, hostile=t.enemy)
 
     if ct.get_action_cooldown() != 0:
@@ -194,12 +233,36 @@ def layBelt(bot, ct: Controller, tile: Position, nextTile: Position) -> bool:
     if ct.can_build_conveyor(tile, facing):
         ct.build_conveyor(tile, facing)
         ph.invalidateTile(bot.hivemind, tile)
-        clearHold(bot)
+        if replacing:
+            # Churn, not progress. Clearing the hold here is what made a
+            # destroy-rebuild war invisible: every turn of it contains a
+            # successful build, so the counter never accumulated and no give-up
+            # path ever fired.
+            _countRebuild(bot, tile)
+        else:
+            clearHold(bot)
         return True
 
     return _replanAvoiding(bot, ct, tile) or holdTask(
         bot, "unbuildable", BLOCKED_WAIT_TURNS
     )
+
+
+def _pointsBackAtUs(bot, ct: Controller, tile: Position, nextTile: Position) -> bool:
+    """True if nextTile holds an ally belt already facing into `tile`."""
+    t = ph.readTile(ct, bot.hivemind, nextTile)
+    if t.etype not in ph.BELT_TYPES or t.enemy or t.facing is None:
+        return False
+    return t.facing == ph.beltFacing(nextTile, tile)
+
+
+def _countRebuild(bot, tile: Position) -> None:
+    key = (tile.x, tile.y)
+    bot.relayRebuilds[key] = bot.relayRebuilds.get(key, 0) + 1
+
+
+def _contested(bot, tile: Position) -> bool:
+    return bot.relayRebuilds.get((tile.x, tile.y), 0) >= BELT_CONTEST_LIMIT
 
 
 def _stepOff(bot, ct: Controller, belts, idx: int) -> bool:
@@ -268,6 +331,7 @@ def relayDone(bot, ct: Controller) -> bool:
     bot.relayCtx = None
     bot.relayFrom = None
     bot.relayAvoid.clear()
+    bot.relayRebuilds.clear()
     bot.inRelay = False
     bot.walkPath = None
     clearHold(bot)
