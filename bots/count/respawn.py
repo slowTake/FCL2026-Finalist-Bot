@@ -19,7 +19,7 @@ from fcode import Controller, Position
 import pathfindingHelpers as ph
 from ecoBot import chooseOre
 
-MAX_BUILDERS = 6
+MAX_BUILDERS = 5
 # Builders cost +20% each and are useless without titanium to build with. Past the
 # opening pair, keep enough banked for a harvester and its line — spending the
 # whole 500 on bodies starves every relay at once.
