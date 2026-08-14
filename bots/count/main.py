@@ -26,6 +26,7 @@ from fcode import Controller, EntityType, Position  # noqa: E402
 from ecoBot import runEcoBot  # noqa: E402
 from hivemind import CoreState, HiveMind, unpack_cores  # noqa: E402
 from respawn import runCoreSpawn  # noqa: E402
+from telemetry import ENABLED as CPU_TELEMETRY, CpuMeter  # noqa: E402
 
 SLOT_PACKED_CORES = 15
 
@@ -58,6 +59,9 @@ class Player:
         self.holdReason: str | None = None
         self.holdTurns = 0
 
+        # Instrumentation (telemetry.py) — None unless COUNT_CPU=1.
+        self._cpu = CpuMeter() if CPU_TELEMETRY else None
+
     def run(self, ct: Controller) -> None:
         # An uncaught exception permanently destroys this unit for the rest of
         # the match, so nothing here is allowed to escape.
@@ -69,7 +73,16 @@ class Player:
             elif etype == EntityType.BUILDER_BOT:
                 self._runBuilder(ct)
         except Exception:
-            return
+            if self._cpu is not None:
+                self._cpu.fault()
+
+        # Sampled after the handler rather than in a `finally` — the engine's bot
+        # validator rejects `finally` outright — so a faulted turn is measured
+        # too; one that threw early would otherwise read as a fast turn.
+        # sample() swallows its own errors, so it cannot become the thing that
+        # kills the unit.
+        if self._cpu is not None:
+            self._cpu.sample(ct)
 
     def _runCore(self, ct: Controller) -> None:
         self.corePos = ct.get_position()
