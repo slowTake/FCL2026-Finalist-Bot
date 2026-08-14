@@ -271,6 +271,43 @@ def coreFootprint(corePos: Position) -> list[Position]:
     ]
 
 
+def chebyshevToCore(pos: Position, corePos: Position) -> int:
+    """Chebyshev distance to the nearest tile of the 2x2, not to its anchor.
+
+    `get_position()` on a core returns its min-x/min-y tile, and the mirror of that
+    corner is the *opposite* corner of the reflected core — so a distance measured
+    to the anchor reads one tile too far from the east and south sides, and every
+    leash built on it favours whichever team's core sits on the near side of the
+    mirror. Point-to-box clamp rather than a min over `coreFootprint`: same answer,
+    and it allocates nothing in `pickOre`'s per-ore loop.
+    """
+    dx = max(corePos.x - pos.x, 0, pos.x - (corePos.x + 1))
+    dy = max(corePos.y - pos.y, 0, pos.y - (corePos.y + 1))
+    return max(dx, dy)
+
+
+def coreRing(corePos: Position) -> list[Position]:
+    """The 12 tiles surrounding the 2x2 footprint. Legality is still the engine's
+    call — `can_spawn` enforces the spawn radius and the unit cap.
+
+    Offsetting the 8 compass directions from the anchor instead reaches only 5 of
+    these, all on the north and west sides, and spends three of its eight attempts
+    on tiles inside the core's own body. Order here is still compass-derived; making
+    *that* orientation-neutral is the next step (see observations.md).
+    """
+    inside = {(p.x, p.y) for p in coreFootprint(corePos)}
+    seen: set[tuple[int, int]] = set()
+    ring: list[Position] = []
+    for p in coreFootprint(corePos):
+        for n in adjacentTiles(p):
+            key = (n.x, n.y)
+            if key in inside or key in seen:
+                continue
+            seen.add(key)
+            ring.append(n)
+    return ring
+
+
 def beltFacing(a: Position, b: Position) -> Direction | None:
     """Cardinal direction from a to b. None if they aren't orthogonally adjacent."""
     dx, dy = b.x - a.x, b.y - a.y

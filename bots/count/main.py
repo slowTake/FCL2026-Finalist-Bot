@@ -21,8 +21,9 @@ for _sub in ("hivemind", "roles"):
     if os.path.isdir(_path) and _path not in sys.path:
         sys.path.insert(0, _path)
 
-from fcode import Controller, Direction, EntityType, Position  # noqa: E402
+from fcode import Controller, EntityType, Position  # noqa: E402
 
+import pathfindingHelpers as ph  # noqa: E402
 from ecoBot import runEcoBot  # noqa: E402
 from hivemind import CoreState, HiveMind, unpack_cores  # noqa: E402
 
@@ -34,8 +35,6 @@ MAX_BUILDERS = 6
 # whole 500 on bodies starves every relay at once.
 MIN_BUILDERS = 2
 BUILDER_RESERVE = 60
-
-_SPAWN_DIRS = [d for d in Direction if d != Direction.CENTRE]
 
 
 class Player:
@@ -91,10 +90,13 @@ class Player:
         if ct.get_global_resources() < cost + reserve:
             return
 
-        for d in _SPAWN_DIRS:
+        # The whole 12-tile ring, not 8 directions offset from the anchor: the core
+        # is a 2x2, so three of those offsets land inside its own body and the five
+        # that don't are all on its north and west sides.
+        for tile in ph.coreRing(self.corePos):
             # spawn_builder here, not ct.spawn_builder: it increments slot 4,
             # which is what gives each builder its my_index and metronome turn.
-            if self.hivemind.spawn_builder(ct, self.corePos.add(d)):
+            if self.hivemind.spawn_builder(ct, tile):
                 return
 
     def _runBuilder(self, ct: Controller) -> None:

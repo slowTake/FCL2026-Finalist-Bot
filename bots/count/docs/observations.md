@@ -112,11 +112,41 @@ share a subinterpreter and module state would leak between them.
 
 ## Known asymmetry
 
-Mirror matches are crash-clean but not balanced: antler 14500 vs 5040, saga
-9350 vs 20550 on symmetric maps. Something is orientation-dependent — the fixed
-N/E/S/W tie-break order in `_ORTHO` and `_SPAWN_DIRS` is the first suspect, since
-a reflected map turns a fixed direction preference into a real advantage for one
-side. Not yet investigated.
+Two separate orientation bugs live here. Keep them apart — they were originally
+recorded as one suspect, and only one of them turned out to matter.
+
+**The core anchor is not mirror-symmetric (fixed, but it was not the cause).**
+`get_position()` on a core returns its min-x/min-y tile, and under the map mirror
+the two *footprints* map onto each other while the *anchors do not* — the mirror of
+team A's NW anchor is team B's **SE** footprint tile. Every anchor-relative read is
+therefore off by (+1,+1) for exactly one team. On antler: A anchor (6,4) covers rows
+{4,5}, B anchor (6,12) covers {12,13}; reflection about y=8.5 maps 4→13 and 5→12, so
+footprints match and anchors are off by one row in opposite directions. Fixed by
+`chebyshevToCore` (point-to-box, so distance is to the nearest footprint tile) and
+`coreRing` (all 12 surrounding tiles, not 8 compass offsets from the anchor — three
+of those land inside the core's own body and the five that don't are all N/W).
+**Measured effect on the mirror gauntlet: exactly zero.** `spawn_builder` returns on
+the first success and both the old and new orderings start at (x, y-1), so the tile
+actually chosen never changed. The fix is correct and it removes a real bias in the
+candidate *set*; it just is not what the numbers were about.
+
+**The fixed N/E/S/W ordering is the real driver (still open).** Reversing
+`coreRing`'s output — nothing else — moved drakkarfjord from 21910/11900 to
+16560/18450: the skew flipped sides and fell from 1.84:1 to 1.11:1. So the ordering
+is worth ~10k titanium on a 30x30 point-mirrored map. antler stayed balanced under
+both (14720/14680 → 14670/14730), which is why an axis-mirrored sample alone hides
+this; always include a point-mirrored map when measuring symmetry.
+
+The fix is to order against something that mirrors with the map instead of against
+the compass — the core→enemy-core axis is the natural choice, and
+`hivemind.enemy_core_pos` is already populated from `KNOWN_MAPS` on all 15 ladder
+maps and currently read by nobody. Same treatment is owed to `_ORTHO`,
+`pathing.CARDINAL_DELTAS`, the A*/BFS insertion-order tie-breaks, and the
+first-match anchor pick in `relays.planRelay`.
+
+Note the earlier figures in this section (antler 14500 vs 5040, saga 9350 vs 20550)
+no longer reproduce — at the current HEAD both maps are near-even. Only the
+point-mirrored map is still badly skewed.
 
 ## Traps
 

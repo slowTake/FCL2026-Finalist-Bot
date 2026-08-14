@@ -27,7 +27,10 @@ ORE_RECHECK_TURNS = 120
 ORE_SKIP_TURNS = 150
 
 # How far from our core we will chase an enemy harvester to tap it. Past this the
-# belt run home costs more than the ore returns.
+# belt run home costs more than the ore returns. Measured from the core's *edge*
+# (chebyshevToCore), so the reach on the east and south sides grew by one tile when
+# that replaced the old anchor-only distance — first place to look if this needs
+# retuning.
 HIJACK_MAX_CHEBYSHEV = 12
 
 # Tiles of head start a tappable enemy harvester gets over free ore when picking a
@@ -218,4 +221,4 @@ def _withinHijackRange(bot, ore: Position) -> bool:
     core = bot.corePos
     if core is None:
         return True
-    return max(abs(ore.x - core.x), abs(ore.y - core.y)) <= HIJACK_MAX_CHEBYSHEV
+    return ph.chebyshevToCore(ore, core) <= HIJACK_MAX_CHEBYSHEV
