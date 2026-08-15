@@ -25,9 +25,11 @@ from fcode import Controller, EntityType, Position  # noqa: E402
 
 import raid  # noqa: E402
 from ecoBot import runEcoBot  # noqa: E402
+from gunnerBot import runGunnerBot  # noqa: E402
 from hivemind import CoreState, HiveMind, unpack_cores  # noqa: E402
 from raidBot import runRaidBot  # noqa: E402
 from respawn import runCoreSpawn  # noqa: E402
+from sentinelBot import runSentinelBot  # noqa: E402
 from telemetry import ENABLED as CPU_TELEMETRY, CpuMeter  # noqa: E402
 
 SLOT_PACKED_CORES = 15
@@ -74,6 +76,10 @@ class Player:
                 self._runCore(ct)
             elif etype == EntityType.BUILDER_BOT:
                 self._runBuilder(ct)
+            elif etype == EntityType.GUNNER:
+                self._runGunner(ct)
+            elif etype == EntityType.SENTINEL:
+                self._runSentinel(ct)
         except Exception:
             if self._cpu is not None:
                 self._cpu.fault()
@@ -109,3 +115,9 @@ class Player:
             return
 
         runEcoBot(self, ct)
+
+    def _runGunner(self, ct: Controller) -> None:
+        runGunnerBot(self, ct)
+
+    def _runSentinel(self, ct: Controller) -> None:
+        runSentinelBot(self, ct)
