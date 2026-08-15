@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fcode import Controller, Position
 
+import debug
 import pathfindingHelpers as ph
 from patience import BLOCKED_WAIT_TURNS, clearHold, holdTask
 from pathing import astar, bfs
@@ -24,10 +25,16 @@ def walkTo(bot, ct: Controller, isGoal, heuristicGoal: Position | None, goal) ->
     chasing a raider needs and what the economy callers never exercised.
     """
     if ct.get_move_cooldown() != 0:
+        if debug.ENABLED:
+            debug.log("walkTo", f"idx={bot.hivemind.my_index} goal={goal} "
+                                 f"COOLDOWN cooldown={ct.get_move_cooldown()}")
         return True
 
     pos = ct.get_position()
     if isGoal(pos):
+        if debug.ENABLED:
+            debug.log("walkTo", f"idx={bot.hivemind.my_index} goal={goal} "
+                                 f"pos={pos} ARRIVED (isGoal true)")
         clearHold(bot)
         return False
 
@@ -36,11 +43,21 @@ def walkTo(bot, ct: Controller, isGoal, heuristicGoal: Position | None, goal) ->
     if idx is None or idx >= len(path) - 1:
         path = _plan(bot, ct, isGoal, heuristicGoal)
         if path is None:
+            if debug.ENABLED:
+                debug.log("walkTo", f"idx={bot.hivemind.my_index} goal={goal} "
+                                     f"pos={pos} NO PATH FOUND (_plan returned None)")
             return holdTask(bot, "noRoute", BLOCKED_WAIT_TURNS)
         bot.walkGoal = goal
         idx = 0
+        if debug.ENABLED:
+            debug.log("walkTo", f"idx={bot.hivemind.my_index} goal={goal} "
+                                 f"pos={pos} REPLANNED path={path}")
 
-    return stepToward(bot, ct, path[idx + 1])
+    nextTile = path[idx + 1]
+    if debug.ENABLED:
+        debug.log("walkTo", f"idx={bot.hivemind.my_index} goal={goal} pos={pos} "
+                             f"pathIdx={idx}/{len(path)-1} nextTile={nextTile}")
+    return stepToward(bot, ct, nextTile)
 
 
 def stepToward(bot, ct: Controller, tile: Position) -> bool:
@@ -51,20 +68,47 @@ def stepToward(bot, ct: Controller, tile: Position) -> bool:
         clearHold(bot)
         return True
 
+    # An *ally* builder will usually move on its own, so waiting it out is
+    # cheaper than walking around it — but only up to a point, and only if
+    # waiting doesn't itself cost anything. An enemy one will not: it is
+    # pursuing its own goal, and in a mirror match that goal is the tile we
+    # are standing on, which is how two raiders end up re-issuing the same
+    # illegal step at each other for the rest of the match. Enemy builders
+    # are standing obstacles, priced like anything else the planner called
+    # traversable and the engine refused.
+    t = ph.readTile(ct, bot.hivemind, tile)
+    waitingOnAlly = t.builder and not t.builderEnemy
+
+    ok = holdTask(bot, "walkBlocked", BLOCKED_WAIT_TURNS)
+    if debug.ENABLED:
+        debug.log(
+            "walk",
+            f"idx={bot.hivemind.my_index} pos={ct.get_position()} blocked_at={tile} "
+            f"builder={t.builder} builderEnemy={t.builderEnemy} etype={t.etype} "
+            f"holdTurns={getattr(bot, 'holdTurns', 0)} holding={ok} "
+            f"waitingOnAlly={waitingOnAlly}",
+        )
+
+    if waitingOnAlly and ok:
+        # Still within patience, and still worth waiting — hold position and
+        # leave the cached path (and its goal key) alone. Clearing them
+        # unconditionally on every blocked turn (the old behaviour) forced a
+        # fresh A* each time, and against a multi-candidate goal (any tile
+        # beside a target, not one point) a fresh search can tie-break to a
+        # *different* candidate turn to turn — visible as a builder walking
+        # back and forth between two tiles instead of just waiting, not
+        # merely wasted CPU.
+        return True
+
+    # Either not an ally, or patience for one is spent. The spent-patience
+    # case matters on its own: two allies each waiting on the other to move
+    # first (a swap deadlock) would otherwise wait forever, since "it'll
+    # move eventually" never becomes false by itself. Blacklisting forces a
+    # real reroute instead of a standoff neither side can break.
     bot.walkPath = None
     bot.walkGoal = None
-
-    # An *ally* builder will move on its own, so waiting one out is cheaper than
-    # walking around it. An enemy one will not: it is pursuing its own goal, and
-    # in a mirror match that goal is the tile we are standing on, which is how two
-    # raiders end up re-issuing the same illegal step at each other for the rest of
-    # the match. Enemy builders are standing obstacles, priced like anything else
-    # the planner called traversable and the engine refused.
-    t = ph.readTile(ct, bot.hivemind, tile)
-    if not t.builder or t.builderEnemy:
-        bot.walkAvoid.add((tile.x, tile.y))
-
-    return holdTask(bot, "walkBlocked", BLOCKED_WAIT_TURNS)
+    bot.walkAvoid.add((tile.x, tile.y))
+    return ok
 
 
 def exploreStep(bot, ct: Controller) -> bool:

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from fcode import Controller, Direction, EntityType, GameConstants, Position
 
+import debug
 import heal
 import pathfindingHelpers as ph
 import raid
@@ -47,6 +48,19 @@ def runRaidBot(bot, ct: Controller) -> None:
         return
 
     site, facing = target
+    if debug.ENABLED:
+        nearby = [
+            (ct.get_entity_type(eid), ct.get_position(eid))
+            for eid in ct.get_nearby_entities()
+            if ct.get_team(eid) != ct.get_team()
+        ]
+        debug.log(
+            "raidBot",
+            f"idx={bot.hivemind.my_index} id={ct.get_id()} rnd={ct.get_current_round()} "
+            f"pos={ct.get_position()} site={site} "
+            f"facing={facing} dist={manhattan(ct.get_position(), site)} "
+            f"hp={ct.get_hp()}/{ct.get_max_hp()} nearbyEnemies={nearby}",
+        )
 
     if buildSentinel(bot, ct, site, facing):
         return
@@ -70,6 +84,15 @@ def buildSentinel(bot, ct: Controller, site: Position, facing: Direction) -> boo
         clearHold(bot)
         _finishBuild(ct, site, facing)
         return True
+
+    if debug.ENABLED:
+        t = ph.readTile(ct, bot.hivemind, site)
+        debug.log(
+            "raidBot",
+            f"idx={bot.hivemind.my_index} pos={pos} site={site} "
+            f"can_build_sentinel=False site_etype={t.etype} site_enemy={t.enemy} "
+            f"site_builder={t.builder} site_builderEnemy={t.builderEnemy}",
+        )
 
     # Most likely explanation: our own sentinel is already standing there —
     # the core's ledger view of a tile beside the *enemy* core can lag
@@ -123,7 +146,10 @@ def approach(bot, ct: Controller, site: Position) -> bool:
     def beside(p: Position) -> bool:
         return ph.beltFacing(p, site) is not None
 
-    walkTo(bot, ct, beside, site, ("raidSite", site.x, site.y))
+    used = walkTo(bot, ct, beside, site, ("raidSite", site.x, site.y))
+    if debug.ENABLED:
+        debug.log("raidBot", f"idx={bot.hivemind.my_index} approach pos={pos} "
+                              f"site={site} walkTo_returned={used}")
     return True
 
 

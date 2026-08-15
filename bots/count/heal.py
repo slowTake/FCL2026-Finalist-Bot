@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from fcode import Controller, EntityType, Position
 
+import debug
 import pathfindingHelpers as ph
 from movement import walkTo
 from pathing import manhattan
@@ -60,6 +61,12 @@ def healNearby(bot, ct: Controller, types) -> bool:
     True if the turn was used — either actually healing, or walking toward
     one that isn't adjacent yet."""
     target = nearestDamagedAlly(ct, types)
+    if debug.ENABLED:
+        debug.log(
+            "heal",
+            f"idx={bot.hivemind.my_index} pos={ct.get_position()} "
+            f"nearestDamagedAlly={target}",
+        )
     if target is None:
         return False
     return healAlly(bot, ct, target)
@@ -84,11 +91,19 @@ def healAlly(bot, ct: Controller, target: Position) -> bool:
     pos = ct.get_position()
 
     if ph.beltFacing(pos, target) is not None:
-        if ct.get_action_cooldown() == 0 and ct.can_heal(target):
+        healed = ct.get_action_cooldown() == 0 and ct.can_heal(target)
+        if debug.ENABLED:
+            debug.log("heal", f"idx={bot.hivemind.my_index} pos={pos} "
+                               f"adjacent target={target} healed={healed}")
+        if healed:
             ct.heal(target)
         return True
 
     def beside(p: Position) -> bool:
         return ph.beltFacing(p, target) is not None
 
-    return walkTo(bot, ct, beside, target, ("heal", target.x, target.y))
+    used = walkTo(bot, ct, beside, target, ("heal", target.x, target.y))
+    if debug.ENABLED:
+        debug.log("heal", f"idx={bot.hivemind.my_index} pos={pos} "
+                           f"walking_to target={target} walkTo_returned={used}")
+    return used
