@@ -30,6 +30,7 @@ class HiveMind:
         self.global_turn = 0
         self.my_index = 0
         self.birth_round: int | None = None
+        self._pre_spawn_count: int | None = None
         self.map_id = 0
         self.map_name = "UNKNOWN"
         self.enemy_core_pos = None  # set on fingerprint from KNOWN_MAPS
@@ -313,13 +314,33 @@ class HiveMind:
         self.global_turn = ct.get_current_round()
 
         # 2. Assign builder index once the spawn write to slot 4 is visible.
+        #
+        # The value is captured on the FIRST tick (birth_round), not the
+        # second: write_store is buffered one round, so at birth_round the
+        # spawn that just created this very unit has not landed yet, and
+        # slot 4 still reads "how many builders existed before me" —
+        # necessarily stable, since nothing written this round is visible
+        # yet to anyone. That value can never collide with another
+        # builder's, because at most one builder is spawned per round.
+        #
+        # Re-reading slot 4 a round later (the previous approach) reads
+        # whatever is THEN current, which is no longer necessarily this
+        # unit's own count if a second builder was also spawned in the
+        # intervening round: both newborns' second-tick reads can land on
+        # the same already-advanced value, and both claim the same index —
+        # observed directly (two live units, same my_index, one round
+        # apart) in a count-vs-baron match on valkyrie. Publication still
+        # waits until birth_round + 1 — my_index == 0 remains the correct
+        # "not yet assigned" signal for exactly one round, unchanged from
+        # before, since some callers (e.g. baron's guardianRankAlive) treat
+        # that timing as a documented invariant.
         if ct.get_entity_type() == EntityType.BUILDER_BOT and self.my_index == 0:
             if self.birth_round is None:
                 self.birth_round = self.global_turn
+                self._pre_spawn_count = ct.read_store(4)
             elif self.global_turn == self.birth_round + 1:
-                idx = ct.read_store(4)
-                if idx > 0:
-                    self.my_index = idx
+                if self._pre_spawn_count is not None:
+                    self.my_index = self._pre_spawn_count + 1
 
         # 3. Process Map Detection (Core Only)
         if is_core and self.global_turn == 0:
