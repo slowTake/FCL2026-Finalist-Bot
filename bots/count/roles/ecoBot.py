@@ -175,7 +175,7 @@ def rankOre(bot, ct: Controller, distTo) -> tuple[list[Position], list[Position]
         if t.etype is None:
             ranked.append((d, ore))
         elif t.etype == EntityType.HARVESTER and t.enemy:
-            if _withinHijackRange(bot, ore):
+            if _withinHijackRange(bot, ore) and not _alreadyTapped(bot, ct, ore):
                 ranked.append((d - HIJACK_BONUS, ore))
         elif _sightingStale(bot, ct, ore):
             stale.append(ore)
@@ -230,7 +230,7 @@ def _oreWorthGoing(bot, ct: Controller, ore: Position) -> bool:
     if t.etype is None:
         return True
     if t.etype == EntityType.HARVESTER and t.enemy:
-        return _withinHijackRange(bot, ore)
+        return _withinHijackRange(bot, ore) and not _alreadyTapped(bot, ct, ore)
     return _sightingStale(bot, ct, ore)
 
 
@@ -247,6 +247,24 @@ def _sightingStale(bot, ct: Controller, ore: Position) -> bool:
         return True
     age = bot.hivemind.global_turn - entry.get("last_seen_turn", -(10 ** 9))
     return age > ORE_RECHECK_TURNS
+
+
+def _alreadyTapped(bot, ct: Controller, ore: Position) -> bool:
+    """One of our belts already feeds from this harvester.
+
+    Without this, a successful hijack was invisible to the picker: the tile
+    still reads HARVESTER + enemy forever, so it kept winning rankOre's
+    HIJACK_BONUS against everything else and the same builder re-called
+    hijackRelay on it turn after turn (935 times on one node in one match) —
+    each call an immediate, harmless no-op (planRelay's own "already feeding
+    a connected belt" check bails before touching anything), but the builder
+    never moved on to new ore or a new hijack. Same network-membership check
+    `planRelay` already makes before laying anything; costContext is
+    round-cached, so asking here costs nothing extra once anything else has
+    asked this round, and only the full buildNetwork cost the first time.
+    """
+    ctx = ph.costContext(bot, ct, "walk")
+    return any(ctx.isNetworkMember(n) for n in ph.orthogonalTiles(ore))
 
 
 def _withinHijackRange(bot, ore: Position) -> bool:
