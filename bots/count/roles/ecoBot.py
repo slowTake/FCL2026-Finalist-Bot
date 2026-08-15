@@ -7,9 +7,8 @@ from fcode import Controller, EntityType, Position
 import pathfindingHelpers as ph
 from movement import exploreStep, walkTo
 from patience import clearHold, waitTi
+import store
 from relays import hijackRelay, relayToHome
-
-SLOT_HARVESTERS = 0
 
 # How many of the nearest ore nodes builders fan out across. Deterministic off
 # my_index, so two builders with different indices rarely pick the same node.
@@ -44,10 +43,16 @@ def runEcoBot(bot, ct: Controller) -> None:
     if bot.inRelay and relayToHome(bot, ct):
         return
 
-    if buildHarvester(bot, ct):
+    # Seize before build: on an enemy-harvester tile `can_build_harvester` is
+    # False, and buildHarvester answers that by clearing oreTarget — which used
+    # to leave seizeHarvester reading None and bailing, seekOre re-picking the
+    # same tile, and the builder idling beside it forever with a cold action
+    # cooldown. seizeHarvester is guarded by _enemyHarvester, so it is a no-op
+    # on every ordinary target and costs the build path nothing.
+    if seizeHarvester(bot, ct):
         return
 
-    if seizeHarvester(bot, ct):
+    if buildHarvester(bot, ct):
         return
 
     if seekOre(bot, ct):
@@ -76,12 +81,11 @@ def buildHarvester(bot, ct: Controller) -> bool:
         return False
 
     ct.build_harvester(ore)
-    ct.write_store(SLOT_HARVESTERS, ct.read_store(SLOT_HARVESTERS) + 1)
+    store.put(ct, store.HARVESTERS, ct.read_store(store.HARVESTERS) + 1)
 
     bot.relayFrom = ore
     bot.inRelay = True
     bot.oreTarget = None
-    bot.walkPath = None
     clearHold(bot)
     return True
 
@@ -103,7 +107,6 @@ def seizeHarvester(bot, ct: Controller) -> bool:
 def seekOre(bot, ct: Controller) -> bool:
     if bot.oreTarget is None or not _oreWorthGoing(bot, ct, bot.oreTarget):
         bot.oreTarget = pickOre(bot, ct)
-        bot.walkPath = None
     ore = bot.oreTarget
     if ore is None:
         return False
@@ -118,7 +121,7 @@ def seekOre(bot, ct: Controller) -> bool:
     def beside(p: Position) -> bool:
         return abs(p.x - ore.x) + abs(p.y - ore.y) == 1
 
-    if walkTo(bot, ct, beside, ore):
+    if walkTo(bot, ct, beside, ore, ("ore", ore.x, ore.y)):
         return True
 
     # Out of patience getting there. Without this a builder commits to one

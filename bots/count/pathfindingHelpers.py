@@ -1,4 +1,4 @@
-"""Tile checks, blocker classification, network connectivity, and the cost table.
+"""Tile reads, adjacency, network connectivity, and the cost table.
 
 All game knowledge for pathing lives here; pathing.py stays a bare search.
 """
@@ -12,7 +12,6 @@ from fcode import Controller, Direction, EntityType, Environment, Position
 BELT_TYPES = (EntityType.CONVEYOR, EntityType.SPLITTER)
 TURRET_TYPES = (EntityType.GUNNER, EntityType.SENTINEL, EntityType.LAUNCHER)
 
-CARDINALS = (Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST)
 _ORTHO = ((0, -1), (1, 0), (0, 1), (-1, 0))
 
 # --- Cost table -------------------------------------------------------------
@@ -23,7 +22,6 @@ _ORTHO = ((0, -1), (1, 0), (0, 1), (-1, 0))
 BASE = 10
 NETWORK = 1           # riding our own rails is near-free, but never 0 —
                       # a 0 would drop MIN_STEP_COST to 0 and force Dijkstra
-DEFENDED = 5          # discount near our own defences (nothing defensive yet)
 CHOKE = 50
 ENEMY_FIRE = 500
 ENEMY_BELT = 50
@@ -37,7 +35,7 @@ UNIT = 8              # a builder in the way moves on its own (walk profile only
 # Cheapest step any profile can produce. The A* heuristic is scaled by this so
 # it stays admissible; deriving it here means changing a weight above can never
 # silently break the search.
-MIN_STEP_COST = min(NETWORK, BASE - DEFENDED)
+MIN_STEP_COST = min(NETWORK, BASE)
 
 _ENEMY_BUILD_COST = {
     EntityType.CONVEYOR: ENEMY_BELT,
@@ -167,14 +165,6 @@ def _readLedger(hm, pos: Position, myTeam) -> Tile:
     return Tile(True, False, ore, etype, enemy, ent.get("direction"), False, False)
 
 
-def isWall(ct: Controller, hm, pos: Position) -> bool:
-    return readTile(ct, hm, pos).wall
-
-
-def isOre(ct: Controller, hm, pos: Position) -> bool:
-    return readTile(ct, hm, pos).ore
-
-
 def isImpassable(ct: Controller, hm, pos: Position) -> bool:
     """The only hard blocks. Everything else is priced by tileCost, not forbidden."""
     if not inBounds(ct, pos):
@@ -224,39 +214,6 @@ def adjacentTiles(pos: Position):
     for d in Direction:
         if d != Direction.CENTRE:
             yield pos.add(d)
-
-
-class Blocker(NamedTuple):
-    pos: Position
-    etype: EntityType | None   # None means a builder bot
-    enemy: bool
-    unit: bool                 # builder bot: it will move on its own
-
-
-def adjacentBlockers(ct: Controller, hm, pos: Position) -> list[Blocker]:
-    """Everything orthogonally adjacent that a builder would have to get past.
-    The one place blocker classification lives; callers branch on the result."""
-    out = []
-    for n in orthogonalTiles(pos):
-        if not inBounds(ct, n):
-            continue
-        t = readTile(ct, hm, n)
-        if t.wall:
-            out.append(Blocker(n, None, False, False))
-        elif t.builder:
-            out.append(Blocker(n, None, t.builderEnemy, True))
-        elif t.etype is not None:
-            out.append(Blocker(n, t.etype, t.enemy, False))
-    return out
-
-
-def adjacentBuildable(ct: Controller, hm, pos: Position) -> list[Position]:
-    """Orthogonal neighbours we may build on. Build actions are never diagonal
-    and never the builder's own tile."""
-    return [
-        n for n in orthogonalTiles(pos)
-        if inBounds(ct, n) and ct.is_tile_empty(n)
-    ]
 
 
 # --- Network ----------------------------------------------------------------
@@ -410,10 +367,6 @@ class CostContext:
     def isNetworkMember(self, pos: Position) -> bool:
         return (pos.x, pos.y) in self.network
 
-    def penalise(self, pos: Position) -> None:
-        """Mark a tile as not-worth-it for the next replan (see clearRelayObstruction)."""
-        self.avoid.add((pos.x, pos.y))
-
 
 def costContext(bot, ct: Controller, profile: str) -> CostContext:
     """One context per unit-turn per profile, with the network and threat sets
@@ -464,8 +417,17 @@ def _threatTiles(ct: Controller, hm) -> set[tuple[int, int]]:
 
 
 def _isChokepoint(ct: Controller, hm, pos: Position) -> bool:
-    """Memoised for the whole match: this depends only on walls and map edges,
-    and neither ever changes."""
+    """Two or more of the four orthogonal neighbours blocked by wall or map edge.
+
+    Memoised for the whole match, but only once the answer can no longer change.
+    Walls and edges are immutable; our *knowledge* of them is not. An unexplored
+    neighbour reads back `wall=False`, so caching unconditionally means a tile
+    first evaluated before its surroundings were seen is written off as open
+    forever — and A* expands frontier tiles precisely when their neighbours are
+    still unknown, so the error lands where CHOKE matters most. A True answer
+    rests on two definite blocks and is always safe to keep; a False one only
+    once every neighbour is known.
+    """
     cache = getattr(hm, "_chokeCache", None)
     if cache is None:
         cache = hm._chokeCache = {}
@@ -475,15 +437,24 @@ def _isChokepoint(ct: Controller, hm, pos: Position) -> bool:
         return hit
 
     blocked = 0
+    allKnown = True
     for dx, dy in _ORTHO:
         n = Position(pos.x + dx, pos.y + dy)
-        if not inBounds(ct, n) or readTile(ct, hm, n).wall:
+        if not inBounds(ct, n):
             blocked += 1
-            if blocked >= 2:
-                break
-    result = blocked >= 2
-    cache[key] = result
-    return result
+        else:
+            t = readTile(ct, hm, n)
+            if t.wall:
+                blocked += 1
+            elif not t.known:
+                allKnown = False
+        if blocked >= 2:
+            cache[key] = True
+            return True
+
+    if allKnown:
+        cache[key] = False
+    return False
 
 
 def makeCostFn(ctx: CostContext):
@@ -511,7 +482,12 @@ def makeCostFn(ctx: CostContext):
             memo[key] = None
             return None
 
-        if walk and key in network:
+        # `key not in threat` is not redundant with the surcharge below: this
+        # fast path returns before it, so without the clause our own rails are
+        # priced at 1 even inside an enemy firing line — and a walk home is
+        # mostly rails, so the one profile that most wants to dodge fire would
+        # ignore it along most of its route.
+        if walk and key in network and key not in threat:
             memo[key] = NETWORK
             return NETWORK
 

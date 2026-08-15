@@ -14,10 +14,11 @@ keeps each search near ~130 expansions, which fits.
 
 from __future__ import annotations
 
-from fcode import Controller, Direction, EntityType, Position
+from fcode import Controller, Direction, EntityType, GameConstants, Position
 
 import pathfindingHelpers as ph
 import raid
+import store
 from ecoBot import runEcoBot
 from movement import walkTo
 from patience import BLOCKED_WAIT_TURNS, clearHold, holdTask
@@ -27,8 +28,6 @@ from pathing import manhattan
 _CHUNK = 8
 # How far from an unreachable waypoint to look for a usable one.
 _WAYPOINT_SLACK = 3
-# Documented only in can_spawn's docstring, not exposed as a constant.
-UNIT_CAP = 50
 
 
 def runRaidBot(bot, ct: Controller) -> None:
@@ -72,14 +71,14 @@ def buildSentinel(bot, ct: Controller, site: Position, facing: Direction) -> boo
     t = ph.readTile(ct, bot.hivemind, site)
     if t.etype == EntityType.SENTINEL and not t.enemy:
         clearHold(bot)
-        ct.write_store(raid.SLOT_RAID_TARGET, 0)
+        store.put(ct, store.RAID_TARGET, 0)
         return True
 
     if ct.get_global_resources() < ct.get_sentinel_cost():
         return True  # broke, not blocked — same reason waitTi would give,
                       # inlined so it doesn't reset the counter below
 
-    if ct.get_unit_count() >= UNIT_CAP:
+    if ct.get_unit_count() >= GameConstants.MAX_TEAM_UNITS:
         return True  # not a site problem — searching or clearing won't help
 
     choice = raid.fallbackEmplacement(bot, ct, site)
@@ -95,7 +94,7 @@ def buildSentinel(bot, ct: Controller, site: Position, facing: Direction) -> boo
         # it's blocked (e.g. an enemy structure it can't see) — accepted,
         # bounded churn rather than an unresolvable stall, and rarer now that
         # the common cause (our own sentinel) is caught above.
-        ct.write_store(raid.SLOT_RAID_TARGET, 0)
+        store.put(ct, store.RAID_TARGET, 0)
         clearHold(bot)
     return True
 
@@ -104,7 +103,7 @@ def _finishBuild(ct: Controller, site: Position, facing: Direction) -> None:
     ct.build_sentinel(site, facing)
     # Clear the slot so the core picks the next emplacement. Store writes are
     # buffered, so the core sees this next round, not this one.
-    ct.write_store(raid.SLOT_RAID_TARGET, 0)
+    store.put(ct, store.RAID_TARGET, 0)
 
 
 def approach(bot, ct: Controller, site: Position) -> bool:
@@ -117,7 +116,7 @@ def approach(bot, ct: Controller, site: Position) -> bool:
     def beside(p: Position) -> bool:
         return ph.beltFacing(p, site) is not None
 
-    walkTo(bot, ct, beside, site)
+    walkTo(bot, ct, beside, site, ("raidSite", site.x, site.y))
     return True
 
 
@@ -130,7 +129,7 @@ def advance(bot, ct: Controller, site: Position) -> None:
     def atWaypoint(p: Position) -> bool:
         return p.x == wp.x and p.y == wp.y
 
-    walkTo(bot, ct, atWaypoint, wp)
+    walkTo(bot, ct, atWaypoint, wp, ("waypoint", wp.x, wp.y))
 
 
 def _towardTarget(pos: Position, target: Position, budget: int) -> Position:

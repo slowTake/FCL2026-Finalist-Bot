@@ -1,8 +1,7 @@
 """count — dispatch only. Every decision lives in a role file.
 
-Store slots: 0 harvester count (ecoBot). 1-3 free. 4-15 owned by HiveMind
-(4 builder registry, 5-12 delta ledger, 13 metronome, 14 map id, 15 packed cores)
-— never write those from here.
+Store slots are owned and documented by store.py — that is the only place the
+layout lives, and the only writer for the slots that are ours.
 """
 
 from __future__ import annotations
@@ -25,14 +24,13 @@ from fcode import Controller, EntityType, Position  # noqa: E402
 
 import guns  # noqa: E402
 import raid  # noqa: E402
+import store  # noqa: E402
 from ecoBot import runEcoBot  # noqa: E402
 from hivemind import CoreState, HiveMind, unpack_cores  # noqa: E402
 from raidBot import runRaidBot  # noqa: E402
 from respawn import runCoreSpawn  # noqa: E402
 from sentinelBot import runSentinelBot  # noqa: E402
 from telemetry import ENABLED as CPU_TELEMETRY, CpuMeter  # noqa: E402
-
-SLOT_PACKED_CORES = 15
 
 
 class Player:
@@ -44,7 +42,6 @@ class Player:
         self.inRelay = False
         self.relayPath: list[Position] | None = None
         self.relayAnchor: Position | None = None
-        self.relayCtx = None
         self.relayFrom: Position | None = None
         self.relayAvoid: set[tuple[int, int]] = set()
         # tile -> times this relay has re-laid it, so a destroy/rebuild war with
@@ -53,6 +50,9 @@ class Player:
 
         # Walk state (movement.py)
         self.walkPath: list[Position] | None = None
+        # What walkPath was planned toward. The cache is only reused while this
+        # matches, so a retarget replans instead of finishing the old journey.
+        self.walkGoal = None
         self.walkAvoid: set[tuple[int, int]] = set()
 
         # Economy state (ecoBot.py)
@@ -62,6 +62,17 @@ class Player:
         # Patience (patience.py)
         self.holdReason: str | None = None
         self.holdTurns = 0
+
+        # Pathing caches (pathfindingHelpers.costContext). Declared here rather
+        # than conjured by the first costContext call, so this block stays the
+        # whole truth about a unit's state. It matters which units *don't* get
+        # them filled: costContext only runs while walking or relaying, so on
+        # the core these stay empty all match — a fact that read as a bug when
+        # raid.py trusted _ctxThreat to be populated.
+        self._ctxCache: dict | None = None
+        self._ctxRound: int = -1
+        self._ctxNetwork: set[tuple[int, int]] = set()
+        self._ctxThreat: set[tuple[int, int]] = set()
 
         # Instrumentation (telemetry.py) — None unless COUNT_CPU=1.
         self._cpu = CpuMeter() if CPU_TELEMETRY else None
@@ -100,7 +111,7 @@ class Player:
 
     def _runBuilder(self, ct: Controller) -> None:
         if self.corePos is None:
-            ally, _enemy = unpack_cores(ct.read_store(SLOT_PACKED_CORES))
+            ally, _enemy = unpack_cores(ct.read_store(store.PACKED_CORES))
             if ally[0] != CoreState.UNKNOWN:
                 self.corePos = Position(ally[1], ally[2])
         if self.corePos is None:
@@ -109,7 +120,7 @@ class Player:
         # The raider is named by index rather than by anything it can see, so the
         # role survives losing sight of the core and never changes mid-match.
         index = self.hivemind.my_index
-        if index and index == ct.read_store(raid.SLOT_RAIDER_INDEX):
+        if index and index == store.readRole(ct, store.ROLE_RAIDER):
             runRaidBot(self, ct)
             return
 

@@ -7,7 +7,7 @@ a fact about the game, it belongs in `observations.md` instead.
 
 ## Baron is the anti-pattern, not the reference
 
-~7,500 lines over 12 modules; `logistics.py` + `logistics_helpers.py` alone are
+10,417 lines over 16 modules; `logistics.py` + `logistics_helpers.py` alone are
 2,889. Bandaid fixes layered on bandaid fixes until it became unmaintainable —
 five chained functions (`beltFacingOk` → `_relayReachesCore` → `_walkMergeChain`
 → `_mergeCandidateNeighbor` → `_tryExtendThroughMerge`) to answer one question:
@@ -26,7 +26,9 @@ Raise it first; treat them as frozen.
 
 `components/hivemind_v2_architecture.md` claims slots 0–4 are core and 5–13 are
 deltas. The code actually uses 4 (builder count), 5–12 (ledger), 13 (metronome),
-14 (map id), 15 (packed cores) — so 0–3 are free. Trust the code.
+14 (map id), 15 (packed cores). Trust the code — and for our own slots 0–3,
+trust `store.py`, which is now the only place that layout is written down. It
+used to be stated in three files, in three different and equally wrong ways.
 
 ## `except Exception: return` hides your bug
 
@@ -48,3 +50,41 @@ Baron grew `relayStuck`, `relayTurretWaitTurns`, `reactFrozen`, `motionless`,
 `stuck` and `ORE_DEADLOCK_TURNS` as near-duplicate retry counters because each
 call site invented its own. All "should I give up yet?" questions go through
 `patience.holdTask`.
+
+## Arrived-and-idle is a state nothing was watching
+
+`seekOre` guarded the *travelling* builder — a target it cannot reach gets
+skipped after `walkTo` runs out of patience. Nothing guarded the builder that
+had already arrived. `buildHarvester` ran before `seizeHarvester`, so beside an
+enemy harvester `can_build_harvester` failed, `oreTarget` was cleared,
+`seizeHarvester` then read `None` and bailed, and `seekOre` re-picked the same
+tile and returned "already in position" without acting. Cold action cooldown,
+identical next turn, forever. Order the checks so the specific case is asked
+before the general one — and when adding a give-up path, ask which *state* it
+protects, not just which function.
+
+## Engine constants live in `GameConstants`
+
+Import them. A comment here once asserted the 50-unit cap was "documented only
+in can_spawn's docstring, not exposed as a constant" — it is
+`GameConstants.MAX_TEAM_UNITS`, alongside `GUNNER_ROTATE_COST`,
+`GUNNER_AMMO_COST` and `SENTINEL_AMMO_COST`, all star-exported from `fcode`.
+Hardcoding one is bad; writing a comment claiming it does not exist is worse,
+because the next reader stops looking.
+
+## Memoising for the match needs the input to be *known*, not just immutable
+
+`_isChokepoint` cached wall-derived answers for the whole game on the grounds
+that walls never change. True of the world, false of our view of it: an
+unexplored neighbour reads back `wall=False`, so a tile first evaluated while
+its surroundings were dark was written off as open permanently — and A* expands
+frontier tiles precisely when their neighbours are unknown. Cache a
+knowledge-derived answer only once the knowledge is complete.
+
+## The gauntlet is not deterministic
+
+Two runs of identical code give different titanium, turn counts, and even
+different win conditions — and so does `starter` against itself, so it is the
+engine, not us, and not the TLE. Per-map numbers are noise. What a run actually
+tells you is pass/fail, crashes, and TLE. Do not attribute an economy change to
+a diff on the strength of one run.

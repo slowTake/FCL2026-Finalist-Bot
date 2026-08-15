@@ -74,7 +74,6 @@ def hijackRelay(bot, ct: Controller, harvester: Position) -> bool:
     """
     bot.relayFrom = harvester
     bot.inRelay = True
-    bot.walkPath = None
     # Tap it, don't demolish it — keep the route off the harvester's own tile.
     bot.relayAvoid.add((harvester.x, harvester.y))
     clearHold(bot)
@@ -128,9 +127,15 @@ def planRelay(bot, ct: Controller) -> bool:
     )
 
     if path is None:
+        # Same avoid set the seeds were filtered against and A* just used —
+        # otherwise the fallback routes straight back through tiles this relay
+        # has already conceded.
         path = bfsFromSeeds(
             seeds,
-            isPassable=lambda p: ph.beltPassable(ct, bot.hivemind, p),
+            isPassable=lambda p: (
+                ph.beltPassable(ct, bot.hivemind, p)
+                and (p.x, p.y) not in ctx.avoid
+            ),
             isGoal=isGoal,
             maxIters=_RELAY_MAX_ITERS,
         )
@@ -148,13 +153,17 @@ def planRelay(bot, ct: Controller) -> bool:
 
     bot.relayPath = path
     bot.relayAnchor = anchor
-    bot.relayCtx = ctx
     return True
 
 
 def _replanAvoiding(bot, ct: Controller, tile: Position) -> bool:
-    ctx = bot.relayCtx
-    if ctx is not None and ctx.isNetworkMember(tile):
+    # Ask for the context rather than holding one from planRelay: costContext
+    # rebuilds every round, so a stored one goes stale within a turn or two
+    # while the network keeps growing under it — and this guard consulting an
+    # old network is exactly how the anchor gets blacklisted. Round-cached, so
+    # asking again costs nothing.
+    ctx = ph.costContext(bot, ct, "relay")
+    if ctx.isNetworkMember(tile):
         return False  # never blacklist the thing we are trying to reach
     bot.relayAvoid.add((tile.x, tile.y))
     bot.relayPath = None
@@ -291,7 +300,7 @@ def _walkBeside(bot, ct: Controller, tile: Position) -> bool:
     def beside(p: Position) -> bool:
         return abs(p.x - tile.x) + abs(p.y - tile.y) == 1
 
-    if walkTo(bot, ct, beside, tile):
+    if walkTo(bot, ct, beside, tile, ("relay", tile.x, tile.y)):
         return True
     return holdTask(bot, "approach", BLOCKED_WAIT_TURNS)
 
@@ -328,11 +337,9 @@ def clearRelayObstruction(bot, ct: Controller, target: Position, *, hostile: boo
 def relayDone(bot, ct: Controller) -> bool:
     bot.relayPath = None
     bot.relayAnchor = None
-    bot.relayCtx = None
     bot.relayFrom = None
     bot.relayAvoid.clear()
     bot.relayRebuilds.clear()
     bot.inRelay = False
-    bot.walkPath = None
     clearHold(bot)
     return False

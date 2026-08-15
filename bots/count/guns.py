@@ -1,5 +1,5 @@
-"""Turret targeting: priority tables, the shared candidate gatherer, generic
-gunner placement, and the live fire/rotate loops for gunners and sentinels.
+"""Turret targeting: priority tables, the shared candidate gatherer, the live
+fire/rotate loops for gunners and sentinels, and the core-side ammo top-up.
 
 Both turret types trust the engine's own can_fire/can_fire_from as ground
 truth for line of sight — a gunner's line is blocked by obstacles, a
@@ -7,18 +7,23 @@ sentinel's line ignores them, and the engine already knows which rule applies
 to the unit asking. Re-deriving that with a manual ray-walk only creates a
 second place for the two answers to disagree (see mistakes.md).
 
-raid.py's sentinel-vs-enemy-core placement is a separate, already-tuned path
-for its one target and is untouched by this module. placeGunner here is the
-generic form — any target, not just the enemy core — but nothing calls it yet
-(see docs/roadmap.md): deciding when to spend Ti on a gunner and at what
-target is a tactical policy question for a later pass.
+Placement lives in raid.py, not here. A generic gunner-pad search briefly
+existed in this module and was deleted: `can_build_gunner` only answers for a
+tile orthogonally adjacent to the *calling builder*, so a board-wide search
+was structurally incapable of working, and its pad filter had already lost
+the escape-neighbour rule raid.py paid for. Re-derive it against a real
+caller rather than restoring it.
+
+gunnerLoop is correct but currently unreachable: nothing builds a gunner, so
+main.py has no GUNNER dispatch. Wiring is one branch plus a builder.
 """
 
 from __future__ import annotations
 
-from fcode import Controller, Direction, EntityType, Position
+from fcode import Controller, Direction, EntityType, GameConstants, Position
 
 import pathfindingHelpers as ph
+import store
 from pathing import manhattan
 from respawn import MAX_BUILDERS
 
@@ -52,7 +57,7 @@ SENTINEL_PRIORITY: dict[EntityType, int] = {
 
 # rotate()'s own Ti cost — skip the 8-direction scan outright if we can't
 # afford to act on whatever it finds.
-_ROTATE_MIN_TI = 10
+_ROTATE_MIN_TI = GameConstants.GUNNER_ROTATE_COST
 
 
 # --- Targeting ----------------------------------------------------------
@@ -122,6 +127,13 @@ def gunnerLoop(bot, ct: Controller) -> None:
     if ct.get_global_resources() < _ROTATE_MIN_TI:
         return
 
+    # can_fire accounts for ammo; can_fire_from explicitly does not. Without
+    # this the empty-pool case — guaranteed early, since topUpAmmo waits for
+    # the full builder opening — has the gunner paying 10 Ti a turn to keep
+    # turning toward targets it has nothing to shoot at.
+    if ct.get_global_ammo() < GameConstants.GUNNER_AMMO_COST:
+        return
+
     facing = ct.get_direction()
     bestDir = None
     bestKey = None
@@ -154,82 +166,14 @@ def sentinelLoop(bot, ct: Controller) -> None:
         ct.fire(target[0])
 
 
-# --- Placement ----------------------------------------------------------
-
-
-def _reachOffsets(ct: Controller, turret_type: EntityType):
-    """Offsets from a hypothetical turret to every tile it could hit, per
-    facing — read out of the engine rather than hand-derived, and sampled
-    once from mid-map so an edge reference doesn't come back clipped. Same
-    trick as raid.py's sentinel search, generalized to any turret type."""
-    ref = Position(ct.get_map_width() // 2, ct.get_map_height() // 2)
-    out: dict[Direction, list[tuple[int, int]]] = {}
-    for d in _DIRS:
-        try:
-            tiles = ct.get_attackable_tiles_from(ref, d, turret_type)
-        except Exception:
-            continue
-        out[d] = [(t.x - ref.x, t.y - ref.y) for t in tiles]
-    return out
-
-
-def chooseGunnerEmplacement(ct: Controller, hm, target: Position):
-    """Nearest buildable, unobstructed pad from which a gunner would hit
-    `target`, with the facing it has to be built pointing. None if there is
-    no such pad. Pure search — no movement, no building, same split as
-    raid.py's chooseEmplacement/publishTarget."""
-    reach = _reachOffsets(ct, EntityType.GUNNER)
-    best = None
-    bestDist = None
-    for d, offsets in reach.items():
-        for ox, oy in offsets:
-            pad = Position(target.x - ox, target.y - oy)
-            if not ph.inBounds(ct, pad) or ph.isImpassable(ct, hm, pad):
-                continue
-            t = ph.readTile(ct, hm, pad)
-            if t.etype is not None or t.ore:
-                continue
-            if not ct.can_build_gunner(pad, d):
-                continue
-            # Unlike a sentinel's line, a gunner's can be blocked by whatever
-            # sits between pad and target — being in range by construction
-            # isn't proof of a clear line, so this check (skippable in
-            # raid.py's sentinel search) is the one thing that isn't.
-            if not ct.can_fire_from(pad, d, EntityType.GUNNER, target):
-                continue
-            dist = manhattan(pad, target)
-            if bestDist is None or dist < bestDist:
-                best, bestDist = (pad, d), dist
-    return best
-
-
-def placeGunner(bot, ct: Controller, target: Position) -> bool:
-    """Build a gunner able to hit `target`, if we're already standing next to
-    the chosen pad this turn. Deciding when to call this, and getting a
-    raider next to the right pad, is the caller's job — nothing does yet.
-    Mirrors raid.py/roles/raidBot.py's split between choosing (search) and
-    executing (walk + build), collapsed into one call since there's no
-    store-published target for this to read yet."""
-    if ct.get_action_cooldown() != 0:
-        return False
-    choice = chooseGunnerEmplacement(ct, bot.hivemind, target)
-    if choice is None:
-        return False
-    pad, facing = choice
-    if ph.beltFacing(ct.get_position(), pad) is None:
-        return False  # not adjacent to the chosen pad this turn
-    ct.build_gunner(pad, facing)
-    return True
-
-
 # --- Ammo ---------------------------------------------------------------
 
 # One reload banked per built turret, plus a floor for whatever isn't built
 # yet. The per-turret numbers are the engine's own GUNNER_AMMO_COST/
 # SENTINEL_AMMO_COST — enough for one shot each, not a stockpile.
 AMMO_FLOOR = 10
-AMMO_PER_GUNNER = 4
-AMMO_PER_SENTINEL = 10
+AMMO_PER_GUNNER = GameConstants.GUNNER_AMMO_COST
+AMMO_PER_SENTINEL = GameConstants.SENTINEL_AMMO_COST
 
 
 def _allyTurretCounts(ct: Controller, hm) -> tuple[int, int]:
@@ -284,7 +228,7 @@ def topUpAmmo(bot, ct: Controller) -> None:
     opens, runCoreSpawn is already a no-op every turn (see respawn.py), so
     there is nothing competing with this for Ti.
     """
-    if ct.read_store(4) < MAX_BUILDERS:
+    if ct.read_store(store.BUILDERS) < MAX_BUILDERS:
         return
 
     gunners, sentinels = _allyTurretCounts(ct, bot.hivemind)

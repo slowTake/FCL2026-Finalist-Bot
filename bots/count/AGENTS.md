@@ -14,18 +14,21 @@ known gaps) and [docs/roadmap.md](docs/roadmap.md) (what's next and why).
 
 | File | Purpose |
 |---|---|
-| `main.py` | `Player` dispatch — routes CORE to spawn+raid-target publishing, BUILDER_BOT to `raidBot` or `ecoBot` by index. |
+| `main.py` | `Player` dispatch and the per-unit state manifest — routes CORE to spawn, raid-target publishing and ammo top-up; BUILDER_BOT to `raidBot` or `ecoBot` by role; SENTINEL to `sentinelBot`. |
 | `movement.py` | Generic `walkTo`/`stepToward`/`exploreStep` — plan-once, cache, follow. |
 | `pathfindingHelpers.py` | Shared toolbox: tile reads, impassability, core geometry, network connectivity (`buildNetwork`), cost function + heuristic for A*. |
 | `pathing.py` | Generic weighted 4-connected A*/BFS (`astarFromSeeds`, `bfsFromSeeds`) — no game knowledge by design. |
 | `patience.py` | Single shared "give up yet?" counter (`holdTask`/`clearHold`/`waitTi`). |
-| `raid.py` | Core-side sentinel emplacement selection (geometry-driven, packs target into store slot 1). |
+| `raid.py` | Core-side sentinel emplacement selection (geometry-driven), plus the raider's local fallback when the published site goes stale. |
+| `guns.py` | Turret target priorities, the shared hostile gatherer, gunner/sentinel fire+rotate loops, and core-side ammo conversion. |
+| `store.py` | The communication-store layout: which slot holds what, and the only writer for the ones we own. |
 | `relays.py` | Belt-laying/relay logic: plan, lay, contested-tile concession, obstruction clearing. |
 | `respawn.py` | Core spawn logic: builder cap, spawn-tile selection, raider designation. |
 | `telemetry.py` | Optional (`COUNT_CPU=1`) per-unit CPU sampling to stderr. |
 | `hivemind/` | Symlinks into `components/` — shared with baron/bandit, see below. |
 | `roles/ecoBot.py` | Builder economy role: harvester build/seize, ore seeking/picking. |
 | `roles/raidBot.py` | Raider role: walk to the published emplacement, build the sentinel. |
+| `roles/sentinelBot.py` | Sentinel role: fire only — facing is permanent, so there is no rotate step. |
 | `docs/mistakes.md` | Agent errors and traps. |
 | `docs/observations.md` | Game facts, design rationale, known gaps. |
 | `docs/roadmap.md` | Prioritized next steps and why. |
@@ -40,6 +43,11 @@ known gaps) and [docs/roadmap.md](docs/roadmap.md) (what's next and why).
 - **`hivemind/*.py` are symlinks into `components/`, shared with baron and
   bandit.** Editing one silently changes the others. Raise it first; treat
   them as frozen.
+- **Store slots go through `store.py`.** It owns the layout and refuses writes
+  to the slots HiveMind owns. No bare `read_store(4)` integer literals.
+- **A docstring may state its own contract; it may never state who calls it.**
+  Claims about call sites rot silently — three functions here once asserted
+  callers that did not exist, and one of them was load-bearing in a review.
 - **Keep files single-purpose and small.** If a file is answering more than
   one kind of question, it's a sign to split it.
 - **Trust the code over docstrings/docs when they disagree** — instrument and

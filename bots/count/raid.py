@@ -23,10 +23,7 @@ from __future__ import annotations
 from fcode import Controller, Direction, EntityType, Position
 
 import pathfindingHelpers as ph
-
-# Slots 1-3 are the only ones not owned by HiveMind (see main.py).
-SLOT_RAID_TARGET = 1
-SLOT_RAIDER_INDEX = 2
+import store
 
 # Packing order matters only in that pack and unpack agree.
 _DIRS = (
@@ -37,7 +34,15 @@ _DIR_INDEX = {d: i for i, d in enumerate(_DIRS)}
 
 
 def packTarget(pos: Position, facing: Direction) -> int:
-    """valid(1) | dir(3) | x(7) | y(7). Map is 30x30 at most, so 7 bits is ample."""
+    """valid(1) | dir(3) | x(7) | y(7). Map is 30x30 at most, so 7 bits is ample.
+
+    Returns 0 (nothing published) for a coordinate that will not fit. Shifting a
+    negative or oversized x silently overflows into the direction field and
+    decodes back as a plausible tile somewhere else entirely — a wrong answer is
+    far worse here than no answer.
+    """
+    if not (0 <= pos.x < 128 and 0 <= pos.y < 128):
+        return 0
     return (1 << 17) | (_DIR_INDEX[facing] << 14) | (pos.x << 7) | pos.y
 
 
@@ -45,6 +50,8 @@ def unpackTarget(val: int):
     """Returns (Position, Direction) or None if nothing has been published."""
     if not (val >> 17) & 1:
         return None
+    if val >> 18:
+        return None  # bits we never write — not ours, do not guess at it
     return Position((val >> 7) & 0x7F, val & 0x7F), _DIRS[(val >> 14) & 0x7]
 
 
@@ -134,11 +141,17 @@ def _candidates(ct: Controller, hm, enemyCore: Position):
 
 def chooseEmplacement(bot, ct: Controller, enemyCore: Position):
     """Farthest buildable tile from which a sentinel still reaches the enemy core,
-    with the facing it has to be built pointing. None if there is no such tile."""
-    threat = getattr(bot, "_ctxThreat", None) or set()
+    with the facing it has to be built pointing. None if there is no such tile.
+
+    Deliberately does no threat vetting. It used to filter against the cost
+    layer's threat set, which could never work twice over: that set is only
+    populated as a side effect of path planning, which the core never does, and
+    it is built from the *core's own* vision while every candidate here sits
+    beside the enemy core. Two disjoint places on the map. Vetting an
+    emplacement for enemy fire is the raider's job — it is the only unit that
+    can see the ground it is about to build on (see docs/observations.md).
+    """
     for e, d, _aim, _standoff in _candidates(ct, bot.hivemind, enemyCore):
-        if (e.x, e.y) in threat:
-            continue  # a sentinel parked inside a known firing line is scenery
         return e, d
     return None
 
@@ -151,10 +164,10 @@ def fallbackEmplacement(bot, ct: Controller, primarySite: Position):
     builder's. Standoff is not preferred here — closer is fine, getting a
     sentinel down beats waiting on the core to notice and republish.
 
-    No threat filtering: chooseEmplacement's own threat check is a no-op on
-    the core today (see docs/mistakes.md), so filtering this path against it
-    would reject the safer local option while the unvetted remote one still
-    gets built.
+    No threat filtering, for the same reason chooseEmplacement does none: the
+    only threat set available is the cost layer's, which is empty on any unit
+    that has not been pathing and is built from the wrong end of the map
+    anyway. When the raider learns to read fire for itself, both paths get it.
     """
     enemyCore = enemyCorePos(bot, ct)
     if enemyCore is None:
@@ -171,11 +184,15 @@ def fallbackEmplacement(bot, ct: Controller, primarySite: Position):
             continue
         if not _buildable(ct, hm, pad, enemySet):
             continue
-        # Build legality doesn't depend on facing, so one probe covers all eight.
-        if not ct.can_build_sentinel(pad, _DIRS[0]):
-            continue
         for d, hits in reach.items():
-            if any((aim.x - pad.x, aim.y - pad.y) in hits for aim in footprint):
+            if not any((aim.x - pad.x, aim.y - pad.y) in hits for aim in footprint):
+                continue
+            # Probe the facing we would actually build, not a stand-in. Build
+            # legality is probably facing-independent, but "probably" is the
+            # word that earns a silently dead raider: an unchecked facing that
+            # the engine refuses raises inside build_sentinel, Player.run
+            # swallows it, and the unit burns the rest of the match.
+            if ct.can_build_sentinel(pad, d):
                 return pad, d
     return None
 
@@ -186,7 +203,7 @@ def publishTarget(bot, ct: Controller) -> None:
     Recomputed only while nothing is published. Re-picking every turn would hand
     the raider a different destination each round and it would never arrive.
     """
-    if ct.read_store(SLOT_RAID_TARGET):
+    if ct.read_store(store.RAID_TARGET):
         return
     enemyCore = enemyCorePos(bot, ct)
     if enemyCore is None:
@@ -195,8 +212,8 @@ def publishTarget(bot, ct: Controller) -> None:
     if choice is None:
         return
     pos, facing = choice
-    ct.write_store(SLOT_RAID_TARGET, packTarget(pos, facing))
+    store.put(ct, store.RAID_TARGET, packTarget(pos, facing))
 
 
 def readTarget(ct: Controller):
-    return unpackTarget(ct.read_store(SLOT_RAID_TARGET))
+    return unpackTarget(ct.read_store(store.RAID_TARGET))

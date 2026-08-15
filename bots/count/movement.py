@@ -11,8 +11,18 @@ from pathing import astar, bfs
 _WALK_MAX_ITERS = 450
 
 
-def walkTo(bot, ct: Controller, isGoal, heuristicGoal: Position | None) -> bool:
-    """Advance one step toward any tile matching isGoal. True if the turn was used."""
+def walkTo(bot, ct: Controller, isGoal, heuristicGoal: Position | None, goal) -> bool:
+    """Advance one step toward any tile matching isGoal. True if the turn was used.
+
+    `goal` is an opaque hashable naming *what we are walking to*; the cached
+    path is reused only while it is unchanged. Without it the cache is keyed by
+    nothing — a caller that retargets while standing on the old route keeps
+    following it to the old destination — and correctness has to be propped up
+    by every caller remembering to null bot.walkPath, which is a callee's
+    private state being invalidated from three other modules. It also makes
+    this helper safe for a goal that *moves*, which is what a defence role
+    chasing a raider needs and what the economy callers never exercised.
+    """
     if ct.get_move_cooldown() != 0:
         return True
 
@@ -21,12 +31,13 @@ def walkTo(bot, ct: Controller, isGoal, heuristicGoal: Position | None) -> bool:
         clearHold(bot)
         return False
 
-    path = bot.walkPath
+    path = bot.walkPath if bot.walkGoal == goal else None
     idx = _indexOf(path, pos) if path else None
     if idx is None or idx >= len(path) - 1:
         path = _plan(bot, ct, isGoal, heuristicGoal)
         if path is None:
             return holdTask(bot, "noRoute", BLOCKED_WAIT_TURNS)
+        bot.walkGoal = goal
         idx = 0
 
     return stepToward(bot, ct, path[idx + 1])
@@ -41,6 +52,7 @@ def stepToward(bot, ct: Controller, tile: Position) -> bool:
         return True
 
     bot.walkPath = None
+    bot.walkGoal = None
 
     # An *ally* builder will move on its own, so waiting one out is cheaper than
     # walking around it. An enemy one will not: it is pursuing its own goal, and
@@ -62,7 +74,7 @@ def exploreStep(bot, ct: Controller) -> bool:
     def unknown(p: Position) -> bool:
         return (p.x, p.y) not in hm.local_map
 
-    return walkTo(bot, ct, unknown, None)
+    return walkTo(bot, ct, unknown, None, "explore")
 
 
 def _plan(bot, ct: Controller, isGoal, heuristicGoal: Position | None):
@@ -81,9 +93,17 @@ def _plan(bot, ct: Controller, isGoal, heuristicGoal: Position | None):
         maxIters=_WALK_MAX_ITERS,
     )
     if path is None:
+        # Honour the same blacklist A* just used. A* only fails on cramped or
+        # contested ground, which is exactly where walkAvoid has entries — so
+        # without this the fallback confidently returns a route through the
+        # tiles the engine refused a moment ago, stepToward refuses again, and
+        # the two searches disagree in the one case they both run.
         path = bfs(
             pos,
-            isPassable=lambda p: not ph.isImpassable(ct, bot.hivemind, p),
+            isPassable=lambda p: (
+                not ph.isImpassable(ct, bot.hivemind, p)
+                and (p.x, p.y) not in bot.walkAvoid
+            ),
             isGoal=isGoal,
             maxIters=_WALK_MAX_ITERS,
         )

@@ -207,3 +207,12 @@ point-mirrored map is still badly skewed.
 - HiveMind slot 4 never decrements on builder death, so the metronome cycles
   through dead indices and wastes broadcast turns.
 - No splitters are built. Ore lines are pure conveyor chains.
+
+## Emplacement threat vetting belongs to the raider
+
+`chooseEmplacement` runs on the core and briefly filtered candidates against
+the cost layer's threat set. That could never work, twice over: the set is only
+populated as a side effect of `costContext`, which the core never calls, and it
+is built from `get_nearby_buildings()` — the *core's own* vision — while every
+candidate sits beside the enemy core. Two disjoint places on the map. The unit
+that can answer "is this tile under fire" is the raider standing next to it.

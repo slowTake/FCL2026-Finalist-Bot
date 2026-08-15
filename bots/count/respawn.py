@@ -1,6 +1,6 @@
 """Core spawning: how many builders, and which tile each one is born on.
 
-The cap is a *lifetime* cap. `ct.read_store(4)` counts builders ever spawned and has
+The cap is a *lifetime* cap. `ct.read_store(store.BUILDERS)` counts builders ever spawned and has
 to stay monotonic — it is the `my_index` allocator — so a builder lost at turn 200 is
 never replaced. Despite the module name nothing here respawns anything yet; when that
 changes the hook is a living count off the ledger (every builder broadcasts its own
@@ -18,6 +18,7 @@ from fcode import Controller, Position
 
 import pathfindingHelpers as ph
 import raid
+import store
 from ecoBot import chooseOre
 
 MAX_BUILDERS = 5
@@ -76,7 +77,7 @@ def _predictTarget(bot, ct: Controller) -> Position | None:
     builder, which runs `pickOre` from scratch on its first turn exactly as it always
     has. Being wrong costs one suboptimal tile, never a commitment.
 
-    `read_store(4) + 1` is the index the newborn will be allocated, so this reproduces
+    `read_store(store.BUILDERS) + 1` is the index the newborn will be allocated, so this reproduces
     the `ORE_SPREAD` fan-out that builder is itself going to apply — which is what
     makes consecutive builders leave by different faces of the core.
 
@@ -95,7 +96,7 @@ def _predictTarget(bot, ct: Controller) -> Position | None:
     def distTo(ore: Position) -> int:
         return ph.manhattanToCore(ore, core)
 
-    return chooseOre(bot, ct, distTo, ct.read_store(4) + 1)
+    return chooseOre(bot, ct, distTo, ct.read_store(store.BUILDERS) + 1)
 
 
 def _towards(target: Position):
@@ -127,7 +128,7 @@ def runCoreSpawn(bot, ct: Controller) -> None:
     if bot.corePos is None or ct.get_action_cooldown() != 0:
         return
 
-    built = ct.read_store(4)
+    built = ct.read_store(store.BUILDERS)
     if built >= MAX_BUILDERS:
         return
 
@@ -154,5 +155,5 @@ def runCoreSpawn(bot, ct: Controller) -> None:
                 # spawn_builder just wrote slot 4 = built + 1, and that value is
                 # the my_index this newborn will read for itself, so it is the
                 # name to publish it under.
-                ct.write_store(raid.SLOT_RAIDER_INDEX, built + 1)
+                store.assignRole(ct, store.ROLE_RAIDER, built + 1)
             return
