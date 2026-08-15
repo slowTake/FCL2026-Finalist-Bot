@@ -143,6 +143,43 @@ def chooseEmplacement(bot, ct: Controller, enemyCore: Position):
     return None
 
 
+def fallbackEmplacement(bot, ct: Controller, primarySite: Position):
+    """A nearby alternative when `primarySite` turns out to be unbuildable by
+    the time the raider gets there — typically the core's ledger hasn't yet
+    learned the site was already claimed. Only the raider's own orthogonal
+    neighbours: a fresh board search is the core's job, not a stuck
+    builder's. Standoff is not preferred here — closer is fine, getting a
+    sentinel down beats waiting on the core to notice and republish.
+
+    No threat filtering: chooseEmplacement's own threat check is a no-op on
+    the core today (see docs/mistakes.md), so filtering this path against it
+    would reject the safer local option while the unvetted remote one still
+    gets built.
+    """
+    enemyCore = enemyCorePos(bot, ct)
+    if enemyCore is None:
+        return None
+
+    hm = bot.hivemind
+    footprint = ph.coreFootprint(enemyCore)
+    enemySet = {(p.x, p.y) for p in footprint}
+    reach = {d: set(offsets) for d, offsets in _reachOffsets(ct).items()}
+    pos = ct.get_position()
+
+    for pad in ph.orthogonalTiles(pos):
+        if (pad.x, pad.y) == (primarySite.x, primarySite.y):
+            continue
+        if not _buildable(ct, hm, pad, enemySet):
+            continue
+        # Build legality doesn't depend on facing, so one probe covers all eight.
+        if not ct.can_build_sentinel(pad, _DIRS[0]):
+            continue
+        for d, hits in reach.items():
+            if any((aim.x - pad.x, aim.y - pad.y) in hits for aim in footprint):
+                return pad, d
+    return None
+
+
 def publishTarget(bot, ct: Controller) -> None:
     """Core-side: pick an emplacement once and leave it in the store.
 

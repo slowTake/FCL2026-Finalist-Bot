@@ -20,6 +20,7 @@ from fcode import Controller, Direction, EntityType, Position
 
 import pathfindingHelpers as ph
 from pathing import manhattan
+from respawn import MAX_BUILDERS
 
 _DIRS = tuple(d for d in Direction if d != Direction.CENTRE)
 
@@ -219,3 +220,79 @@ def placeGunner(bot, ct: Controller, target: Position) -> bool:
         return False  # not adjacent to the chosen pad this turn
     ct.build_gunner(pad, facing)
     return True
+
+
+# --- Ammo ---------------------------------------------------------------
+
+# One reload banked per built turret, plus a floor for whatever isn't built
+# yet. The per-turret numbers are the engine's own GUNNER_AMMO_COST/
+# SENTINEL_AMMO_COST — enough for one shot each, not a stockpile.
+AMMO_FLOOR = 10
+AMMO_PER_GUNNER = 4
+AMMO_PER_SENTINEL = 10
+
+
+def _allyTurretCounts(ct: Controller, hm) -> tuple[int, int]:
+    """Team-wide gunner/sentinel counts: what's currently visible, plus
+    whatever the ledger remembers that isn't already counted — so a turret
+    raised out of the core's own sight (the raid sentinel, built by the enemy
+    core) still counts. Mirrors buildNetwork's live-then-ledger merge in
+    pathfindingHelpers.py.
+
+    Over-counts a turret after it dies — the ledger has no GC for buildings,
+    same as the lifetime builder count in respawn.py — which is the safe
+    direction for a floor: a little unspent Ti banked as ammo costs nothing.
+    """
+    myTeam = ct.get_team()
+    seen: set[tuple[int, int]] = set()
+    gunners = sentinels = 0
+
+    for bid in ct.get_nearby_buildings():
+        if ct.get_team(bid) != myTeam:
+            continue
+        etype = ct.get_entity_type(bid)
+        if etype not in (EntityType.GUNNER, EntityType.SENTINEL):
+            continue
+        pos = ct.get_position(bid)
+        seen.add((pos.x, pos.y))
+        if etype == EntityType.GUNNER:
+            gunners += 1
+        else:
+            sentinels += 1
+
+    for (x, y), entry in hm.local_map.items():
+        if (x, y) in seen:
+            continue
+        ent = entry.get("entity")
+        if not ent or ent.get("team") != myTeam:
+            continue
+        etype = ent.get("type")
+        if etype == EntityType.GUNNER:
+            gunners += 1
+        elif etype == EntityType.SENTINEL:
+            sentinels += 1
+
+    return gunners, sentinels
+
+
+def topUpAmmo(bot, ct: Controller) -> None:
+    """Keep the shared ammo pool at AMMO_FLOOR plus one reload per built
+    turret. Core-only, per the engine — call once from _runCore.
+
+    Held until the opening batch of builders is out (respawn.MAX_BUILDERS) so
+    the gate tracks real state rather than a round number. By the time it
+    opens, runCoreSpawn is already a no-op every turn (see respawn.py), so
+    there is nothing competing with this for Ti.
+    """
+    if ct.read_store(4) < MAX_BUILDERS:
+        return
+
+    gunners, sentinels = _allyTurretCounts(ct, bot.hivemind)
+    target = AMMO_FLOOR + AMMO_PER_GUNNER * gunners + AMMO_PER_SENTINEL * sentinels
+    need = target - ct.get_global_ammo()
+    if need <= 0:
+        return
+
+    amount = min(need, ct.get_global_resources())
+    if amount > 0 and ct.can_convert_ammo(amount):
+        ct.convert_ammo(amount)
