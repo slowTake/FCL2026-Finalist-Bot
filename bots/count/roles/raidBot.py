@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from fcode import Controller, Direction, EntityType, GameConstants, Position
 
+import heal
 import pathfindingHelpers as ph
 import raid
 import store
@@ -31,6 +32,12 @@ _WAYPOINT_SLACK = 3
 
 
 def runRaidBot(bot, ct: Controller) -> None:
+    # Checked first, every turn: a turret we placed is a standing 30-Ti
+    # investment with nothing else defending it out here, so responding to it
+    # taking fire outranks continuing to travel or starting the next build.
+    if heal.healNearby(bot, ct, heal.TURRET_HEAL_TYPES):
+        return
+
     target = raid.readTarget(ct)
     if target is None:
         # No emplacement published — either the map was never fingerprinted, or

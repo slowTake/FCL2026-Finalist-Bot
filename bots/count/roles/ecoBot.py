@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fcode import Controller, EntityType, Position
 
+import heal
 import pathfindingHelpers as ph
 from movement import exploreStep, walkTo
 from patience import clearHold, waitTi
@@ -53,6 +54,13 @@ def runEcoBot(bot, ct: Controller) -> None:
         return
 
     if buildHarvester(bot, ct):
+        return
+
+    # Only once nothing above claimed the turn — relaying, seizing, and
+    # building are all commitments in progress and stay protected. Heal
+    # ahead of seekOre, not after: seekOre almost always returns True (walk
+    # or hold), so a check placed later would rarely get a turn to run.
+    if heal.healNearby(bot, ct, heal.ECO_HEAL_TYPES):
         return
 
     if seekOre(bot, ct):

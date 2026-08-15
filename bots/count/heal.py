@@ -1,0 +1,94 @@
+"""Healing an ally: walk to it, heal it. Same shape as raidBot's build step —
+adjacency check, act if there, otherwise let movement.walkTo close the gap.
+
+heal() is a builder-bot ability (ct.heal(pos)), not a turret one: 1 Ti, one
+action cooldown, heals every friendly entity on an orthogonally adjacent
+tile by 4 HP. can_heal already requires a damaged friendly entity on the
+target tile, so this doesn't re-derive that from HP queries at range — it
+trusts the engine's own legality check once adjacent, same as raidBot trusts
+can_build_sentinel rather than reasoning about facing itself.
+"""
+
+from __future__ import annotations
+
+from fcode import Controller, EntityType, Position
+
+import pathfindingHelpers as ph
+from movement import walkTo
+from pathing import manhattan
+
+# Economic infrastructure ecoBot watches for — its own investment, not combat
+# assets. `ph.BELT_TYPES` is (CONVEYOR, SPLITTER).
+ECO_HEAL_TYPES = (EntityType.CORE, EntityType.HARVESTER) + ph.BELT_TYPES
+
+# What the raider watches for — the turrets it exists to place, not itself.
+TURRET_HEAL_TYPES = (EntityType.GUNNER, EntityType.SENTINEL)
+
+
+def nearestDamagedAlly(ct: Controller, types) -> Position | None:
+    """Nearest ally of one of `types`, within vision, that's actually damaged.
+    None if nothing qualifies.
+
+    "Nearby" is exactly "in vision" — the same engine-defined radius
+    guns.visibleHostiles already trusts for the equivalent enemy-side scan,
+    rather than an invented threshold.
+    """
+    myTeam = ct.get_team()
+    here = ct.get_position()
+    best = None
+    bestDist = None
+
+    for eid in ct.get_nearby_entities():
+        if ct.get_team(eid) != myTeam:
+            continue
+        if ct.get_entity_type(eid) not in types:
+            continue
+        if ct.get_hp(eid) >= ct.get_max_hp(eid):
+            continue
+        pos = ct.get_position(eid)
+        if pos.x == here.x and pos.y == here.y:
+            continue  # can't heal our own tile — can_heal requires adjacency
+        d = manhattan(here, pos)
+        if bestDist is None or d < bestDist:
+            best, bestDist = pos, d
+
+    return best
+
+
+def healNearby(bot, ct: Controller, types) -> bool:
+    """Heal the nearest damaged ally of one of `types` within vision, if any.
+    True if the turn was used — either actually healing, or walking toward
+    one that isn't adjacent yet."""
+    target = nearestDamagedAlly(ct, types)
+    if target is None:
+        return False
+    return healAlly(bot, ct, target)
+
+
+def healAlly(bot, ct: Controller, target: Position) -> bool:
+    """Walk to `target` and heal it. True if the turn was used.
+
+    `target` is a tile carrying a damaged ally — deciding *who* to heal is the
+    caller's job, same as raid.py decides the sentinel site and raidBot only
+    walks there and builds. If the target has healed up by the time we
+    arrive (someone else got there first, or it was never actually damaged),
+    can_heal simply refuses and this is a harmless no-op rather than a wasted
+    walk — the caller should stop calling this with a healthy target, not
+    this function detecting it.
+
+    Pathfinding is movement.walkTo's: if the tile we'd need to stand on to
+    reach `target` is occupied or otherwise blocked, walkTo's own A*/BFS
+    fallback and avoid-set find another approach, same machinery every other
+    role already relies on for this.
+    """
+    pos = ct.get_position()
+
+    if ph.beltFacing(pos, target) is not None:
+        if ct.get_action_cooldown() == 0 and ct.can_heal(target):
+            ct.heal(target)
+        return True
+
+    def beside(p: Position) -> bool:
+        return ph.beltFacing(p, target) is not None
+
+    return walkTo(bot, ct, beside, target, ("heal", target.x, target.y))
