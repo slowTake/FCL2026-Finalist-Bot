@@ -56,22 +56,65 @@ def unpackTarget(val: int):
     return Position((val >> 7) & 0x7F, val & 0x7F), _DIRS[(val >> 14) & 0x7]
 
 
-def enemyCorePos(bot, ct: Controller) -> Position | None:
-    """The enemy core, for any unit — None only on a map we never fingerprinted.
+def _seenEnemyCore(bot, ct: Controller) -> Position | None:
+    """The enemy core's anchor if any unit has seen its full 2x2, from the shared
+    ledger.
 
-    `hm.enemy_core_pos` is set at turn 0 *on the core's hivemind only*, so a
-    builder (raider) reading its own instance always sees None. The core also
-    publishes both cores into the packed-cores slot the same turn, and that slot
-    is readable by everyone — so fall through to it. Without this fall-through
-    `fallbackEmplacement` and any raider-side emplacement math are dead: they ask
-    this and get None every time.
+    The ledger records the core at each of its footprint tiles, so a *partial*
+    sighting has no well-defined anchor — `min(x), min(y)` taken independently over
+    two or three tiles lands on a corner that isn't the top-left one. So require a
+    complete 2x2 block: `(x, y)` is the anchor only when all four of its footprint
+    tiles read as an enemy core. A builder sees the whole core at once from within
+    vision r²=36, and it broadcasts at top priority, so this resolves within a turn
+    of the first raider reaching it; until then we fall through to the fingerprint.
     """
+    me = ct.get_team()
+    core_tiles = {
+        (x, y)
+        for (x, y), cell in bot.hivemind.local_map.items()
+        if (ent := cell.get("entity")) is not None
+        and ent.get("type") == EntityType.CORE
+        and ent.get("team") != me
+    }
+    for (x, y) in core_tiles:
+        if {(x, y), (x + 1, y), (x, y + 1), (x + 1, y + 1)} <= core_tiles:
+            return Position(x, y)
+    return None
+
+
+def enemyCorePos(bot, ct: Controller) -> Position | None:
+    """The enemy core, for any unit. Three tiers, most-authoritative first:
+
+    1. **What we've actually seen.** Ground truth — overrides a wrong or absent
+       fingerprint, so a brand-new or mis-fingerprinted map self-corrects the
+       moment a raider lays eyes on the core. Cached (`bot._seenEnemyCore`): it
+       never moves, and the ledger propagates it to everyone.
+    2. **The fingerprint** (`hm.enemy_core_pos` on the core, else the packed-cores
+       slot every unit reads). Correct on every map in features.KNOWN_MAPS.
+    3. **Mirror fallback.** Maps are point-symmetric, so on an unfingerprinted map
+       the enemy core is the reflection of ours (always in packed-cores):
+       `((w-2)-x, (h-2)-y)`. Gives raiders/launcher a target from turn 0 even on
+       a map we've never seen. Corrected by tier 1 once the real core is sighted.
+    """
+    seen = getattr(bot, "_seenEnemyCore", None)
+    if seen is None:
+        seen = _seenEnemyCore(bot, ct)
+        if seen is not None:
+            bot._seenEnemyCore = seen
+    if seen is not None:
+        return seen
+
     pos = getattr(bot.hivemind, "enemy_core_pos", None)
     if pos is not None:
         return pos
-    _ally, enemy = unpack_cores(ct.read_store(store.PACKED_CORES))
+
+    ally, enemy = unpack_cores(ct.read_store(store.PACKED_CORES))
     if enemy[0] != CoreState.UNKNOWN:
         return Position(enemy[1], enemy[2])
+
+    if ally[0] != CoreState.UNKNOWN:
+        w, h = ct.get_map_width(), ct.get_map_height()
+        return Position(w - 2 - ally[1], h - 2 - ally[2])
     return None
 
 

@@ -60,6 +60,11 @@ class Player:
         self.oreTarget: Position | None = None
         self.oreSkip: dict[tuple[int, int], int] = {}
 
+        # Enemy core, once this unit (via the shared ledger) has actually seen it
+        # (raid.enemyCorePos). Ground truth that overrides a wrong/absent
+        # fingerprint; cached because the core never moves.
+        self._seenEnemyCore: Position | None = None
+
         # Core-line repair (ecoBot.repairCoreBelts). The enemy barrier this builder
         # committed to clearing and the connected tile to re-lay the belt toward —
         # held across the multi-turn grind so the belt goes back the moment the

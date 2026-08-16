@@ -246,6 +246,27 @@ point-mirrored map is still badly skewed.
   ore/harvesters impassable *globally* (walk too) regressed fjordgate — keep it
   relay-scoped.
 
+- **Enemy core: seen > fingerprint > mirror, and the seen anchor needs a full
+  2x2.** `raid.enemyCorePos` resolves in three tiers so a wrong or absent
+  fingerprint self-corrects: (1) the real core once any unit has seen it (ledger,
+  cached — ground truth, overrides everything); (2) the fingerprint
+  (`features.KNOWN_MAPS`, correct on every map there); (3) a mirror guess for an
+  *unfingerprinted* map — maps are point-symmetric so the enemy core is
+  `((w-2)-x, (h-2)-y)` of ours (always in the packed-cores slot), giving raiders a
+  turn-0 target that tier 1 then corrects. **The trap in tier 1:** the ledger
+  records the core at each of its four footprint tiles, so `min(x), min(y)` taken
+  independently over a *partial* sighting returns a corner that isn't the anchor
+  (off by one) — and caching that corrupts a correct fingerprint. Require a
+  complete 2x2 block (`{(x,y),(x+1,y),(x,y+1),(x+1,y+1)}` all enemy-core) before
+  trusting it; a builder sees the whole core at once from vision r²=36, so it
+  resolves within a turn.
+- **`features.KNOWN_MAPS` holds every encountered 2x2-core map (44), not just the
+  live pool.** No catastrophic fingerprint collisions across them; every pair that
+  shares `(size, core)` also shares its enemy core (the enemy core is a function of
+  size+core on a symmetric map), so a `wall_count` mis-match can only misload
+  walls/ore (self-healing) — never the core. Gauntlet scripts default their pool to
+  `MAP_ID_TO_NAME`, so benchmark the competition set explicitly with `--maps`.
+
 ## Known gaps
 
 - No store-backed ore claim, so two builders can race the same node. Spread is
