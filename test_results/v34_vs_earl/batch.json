@@ -1,0 +1,357 @@
+{
+  "botA": "v34_global_escape",
+  "botB": "bots/earl",
+  "wins": 9,
+  "games": 10,
+  "winRate": 0.9,
+  "wilson": [
+    0.5958436145024278,
+    0.9821242504842788
+  ],
+  "elo": 381.69700377572985,
+  "sideBias": {
+    "A": 6,
+    "B": 4
+  },
+  "byMap": {
+    "crossfire": {
+      "wins": 2,
+      "games": 2,
+      "turns": [
+        1000,
+        1000
+      ],
+      "conditions": {
+        "harvesters": 2
+      },
+      "rate": 1.0,
+      "median_turns": 1000
+    },
+    "duel": {
+      "wins": 1,
+      "games": 2,
+      "turns": [
+        1000,
+        1000
+      ],
+      "conditions": {
+        "harvesters": 1,
+        "titanium_collected": 1
+      },
+      "rate": 0.5,
+      "median_turns": 1000
+    },
+    "sprint": {
+      "wins": 2,
+      "games": 2,
+      "turns": [
+        1000,
+        1000
+      ],
+      "conditions": {
+        "harvesters": 2
+      },
+      "rate": 1.0,
+      "median_turns": 1000
+    },
+    "vase": {
+      "wins": 2,
+      "games": 2,
+      "turns": [
+        1000,
+        1000
+      ],
+      "conditions": {
+        "titanium_stored": 2
+      },
+      "rate": 1.0,
+      "median_turns": 1000
+    },
+    "vault": {
+      "wins": 2,
+      "games": 2,
+      "turns": [
+        1000,
+        1000
+      ],
+      "conditions": {
+        "harvesters": 2
+      },
+      "rate": 1.0,
+      "median_turns": 1000
+    }
+  },
+  "failures": [],
+  "games_detail": [
+    {
+      "bot_a": "v34_global_escape",
+      "bot_b": "bots/earl",
+      "map": "crossfire",
+      "seed": 1,
+      "swapped": false,
+      "winner": "A",
+      "winner_bot": "v34_global_escape",
+      "turns": 1000,
+      "condition": "harvesters",
+      "replay": "test_results/v34_vs_earl/replays/v34_global_escape_vs_earl__crossfire__s1.replay26",
+      "ok": true,
+      "stats": {
+        "a_titanium": 2786,
+        "a_titanium_collected": 0,
+        "b_titanium": 2069,
+        "b_titanium_collected": 0,
+        "a_units": 4,
+        "a_buildings": 3,
+        "b_units": 14,
+        "b_buildings": 1
+      },
+      "resign_message": null,
+      "error": "",
+      "stderr": "",
+      "duration_s": 10.06855320930481
+    },
+    {
+      "bot_a": "bots/earl",
+      "bot_b": "v34_global_escape",
+      "map": "crossfire",
+      "seed": 1,
+      "swapped": true,
+      "winner": "B",
+      "winner_bot": "v34_global_escape",
+      "turns": 1000,
+      "condition": "harvesters",
+      "replay": "test_results/v34_vs_earl/replays/earl_vs_v34_global_escape__crossfire__s1__swapped.replay26",
+      "ok": true,
+      "stats": {
+        "a_titanium": 2069,
+        "a_titanium_collected": 0,
+        "b_titanium": 2786,
+        "b_titanium_collected": 0,
+        "a_units": 14,
+        "a_buildings": 1,
+        "b_units": 4,
+        "b_buildings": 3
+      },
+      "resign_message": null,
+      "error": "",
+      "stderr": "",
+      "duration_s": 10.296213865280151
+    },
+    {
+      "bot_a": "v34_global_escape",
+      "bot_b": "bots/earl",
+      "map": "duel",
+      "seed": 1,
+      "swapped": false,
+      "winner": "A",
+      "winner_bot": "v34_global_escape",
+      "turns": 1000,
+      "condition": "harvesters",
+      "replay": "test_results/v34_vs_earl/replays/v34_global_escape_vs_earl__duel__s1.replay26",
+      "ok": true,
+      "stats": {
+        "a_titanium": 1233,
+        "a_titanium_collected": 0,
+        "b_titanium": 2069,
+        "b_titanium_collected": 0,
+        "a_units": 17,
+        "a_buildings": 23,
+        "b_units": 14,
+        "b_buildings": 1
+      },
+      "resign_message": null,
+      "error": "",
+      "stderr": "",
+      "duration_s": 12.128936529159546
+    },
+    {
+      "bot_a": "bots/earl",
+      "bot_b": "v34_global_escape",
+      "map": "duel",
+      "seed": 1,
+      "swapped": true,
+      "winner": "A",
+      "winner_bot": "bots/earl",
+      "turns": 1000,
+      "condition": "titanium_collected",
+      "replay": "test_results/v34_vs_earl/replays/earl_vs_v34_global_escape__duel__s1__swapped.replay26",
+      "ok": true,
+      "stats": {
+        "a_titanium": 2959,
+        "a_titanium_collected": 890,
+        "b_titanium": 176,
+        "b_titanium_collected": 0,
+        "a_units": 14,
+        "a_buildings": 1,
+        "b_units": 19,
+        "b_buildings": 69
+      },
+      "resign_message": null,
+      "error": "",
+      "stderr": "",
+      "duration_s": 23.76446795463562
+    },
+    {
+      "bot_a": "v34_global_escape",
+      "bot_b": "bots/earl",
+      "map": "sprint",
+      "seed": 1,
+      "swapped": false,
+      "winner": "A",
+      "winner_bot": "v34_global_escape",
+      "turns": 1000,
+      "condition": "harvesters",
+      "replay": "test_results/v34_vs_earl/replays/v34_global_escape_vs_earl__sprint__s1.replay26",
+      "ok": true,
+      "stats": {
+        "a_titanium": 1366,
+        "a_titanium_collected": 0,
+        "b_titanium": 2069,
+        "b_titanium_collected": 0,
+        "a_units": 16,
+        "a_buildings": 18,
+        "b_units": 14,
+        "b_buildings": 1
+      },
+      "resign_message": null,
+      "error": "",
+      "stderr": "",
+      "duration_s": 13.341359853744507
+    },
+    {
+      "bot_a": "bots/earl",
+      "bot_b": "v34_global_escape",
+      "map": "sprint",
+      "seed": 1,
+      "swapped": true,
+      "winner": "B",
+      "winner_bot": "v34_global_escape",
+      "turns": 1000,
+      "condition": "harvesters",
+      "replay": "test_results/v34_vs_earl/replays/earl_vs_v34_global_escape__sprint__s1__swapped.replay26",
+      "ok": true,
+      "stats": {
+        "a_titanium": 2069,
+        "a_titanium_collected": 0,
+        "b_titanium": 219,
+        "b_titanium_collected": 0,
+        "a_units": 14,
+        "a_buildings": 1,
+        "b_units": 19,
+        "b_buildings": 69
+      },
+      "resign_message": null,
+      "error": "",
+      "stderr": "",
+      "duration_s": 21.976495265960693
+    },
+    {
+      "bot_a": "v34_global_escape",
+      "bot_b": "bots/earl",
+      "map": "vase",
+      "seed": 1,
+      "swapped": false,
+      "winner": "A",
+      "winner_bot": "v34_global_escape",
+      "turns": 1000,
+      "condition": "titanium_stored",
+      "replay": "test_results/v34_vs_earl/replays/v34_global_escape_vs_earl__vase__s1.replay26",
+      "ok": true,
+      "stats": {
+        "a_titanium": 2844,
+        "a_titanium_collected": 0,
+        "b_titanium": 2069,
+        "b_titanium_collected": 0,
+        "a_units": 4,
+        "a_buildings": 1,
+        "b_units": 14,
+        "b_buildings": 1
+      },
+      "resign_message": null,
+      "error": "",
+      "stderr": "",
+      "duration_s": 16.045474767684937
+    },
+    {
+      "bot_a": "bots/earl",
+      "bot_b": "v34_global_escape",
+      "map": "vase",
+      "seed": 1,
+      "swapped": true,
+      "winner": "B",
+      "winner_bot": "v34_global_escape",
+      "turns": 1000,
+      "condition": "titanium_stored",
+      "replay": "test_results/v34_vs_earl/replays/earl_vs_v34_global_escape__vase__s1__swapped.replay26",
+      "ok": true,
+      "stats": {
+        "a_titanium": 2069,
+        "a_titanium_collected": 0,
+        "b_titanium": 2844,
+        "b_titanium_collected": 0,
+        "a_units": 14,
+        "a_buildings": 1,
+        "b_units": 4,
+        "b_buildings": 1
+      },
+      "resign_message": null,
+      "error": "",
+      "stderr": "",
+      "duration_s": 22.964334964752197
+    },
+    {
+      "bot_a": "v34_global_escape",
+      "bot_b": "bots/earl",
+      "map": "vault",
+      "seed": 1,
+      "swapped": false,
+      "winner": "A",
+      "winner_bot": "v34_global_escape",
+      "turns": 1000,
+      "condition": "harvesters",
+      "replay": "test_results/v34_vs_earl/replays/v34_global_escape_vs_earl__vault__s1.replay26",
+      "ok": true,
+      "stats": {
+        "a_titanium": 2786,
+        "a_titanium_collected": 0,
+        "b_titanium": 2069,
+        "b_titanium_collected": 0,
+        "a_units": 4,
+        "a_buildings": 3,
+        "b_units": 14,
+        "b_buildings": 1
+      },
+      "resign_message": null,
+      "error": "",
+      "stderr": "",
+      "duration_s": 11.041356801986694
+    },
+    {
+      "bot_a": "bots/earl",
+      "bot_b": "v34_global_escape",
+      "map": "vault",
+      "seed": 1,
+      "swapped": true,
+      "winner": "B",
+      "winner_bot": "v34_global_escape",
+      "turns": 1000,
+      "condition": "harvesters",
+      "replay": "test_results/v34_vs_earl/replays/earl_vs_v34_global_escape__vault__s1__swapped.replay26",
+      "ok": true,
+      "stats": {
+        "a_titanium": 2069,
+        "a_titanium_collected": 0,
+        "b_titanium": 2786,
+        "b_titanium_collected": 0,
+        "a_units": 14,
+        "a_buildings": 1,
+        "b_units": 4,
+        "b_buildings": 3
+      },
+      "resign_message": null,
+      "error": "",
+      "stderr": "",
+      "duration_s": 19.680986166000366
+    }
+  ]
+}

@@ -1,0 +1,268 @@
+{
+  "botA": "bots/knight",
+  "botB": "bots/bandit",
+  "wins": 0,
+  "games": 8,
+  "winRate": 0.0,
+  "wilson": [
+    0.0,
+    0.3244156195108769
+  ],
+  "elo": null,
+  "sideBias": {
+    "A": 4,
+    "B": 4
+  },
+  "byMap": {
+    "midgard": {
+      "wins": 0,
+      "games": 4,
+      "turns": [
+        243,
+        1000,
+        243,
+        1000
+      ],
+      "conditions": {
+        "core_destroyed": 2,
+        "titanium_collected": 2
+      },
+      "rate": 0.0,
+      "median_turns": 1000
+    },
+    "nordkap": {
+      "wins": 0,
+      "games": 4,
+      "turns": [
+        719,
+        276,
+        288,
+        225
+      ],
+      "conditions": {
+        "core_destroyed": 4
+      },
+      "rate": 0.0,
+      "median_turns": 288
+    }
+  },
+  "failures": [],
+  "games_detail": [
+    {
+      "bot_a": "bots/knight",
+      "bot_b": "bots/bandit",
+      "map": "midgard",
+      "seed": 1,
+      "swapped": false,
+      "winner": "B",
+      "winner_bot": "bots/bandit",
+      "turns": 243,
+      "condition": "core_destroyed",
+      "replay": "campaigns/latest/replays/knight_vs_bandit__midgard__s1.replay26",
+      "ok": true,
+      "stats": {
+        "a_titanium": 2076,
+        "a_titanium_collected": 2210,
+        "b_titanium": 2302,
+        "b_titanium_collected": 3790,
+        "a_units": 13,
+        "a_buildings": 17,
+        "b_units": 14,
+        "b_buildings": 72
+      },
+      "resign_message": null,
+      "error": "",
+      "stderr": "RELAY_PLAN harvester=Position(x=6, y=2) belt_path=['Position(x=5, y=2)', 'Position(x=4, y=2)']\nRELAY_PLAN harvester=Position(x=2, y=6) belt_path=['Position(x=2, y=5)', 'Position(x=2, y=4)']\nRELAY_PLAN harvester=Position(x=3, y=9) belt_path=['Position(x=3, y=8)', 'Position(x=3, y=7)', 'Position(x=3, y=6)', 'Position(x=3, y=5)', 'Position(x=3, y=4)']\nRELAY_PLAN harvester=Position(x=2, y=11) belt_path=['Position(x=2, y=10)', 'Position(x=2, y=9)', 'Position(x=2, y=8)', 'Position(x=2, y=7)', 'Position(x=3, y=7)', 'Position(x=3, y=6)', 'Position(x=3, y=5)', 'Position(x=3, y=4)']\nSTUCK builder_id=17 at pos=Position(x=7, y=9) last_step=exploring\nSTUCK builder_id=10 at pos=Position(x=7, y=8) last_step=exploring\nSTUCK builder_id=17 at pos=Position(x=7, y=9) last_step=exploring\nSTUCK builder_id=10 at pos=Position(x=7, y=8) last_step=exploring\nCompleted turn 100\nSTUCK builder_id=17 at pos=Position(x=7, y=9) last_step=exploring\nSTUCK builder_id=10 at pos=Position(x=7, y=8) last_step=exploring\nSTUCK builder_id=17 at pos=Position(x=7, y=9) last_step=exploring\nSTUCK builder_id=10 at pos=Position(x=7, y=8) last_step=exploring\nSTUCK builder_id=17 at pos=Position(x=7, y=9) last_step=exploring\nSTUCK builder_id=162 at pos=Position(x=8, y=9) last_step=exploring\nSTUCK builder_id=10 at pos=Position(x=7, y=8) last_step=exploring\nSTUCK builder_id=17 at pos=Position(x=7, y=9) last_step=exploring\nSTUCK builder_id=10 at pos=Position(x=7, y=8) last_step=exploring\nCompleted turn 200\nSTUCK builder_id=17 at pos=Position(x=7, y=9) last_step=exploring\nSTUCK builder_id=10 at pos=Position(x=7, y=8) last_step=exploring\nSTUCK builder_id=17 at pos=Position(x=7, y=9) last_step=exploring\nSTUCK builder_id=10 at pos=Position(x=7, y=8) last_step=exploring\n",
+      "duration_s": 15.888571977615356
+    },
+    {
+      "bot_a": "bots/bandit",
+      "bot_b": "bots/knight",
+      "map": "midgard",
+      "seed": 1,
+      "swapped": true,
+      "winner": "A",
+      "winner_bot": "bots/bandit",
+      "turns": 1000,
+      "condition": "titanium_collected",
+      "replay": "campaigns/latest/replays/bandit_vs_knight__midgard__s1__swapped.replay26",
+      "ok": true,
+      "stats": {
+        "a_titanium": 14899,
+        "a_titanium_collected": 14420,
+        "b_titanium": 9152,
+        "b_titanium_collected": 7390,
+        "a_units": 14,
+        "a_buildings": 82,
+        "b_units": 13,
+        "b_buildings": 19
+      },
+      "resign_message": null,
+      "error": "",
+      "stderr": "STUCK builder_id=6 at pos=Position(x=22, y=20) last_step=exploring\nSTUCK builder_id=18 at pos=Position(x=22, y=21) last_step=exploring\nSTUCK builder_id=290 at pos=Position(x=22, y=19) last_step=exploring\nSTUCK builder_id=6 at pos=Position(x=22, y=20) last_step=exploring\nSTUCK builder_id=18 at pos=Position(x=22, y=21) last_step=exploring\nSTUCK builder_id=290 at pos=Position(x=22, y=19) last_step=exploring\nSTUCK builder_id=6 at pos=Position(x=22, y=20) last_step=exploring\nCompleted turn 700\nSTUCK builder_id=18 at pos=Position(x=22, y=21) last_step=exploring\nSTUCK builder_id=290 at pos=Position(x=22, y=19) last_step=exploring\nSTUCK builder_id=6 at pos=Position(x=22, y=20) last_step=exploring\nSTUCK builder_id=18 at pos=Position(x=22, y=21) last_step=exploring\nSTUCK builder_id=290 at pos=Position(x=22, y=19) last_step=exploring\nSTUCK builder_id=6 at pos=Position(x=22, y=20) last_step=exploring\nSTUCK builder_id=18 at pos=Position(x=22, y=21) last_step=exploring\nSTUCK builder_id=290 at pos=Position(x=22, y=19) last_step=exploring\nSTUCK builder_id=6 at pos=Position(x=22, y=20) last_step=exploring\nSTUCK builder_id=18 at pos=Position(x=22, y=21) last_step=exploring\nSTUCK builder_id=290 at pos=Position(x=22, y=19) last_step=exploring\nSTUCK builder_id=6 at pos=Position(x=22, y=20) last_step=exploring\nCompleted turn 800\nSTUCK builder_id=18 at pos=Position(x=22, y=21) last_step=exploring\nSTUCK builder_id=290 at pos=Position(x=22, y=19) last_step=exploring\nSTUCK builder_id=6 at pos=Position(x=22, y=20) last_step=exploring\nSTUCK builder_id=18 at pos=Position(x=22, y=21) last_step=exploring\nSTUCK builder_id=290 at pos=Position(x=22, y=19) last_step=exploring\nSTUCK builder_id=6 at pos=Position(x=22, y=20) last_step=exploring\nSTUCK builder_id=18 at pos=Position(x=22, y=21) last_step=exploring\nSTUCK builder_id=290 at pos=Position(x=22, y=19) last_step=exploring\nSTUCK builder_id=6 at pos=Position(x=22, y=20) last_step=exploring\nSTUCK builder_id=18 at pos=Position(x=22, y=21) last_step=exploring\nSTUCK builder_id=290 at pos=Position(x=22, y=19) last_step=exploring\nSTUCK builder_id=6 at pos=Position(x=22, y=20) last_step=exploring\nCompleted turn 900\nSTUCK builder_id=18 at pos=Position(x=22, y=21) last_step=exploring\nSTUCK builder_id=290 at pos=Position(x=22, y=19) last_step=exploring\nSTUCK builder_id=6 at pos=Position(x=22, y=20) last_step=exploring\nSTUCK builder_id=18 at pos=Position(x=22, y=21) last_step=exploring\nSTUCK builder_id=290 at pos=Position(x=22, y=19) last_step=exploring\nSTUCK builder_id=6 at pos=Position(x=22, y=20) last_step=exploring\nSTUCK builder_id=18 at pos=Position(x=22, y=21) last_step=exploring\nSTUCK builder_id=290 at pos=Position(x=22, y=19) last_step=exploring\nSTUCK builder_id=6 at pos=Position(x=22, y=20) last_step=exploring\nSTUCK builder_id=18 at pos=Position(x=22, y=21) last_step=exploring\nSTUCK builder_id=290 at pos=Position(x=22, y=19) last_step=exploring\nSTUCK builder_id=6 at pos=Position(x=22, y=20) last_step=exploring\nCompleted turn 1000\n",
+      "duration_s": 136.2932562828064
+    },
+    {
+      "bot_a": "bots/knight",
+      "bot_b": "bots/bandit",
+      "map": "midgard",
+      "seed": 2,
+      "swapped": false,
+      "winner": "B",
+      "winner_bot": "bots/bandit",
+      "turns": 243,
+      "condition": "core_destroyed",
+      "replay": "campaigns/latest/replays/knight_vs_bandit__midgard__s2.replay26",
+      "ok": true,
+      "stats": {
+        "a_titanium": 2076,
+        "a_titanium_collected": 2210,
+        "b_titanium": 2164,
+        "b_titanium_collected": 3800,
+        "a_units": 13,
+        "a_buildings": 17,
+        "b_units": 15,
+        "b_buildings": 72
+      },
+      "resign_message": null,
+      "error": "",
+      "stderr": "RELAY_PLAN harvester=Position(x=6, y=2) belt_path=['Position(x=5, y=2)', 'Position(x=4, y=2)']\nRELAY_PLAN harvester=Position(x=2, y=6) belt_path=['Position(x=2, y=5)', 'Position(x=2, y=4)']\nRELAY_PLAN harvester=Position(x=3, y=9) belt_path=['Position(x=3, y=8)', 'Position(x=3, y=7)', 'Position(x=3, y=6)', 'Position(x=3, y=5)', 'Position(x=3, y=4)']\nRELAY_PLAN harvester=Position(x=2, y=11) belt_path=['Position(x=2, y=10)', 'Position(x=2, y=9)', 'Position(x=2, y=8)', 'Position(x=2, y=7)', 'Position(x=3, y=7)', 'Position(x=3, y=6)', 'Position(x=3, y=5)', 'Position(x=3, y=4)']\nSTUCK builder_id=17 at pos=Position(x=7, y=9) last_step=exploring\nSTUCK builder_id=10 at pos=Position(x=7, y=8) last_step=exploring\nSTUCK builder_id=17 at pos=Position(x=7, y=9) last_step=exploring\nSTUCK builder_id=10 at pos=Position(x=7, y=8) last_step=exploring\nCompleted turn 100\nSTUCK builder_id=17 at pos=Position(x=7, y=9) last_step=exploring\nSTUCK builder_id=10 at pos=Position(x=7, y=8) last_step=exploring\nSTUCK builder_id=17 at pos=Position(x=7, y=9) last_step=exploring\nSTUCK builder_id=10 at pos=Position(x=7, y=8) last_step=exploring\nSTUCK builder_id=17 at pos=Position(x=7, y=9) last_step=exploring\nSTUCK builder_id=162 at pos=Position(x=8, y=9) last_step=exploring\nSTUCK builder_id=10 at pos=Position(x=7, y=8) last_step=exploring\nSTUCK builder_id=17 at pos=Position(x=7, y=9) last_step=exploring\nSTUCK builder_id=10 at pos=Position(x=7, y=8) last_step=exploring\nCompleted turn 200\nSTUCK builder_id=17 at pos=Position(x=7, y=9) last_step=exploring\nSTUCK builder_id=10 at pos=Position(x=7, y=8) last_step=exploring\nSTUCK builder_id=17 at pos=Position(x=7, y=9) last_step=exploring\nSTUCK builder_id=10 at pos=Position(x=7, y=8) last_step=exploring\n",
+      "duration_s": 16.147331476211548
+    },
+    {
+      "bot_a": "bots/bandit",
+      "bot_b": "bots/knight",
+      "map": "midgard",
+      "seed": 2,
+      "swapped": true,
+      "winner": "A",
+      "winner_bot": "bots/bandit",
+      "turns": 1000,
+      "condition": "titanium_collected",
+      "replay": "campaigns/latest/replays/bandit_vs_knight__midgard__s2__swapped.replay26",
+      "ok": true,
+      "stats": {
+        "a_titanium": 16989,
+        "a_titanium_collected": 16690,
+        "b_titanium": 9152,
+        "b_titanium_collected": 7390,
+        "a_units": 16,
+        "a_buildings": 71,
+        "b_units": 13,
+        "b_buildings": 19
+      },
+      "resign_message": null,
+      "error": "",
+      "stderr": "6 at pos=Position(x=22, y=20) last_step=exploring\nSTUCK builder_id=18 at pos=Position(x=22, y=21) last_step=exploring\nSTUCK builder_id=6 at pos=Position(x=22, y=20) last_step=exploring\nCompleted turn 500\nSTUCK builder_id=18 at pos=Position(x=22, y=21) last_step=exploring\nSTUCK builder_id=6 at pos=Position(x=22, y=20) last_step=exploring\nSTUCK builder_id=18 at pos=Position(x=22, y=21) last_step=exploring\nSTUCK builder_id=6 at pos=Position(x=22, y=20) last_step=exploring\nSTUCK builder_id=18 at pos=Position(x=22, y=21) last_step=exploring\nSTUCK builder_id=6 at pos=Position(x=22, y=20) last_step=exploring\nSTUCK builder_id=18 at pos=Position(x=22, y=21) last_step=exploring\nSTUCK builder_id=6 at pos=Position(x=22, y=20) last_step=exploring\nCompleted turn 600\nSTUCK builder_id=18 at pos=Position(x=22, y=21) last_step=exploring\nSTUCK builder_id=6 at pos=Position(x=22, y=20) last_step=exploring\nSTUCK builder_id=18 at pos=Position(x=22, y=21) last_step=exploring\nSTUCK builder_id=6 at pos=Position(x=22, y=20) last_step=exploring\nSTUCK builder_id=18 at pos=Position(x=22, y=21) last_step=exploring\nSTUCK builder_id=6 at pos=Position(x=22, y=20) last_step=exploring\nSTUCK builder_id=18 at pos=Position(x=22, y=21) last_step=exploring\nSTUCK builder_id=6 at pos=Position(x=22, y=20) last_step=exploring\nCompleted turn 700\nSTUCK builder_id=18 at pos=Position(x=22, y=21) last_step=exploring\nSTUCK builder_id=6 at pos=Position(x=22, y=20) last_step=exploring\nSTUCK builder_id=18 at pos=Position(x=22, y=21) last_step=exploring\nSTUCK builder_id=6 at pos=Position(x=22, y=20) last_step=exploring\nSTUCK builder_id=18 at pos=Position(x=22, y=21) last_step=exploring\nSTUCK builder_id=6 at pos=Position(x=22, y=20) last_step=exploring\nSTUCK builder_id=18 at pos=Position(x=22, y=21) last_step=exploring\nSTUCK builder_id=6 at pos=Position(x=22, y=20) last_step=exploring\nCompleted turn 800\nSTUCK builder_id=18 at pos=Position(x=22, y=21) last_step=exploring\nSTUCK builder_id=6 at pos=Position(x=22, y=20) last_step=exploring\nSTUCK builder_id=18 at pos=Position(x=22, y=21) last_step=exploring\nSTUCK builder_id=6 at pos=Position(x=22, y=20) last_step=exploring\nSTUCK builder_id=18 at pos=Position(x=22, y=21) last_step=exploring\nSTUCK builder_id=6 at pos=Position(x=22, y=20) last_step=exploring\nSTUCK builder_id=18 at pos=Position(x=22, y=21) last_step=exploring\nSTUCK builder_id=6 at pos=Position(x=22, y=20) last_step=exploring\nCompleted turn 900\nSTUCK builder_id=18 at pos=Position(x=22, y=21) last_step=exploring\nSTUCK builder_id=6 at pos=Position(x=22, y=20) last_step=exploring\nSTUCK builder_id=18 at pos=Position(x=22, y=21) last_step=exploring\nSTUCK builder_id=6 at pos=Position(x=22, y=20) last_step=exploring\nSTUCK builder_id=18 at pos=Position(x=22, y=21) last_step=exploring\nSTUCK builder_id=6 at pos=Position(x=22, y=20) last_step=exploring\nSTUCK builder_id=18 at pos=Position(x=22, y=21) last_step=exploring\nSTUCK builder_id=6 at pos=Position(x=22, y=20) last_step=exploring\nCompleted turn 1000\n",
+      "duration_s": 161.2113618850708
+    },
+    {
+      "bot_a": "bots/knight",
+      "bot_b": "bots/bandit",
+      "map": "nordkap",
+      "seed": 1,
+      "swapped": false,
+      "winner": "B",
+      "winner_bot": "bots/bandit",
+      "turns": 719,
+      "condition": "core_destroyed",
+      "replay": "campaigns/latest/replays/knight_vs_bandit__nordkap__s1.replay26",
+      "ok": true,
+      "stats": {
+        "a_titanium": 2115,
+        "a_titanium_collected": 1770,
+        "b_titanium": 16456,
+        "b_titanium_collected": 20110,
+        "a_units": 9,
+        "a_buildings": 11,
+        "b_units": 12,
+        "b_buildings": 97
+      },
+      "resign_message": null,
+      "error": "",
+      "stderr": "RELAY_PLAN harvester=Position(x=9, y=2) belt_path=['Position(x=9, y=3)', 'Position(x=9, y=4)', 'Position(x=9, y=5)']\nRELAY_PLAN harvester=Position(x=14, y=7) belt_path=['Position(x=13, y=7)', 'Position(x=12, y=7)', 'Position(x=11, y=7)']\nCompleted turn 100\nCompleted turn 200\nCompleted turn 300\nCompleted turn 400\nCompleted turn 500\nCompleted turn 600\nCompleted turn 700\n",
+      "duration_s": 75.5000946521759
+    },
+    {
+      "bot_a": "bots/bandit",
+      "bot_b": "bots/knight",
+      "map": "nordkap",
+      "seed": 1,
+      "swapped": true,
+      "winner": "A",
+      "winner_bot": "bots/bandit",
+      "turns": 276,
+      "condition": "core_destroyed",
+      "replay": "campaigns/latest/replays/bandit_vs_knight__nordkap__s1__swapped.replay26",
+      "ok": true,
+      "stats": {
+        "a_titanium": 3270,
+        "a_titanium_collected": 7050,
+        "b_titanium": 1076,
+        "b_titanium_collected": 1520,
+        "a_units": 14,
+        "a_buildings": 115,
+        "b_units": 11,
+        "b_buildings": 18
+      },
+      "resign_message": null,
+      "error": "",
+      "stderr": "RELAY_PLAN harvester=Position(x=10, y=14) belt_path=['Position(x=10, y=15)', 'Position(x=10, y=16)', 'Position(x=10, y=17)']\nRELAY_PLAN harvester=Position(x=9, y=13) belt_path=['Position(x=9, y=14)', 'Position(x=9, y=15)', 'Position(x=9, y=16)', 'Position(x=9, y=17)']\nRELAY_PLAN harvester=Position(x=6, y=14) belt_path=['Position(x=6, y=15)', 'Position(x=7, y=15)', 'Position(x=7, y=16)', 'Position(x=8, y=16)', 'Position(x=9, y=16)', 'Position(x=9, y=17)']\nCompleted turn 100\nSTUCK builder_id=584 at pos=Position(x=10, y=17) last_step=exploring\nCompleted turn 200\n",
+      "duration_s": 21.903034925460815
+    },
+    {
+      "bot_a": "bots/knight",
+      "bot_b": "bots/bandit",
+      "map": "nordkap",
+      "seed": 2,
+      "swapped": false,
+      "winner": "B",
+      "winner_bot": "bots/bandit",
+      "turns": 288,
+      "condition": "core_destroyed",
+      "replay": "campaigns/latest/replays/knight_vs_bandit__nordkap__s2.replay26",
+      "ok": true,
+      "stats": {
+        "a_titanium": 547,
+        "a_titanium_collected": 650,
+        "b_titanium": 4325,
+        "b_titanium_collected": 7350,
+        "a_units": 13,
+        "a_buildings": 11,
+        "b_units": 15,
+        "b_buildings": 118
+      },
+      "resign_message": null,
+      "error": "",
+      "stderr": "RELAY_PLAN harvester=Position(x=9, y=2) belt_path=['Position(x=9, y=3)', 'Position(x=9, y=4)', 'Position(x=9, y=5)']\nRELAY_PLAN harvester=Position(x=14, y=7) belt_path=['Position(x=13, y=7)', 'Position(x=12, y=7)', 'Position(x=11, y=7)']\nCompleted turn 100\nCompleted turn 200\n",
+      "duration_s": 23.189377069473267
+    },
+    {
+      "bot_a": "bots/bandit",
+      "bot_b": "bots/knight",
+      "map": "nordkap",
+      "seed": 2,
+      "swapped": true,
+      "winner": "A",
+      "winner_bot": "bots/bandit",
+      "turns": 225,
+      "condition": "core_destroyed",
+      "replay": "campaigns/latest/replays/bandit_vs_knight__nordkap__s2__swapped.replay26",
+      "ok": true,
+      "stats": {
+        "a_titanium": 2238,
+        "a_titanium_collected": 5160,
+        "b_titanium": 897,
+        "b_titanium_collected": 1190,
+        "a_units": 13,
+        "a_buildings": 106,
+        "b_units": 13,
+        "b_buildings": 19
+      },
+      "resign_message": null,
+      "error": "",
+      "stderr": "RELAY_PLAN harvester=Position(x=10, y=14) belt_path=['Position(x=10, y=15)', 'Position(x=10, y=16)', 'Position(x=10, y=17)']\nRELAY_PLAN harvester=Position(x=9, y=13) belt_path=['Position(x=9, y=14)', 'Position(x=9, y=15)', 'Position(x=9, y=16)', 'Position(x=9, y=17)']\nRELAY_PLAN harvester=Position(x=6, y=14) belt_path=['Position(x=6, y=15)', 'Position(x=7, y=15)', 'Position(x=7, y=16)', 'Position(x=8, y=16)', 'Position(x=9, y=16)', 'Position(x=9, y=17)']\nCompleted turn 100\nCompleted turn 200\n",
+      "duration_s": 14.797427892684937
+    }
+  ]
+}

@@ -1,0 +1,356 @@
+{
+  "botA": "v34_global_escape",
+  "botB": "bots/baron",
+  "wins": 0,
+  "games": 10,
+  "winRate": 0.0,
+  "wilson": [
+    0.0,
+    0.2775401687666166
+  ],
+  "elo": null,
+  "sideBias": {
+    "A": 5,
+    "B": 5
+  },
+  "byMap": {
+    "crossfire": {
+      "wins": 0,
+      "games": 2,
+      "turns": [
+        67,
+        69
+      ],
+      "conditions": {
+        "core_destroyed": 2
+      },
+      "rate": 0.0,
+      "median_turns": 69
+    },
+    "duel": {
+      "wins": 0,
+      "games": 2,
+      "turns": [
+        61,
+        60
+      ],
+      "conditions": {
+        "core_destroyed": 2
+      },
+      "rate": 0.0,
+      "median_turns": 61
+    },
+    "sprint": {
+      "wins": 0,
+      "games": 2,
+      "turns": [
+        66,
+        134
+      ],
+      "conditions": {
+        "core_destroyed": 2
+      },
+      "rate": 0.0,
+      "median_turns": 134
+    },
+    "vase": {
+      "wins": 0,
+      "games": 2,
+      "turns": [
+        117,
+        126
+      ],
+      "conditions": {
+        "core_destroyed": 2
+      },
+      "rate": 0.0,
+      "median_turns": 126
+    },
+    "vault": {
+      "wins": 0,
+      "games": 2,
+      "turns": [
+        136,
+        84
+      ],
+      "conditions": {
+        "core_destroyed": 2
+      },
+      "rate": 0.0,
+      "median_turns": 136
+    }
+  },
+  "failures": [],
+  "games_detail": [
+    {
+      "bot_a": "v34_global_escape",
+      "bot_b": "bots/baron",
+      "map": "crossfire",
+      "seed": 1,
+      "swapped": false,
+      "winner": "B",
+      "winner_bot": "bots/baron",
+      "turns": 67,
+      "condition": "core_destroyed",
+      "replay": "test_results/v34_vs_baron_defend/replays/v34_global_escape_vs_baron__crossfire__s1.replay26",
+      "ok": true,
+      "stats": {
+        "a_titanium": 492,
+        "a_titanium_collected": 0,
+        "b_titanium": 57,
+        "b_titanium_collected": 520,
+        "a_units": 3,
+        "a_buildings": 1,
+        "b_units": 8,
+        "b_buildings": 32
+      },
+      "resign_message": null,
+      "error": "",
+      "stderr": "",
+      "duration_s": 2.611510753631592
+    },
+    {
+      "bot_a": "bots/baron",
+      "bot_b": "v34_global_escape",
+      "map": "crossfire",
+      "seed": 1,
+      "swapped": true,
+      "winner": "A",
+      "winner_bot": "bots/baron",
+      "turns": 69,
+      "condition": "core_destroyed",
+      "replay": "test_results/v34_vs_baron_defend/replays/baron_vs_v34_global_escape__crossfire__s1__swapped.replay26",
+      "ok": true,
+      "stats": {
+        "a_titanium": 90,
+        "a_titanium_collected": 610,
+        "b_titanium": 502,
+        "b_titanium_collected": 0,
+        "a_units": 9,
+        "a_buildings": 32,
+        "b_units": 3,
+        "b_buildings": 1
+      },
+      "resign_message": null,
+      "error": "",
+      "stderr": "",
+      "duration_s": 3.2299160957336426
+    },
+    {
+      "bot_a": "v34_global_escape",
+      "bot_b": "bots/baron",
+      "map": "duel",
+      "seed": 1,
+      "swapped": false,
+      "winner": "B",
+      "winner_bot": "bots/baron",
+      "turns": 61,
+      "condition": "core_destroyed",
+      "replay": "test_results/v34_vs_baron_defend/replays/v34_global_escape_vs_baron__duel__s1.replay26",
+      "ok": true,
+      "stats": {
+        "a_titanium": 482,
+        "a_titanium_collected": 0,
+        "b_titanium": 112,
+        "b_titanium_collected": 450,
+        "a_units": 3,
+        "a_buildings": 2,
+        "b_units": 8,
+        "b_buildings": 17
+      },
+      "resign_message": null,
+      "error": "",
+      "stderr": "",
+      "duration_s": 2.437957763671875
+    },
+    {
+      "bot_a": "bots/baron",
+      "bot_b": "v34_global_escape",
+      "map": "duel",
+      "seed": 1,
+      "swapped": true,
+      "winner": "A",
+      "winner_bot": "bots/baron",
+      "turns": 60,
+      "condition": "core_destroyed",
+      "replay": "test_results/v34_vs_baron_defend/replays/baron_vs_v34_global_escape__duel__s1__swapped.replay26",
+      "ok": true,
+      "stats": {
+        "a_titanium": 66,
+        "a_titanium_collected": 350,
+        "b_titanium": 484,
+        "b_titanium_collected": 0,
+        "a_units": 8,
+        "a_buildings": 14,
+        "b_units": 3,
+        "b_buildings": 0
+      },
+      "resign_message": null,
+      "error": "",
+      "stderr": "",
+      "duration_s": 2.501106023788452
+    },
+    {
+      "bot_a": "v34_global_escape",
+      "bot_b": "bots/baron",
+      "map": "sprint",
+      "seed": 1,
+      "swapped": false,
+      "winner": "B",
+      "winner_bot": "bots/baron",
+      "turns": 66,
+      "condition": "core_destroyed",
+      "replay": "test_results/v34_vs_baron_defend/replays/v34_global_escape_vs_baron__sprint__s1.replay26",
+      "ok": true,
+      "stats": {
+        "a_titanium": 552,
+        "a_titanium_collected": 0,
+        "b_titanium": 53,
+        "b_titanium_collected": 590,
+        "a_units": 3,
+        "a_buildings": 0,
+        "b_units": 9,
+        "b_buildings": 27
+      },
+      "resign_message": null,
+      "error": "",
+      "stderr": "",
+      "duration_s": 3.433643341064453
+    },
+    {
+      "bot_a": "bots/baron",
+      "bot_b": "v34_global_escape",
+      "map": "sprint",
+      "seed": 1,
+      "swapped": true,
+      "winner": "A",
+      "winner_bot": "bots/baron",
+      "turns": 134,
+      "condition": "core_destroyed",
+      "replay": "test_results/v34_vs_baron_defend/replays/baron_vs_v34_global_escape__sprint__s1__swapped.replay26",
+      "ok": true,
+      "stats": {
+        "a_titanium": 337,
+        "a_titanium_collected": 1290,
+        "b_titanium": 68,
+        "b_titanium_collected": 0,
+        "a_units": 9,
+        "a_buildings": 29,
+        "b_units": 3,
+        "b_buildings": 0
+      },
+      "resign_message": null,
+      "error": "",
+      "stderr": "",
+      "duration_s": 5.4115846157073975
+    },
+    {
+      "bot_a": "v34_global_escape",
+      "bot_b": "bots/baron",
+      "map": "vase",
+      "seed": 1,
+      "swapped": false,
+      "winner": "B",
+      "winner_bot": "bots/baron",
+      "turns": 117,
+      "condition": "core_destroyed",
+      "replay": "test_results/v34_vs_baron_defend/replays/v34_global_escape_vs_baron__vase__s1.replay26",
+      "ok": true,
+      "stats": {
+        "a_titanium": 384,
+        "a_titanium_collected": 0,
+        "b_titanium": 34,
+        "b_titanium_collected": 260,
+        "a_units": 3,
+        "a_buildings": 1,
+        "b_units": 8,
+        "b_buildings": 9
+      },
+      "resign_message": null,
+      "error": "",
+      "stderr": "",
+      "duration_s": 3.662067174911499
+    },
+    {
+      "bot_a": "bots/baron",
+      "bot_b": "v34_global_escape",
+      "map": "vase",
+      "seed": 1,
+      "swapped": true,
+      "winner": "A",
+      "winner_bot": "bots/baron",
+      "turns": 126,
+      "condition": "core_destroyed",
+      "replay": "test_results/v34_vs_baron_defend/replays/baron_vs_v34_global_escape__vase__s1__swapped.replay26",
+      "ok": true,
+      "stats": {
+        "a_titanium": 27,
+        "a_titanium_collected": 280,
+        "b_titanium": 120,
+        "b_titanium_collected": 0,
+        "a_units": 8,
+        "a_buildings": 7,
+        "b_units": 3,
+        "b_buildings": 0
+      },
+      "resign_message": null,
+      "error": "",
+      "stderr": "",
+      "duration_s": 4.1052024364471436
+    },
+    {
+      "bot_a": "v34_global_escape",
+      "bot_b": "bots/baron",
+      "map": "vault",
+      "seed": 1,
+      "swapped": false,
+      "winner": "B",
+      "winner_bot": "bots/baron",
+      "turns": 136,
+      "condition": "core_destroyed",
+      "replay": "test_results/v34_vs_baron_defend/replays/v34_global_escape_vs_baron__vault__s1.replay26",
+      "ok": true,
+      "stats": {
+        "a_titanium": 627,
+        "a_titanium_collected": 0,
+        "b_titanium": 56,
+        "b_titanium_collected": 630,
+        "a_units": 3,
+        "a_buildings": 2,
+        "b_units": 12,
+        "b_buildings": 9
+      },
+      "resign_message": null,
+      "error": "",
+      "stderr": "",
+      "duration_s": 7.310783624649048
+    },
+    {
+      "bot_a": "bots/baron",
+      "bot_b": "v34_global_escape",
+      "map": "vault",
+      "seed": 1,
+      "swapped": true,
+      "winner": "A",
+      "winner_bot": "bots/baron",
+      "turns": 84,
+      "condition": "core_destroyed",
+      "replay": "test_results/v34_vs_baron_defend/replays/baron_vs_v34_global_escape__vault__s1__swapped.replay26",
+      "ok": true,
+      "stats": {
+        "a_titanium": 49,
+        "a_titanium_collected": 370,
+        "b_titanium": 573,
+        "b_titanium_collected": 0,
+        "a_units": 11,
+        "a_buildings": 9,
+        "b_units": 3,
+        "b_buildings": 0
+      },
+      "resign_message": null,
+      "error": "",
+      "stderr": "",
+      "duration_s": 5.594446659088135
+    }
+  ]
+}

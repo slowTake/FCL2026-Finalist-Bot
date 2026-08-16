@@ -1,0 +1,357 @@
+{
+  "botA": "bots/baron",
+  "botB": "bots/earl",
+  "wins": 10,
+  "games": 10,
+  "winRate": 1.0,
+  "wilson": [
+    0.7224598312333834,
+    1.0
+  ],
+  "elo": null,
+  "sideBias": {
+    "A": 5,
+    "B": 5
+  },
+  "byMap": {
+    "crossfire": {
+      "wins": 2,
+      "games": 2,
+      "turns": [
+        168,
+        1000
+      ],
+      "conditions": {
+        "core_destroyed": 1,
+        "titanium_collected": 1
+      },
+      "rate": 1.0,
+      "median_turns": 1000
+    },
+    "duel": {
+      "wins": 2,
+      "games": 2,
+      "turns": [
+        735,
+        178
+      ],
+      "conditions": {
+        "core_destroyed": 2
+      },
+      "rate": 1.0,
+      "median_turns": 735
+    },
+    "sprint": {
+      "wins": 2,
+      "games": 2,
+      "turns": [
+        167,
+        155
+      ],
+      "conditions": {
+        "core_destroyed": 2
+      },
+      "rate": 1.0,
+      "median_turns": 167
+    },
+    "vase": {
+      "wins": 2,
+      "games": 2,
+      "turns": [
+        1000,
+        1000
+      ],
+      "conditions": {
+        "titanium_collected": 2
+      },
+      "rate": 1.0,
+      "median_turns": 1000
+    },
+    "vault": {
+      "wins": 2,
+      "games": 2,
+      "turns": [
+        483,
+        435
+      ],
+      "conditions": {
+        "core_destroyed": 2
+      },
+      "rate": 1.0,
+      "median_turns": 483
+    }
+  },
+  "failures": [],
+  "games_detail": [
+    {
+      "bot_a": "bots/baron",
+      "bot_b": "bots/earl",
+      "map": "crossfire",
+      "seed": 1,
+      "swapped": false,
+      "winner": "A",
+      "winner_bot": "bots/baron",
+      "turns": 168,
+      "condition": "core_destroyed",
+      "replay": "test_results/optuna_test/replays/baron_vs_earl__crossfire__s1.replay26",
+      "ok": true,
+      "stats": {
+        "a_titanium": 121,
+        "a_titanium_collected": 1640,
+        "b_titanium": 10,
+        "b_titanium_collected": 0,
+        "a_units": 9,
+        "a_buildings": 44,
+        "b_units": 5,
+        "b_buildings": 0
+      },
+      "resign_message": null,
+      "error": "",
+      "stderr": "",
+      "duration_s": 5.144964694976807
+    },
+    {
+      "bot_a": "bots/earl",
+      "bot_b": "bots/baron",
+      "map": "crossfire",
+      "seed": 1,
+      "swapped": true,
+      "winner": "B",
+      "winner_bot": "bots/baron",
+      "turns": 1000,
+      "condition": "titanium_collected",
+      "replay": "test_results/optuna_test/replays/earl_vs_baron__crossfire__s1__swapped.replay26",
+      "ok": true,
+      "stats": {
+        "a_titanium": 10,
+        "a_titanium_collected": 0,
+        "b_titanium": 42,
+        "b_titanium_collected": 14230,
+        "a_units": 3,
+        "a_buildings": 1,
+        "b_units": 15,
+        "b_buildings": 57
+      },
+      "resign_message": null,
+      "error": "",
+      "stderr": "",
+      "duration_s": 35.760295391082764
+    },
+    {
+      "bot_a": "bots/baron",
+      "bot_b": "bots/earl",
+      "map": "duel",
+      "seed": 1,
+      "swapped": false,
+      "winner": "A",
+      "winner_bot": "bots/baron",
+      "turns": 735,
+      "condition": "core_destroyed",
+      "replay": "test_results/optuna_test/replays/baron_vs_earl__duel__s1.replay26",
+      "ok": true,
+      "stats": {
+        "a_titanium": 87,
+        "a_titanium_collected": 5460,
+        "b_titanium": 4,
+        "b_titanium_collected": 0,
+        "a_units": 15,
+        "a_buildings": 17,
+        "b_units": 6,
+        "b_buildings": 0
+      },
+      "resign_message": null,
+      "error": "",
+      "stderr": "",
+      "duration_s": 26.557820796966553
+    },
+    {
+      "bot_a": "bots/earl",
+      "bot_b": "bots/baron",
+      "map": "duel",
+      "seed": 1,
+      "swapped": true,
+      "winner": "B",
+      "winner_bot": "bots/baron",
+      "turns": 178,
+      "condition": "core_destroyed",
+      "replay": "test_results/optuna_test/replays/earl_vs_baron__duel__s1__swapped.replay26",
+      "ok": true,
+      "stats": {
+        "a_titanium": 20,
+        "a_titanium_collected": 0,
+        "b_titanium": 88,
+        "b_titanium_collected": 1860,
+        "a_units": 3,
+        "a_buildings": 0,
+        "b_units": 12,
+        "b_buildings": 27
+      },
+      "resign_message": null,
+      "error": "",
+      "stderr": "",
+      "duration_s": 5.517982244491577
+    },
+    {
+      "bot_a": "bots/baron",
+      "bot_b": "bots/earl",
+      "map": "sprint",
+      "seed": 1,
+      "swapped": false,
+      "winner": "A",
+      "winner_bot": "bots/baron",
+      "turns": 167,
+      "condition": "core_destroyed",
+      "replay": "test_results/optuna_test/replays/baron_vs_earl__sprint__s1.replay26",
+      "ok": true,
+      "stats": {
+        "a_titanium": 82,
+        "a_titanium_collected": 1750,
+        "b_titanium": 31,
+        "b_titanium_collected": 0,
+        "a_units": 11,
+        "a_buildings": 28,
+        "b_units": 1,
+        "b_buildings": 0
+      },
+      "resign_message": null,
+      "error": "",
+      "stderr": "",
+      "duration_s": 4.462221622467041
+    },
+    {
+      "bot_a": "bots/earl",
+      "bot_b": "bots/baron",
+      "map": "sprint",
+      "seed": 1,
+      "swapped": true,
+      "winner": "B",
+      "winner_bot": "bots/baron",
+      "turns": 155,
+      "condition": "core_destroyed",
+      "replay": "test_results/optuna_test/replays/earl_vs_baron__sprint__s1__swapped.replay26",
+      "ok": true,
+      "stats": {
+        "a_titanium": 17,
+        "a_titanium_collected": 0,
+        "b_titanium": 142,
+        "b_titanium_collected": 1710,
+        "a_units": 0,
+        "a_buildings": 0,
+        "b_units": 13,
+        "b_buildings": 27
+      },
+      "resign_message": null,
+      "error": "",
+      "stderr": "",
+      "duration_s": 4.605811834335327
+    },
+    {
+      "bot_a": "bots/baron",
+      "bot_b": "bots/earl",
+      "map": "vase",
+      "seed": 1,
+      "swapped": false,
+      "winner": "A",
+      "winner_bot": "bots/baron",
+      "turns": 1000,
+      "condition": "titanium_collected",
+      "replay": "test_results/optuna_test/replays/baron_vs_earl__vase__s1.replay26",
+      "ok": true,
+      "stats": {
+        "a_titanium": 42,
+        "a_titanium_collected": 2470,
+        "b_titanium": 10,
+        "b_titanium_collected": 0,
+        "a_units": 9,
+        "a_buildings": 8,
+        "b_units": 4,
+        "b_buildings": 1
+      },
+      "resign_message": null,
+      "error": "",
+      "stderr": "",
+      "duration_s": 22.478317499160767
+    },
+    {
+      "bot_a": "bots/earl",
+      "bot_b": "bots/baron",
+      "map": "vase",
+      "seed": 1,
+      "swapped": true,
+      "winner": "B",
+      "winner_bot": "bots/baron",
+      "turns": 1000,
+      "condition": "titanium_collected",
+      "replay": "test_results/optuna_test/replays/earl_vs_baron__vase__s1__swapped.replay26",
+      "ok": true,
+      "stats": {
+        "a_titanium": 57,
+        "a_titanium_collected": 0,
+        "b_titanium": 2074,
+        "b_titanium_collected": 4550,
+        "a_units": 14,
+        "a_buildings": 1,
+        "b_units": 12,
+        "b_buildings": 33
+      },
+      "resign_message": null,
+      "error": "",
+      "stderr": "",
+      "duration_s": 39.22121214866638
+    },
+    {
+      "bot_a": "bots/baron",
+      "bot_b": "bots/earl",
+      "map": "vault",
+      "seed": 1,
+      "swapped": false,
+      "winner": "A",
+      "winner_bot": "bots/baron",
+      "turns": 483,
+      "condition": "core_destroyed",
+      "replay": "test_results/optuna_test/replays/baron_vs_earl__vault__s1.replay26",
+      "ok": true,
+      "stats": {
+        "a_titanium": 1889,
+        "a_titanium_collected": 3470,
+        "b_titanium": 807,
+        "b_titanium_collected": 0,
+        "a_units": 18,
+        "a_buildings": 42,
+        "b_units": 10,
+        "b_buildings": 0
+      },
+      "resign_message": null,
+      "error": "",
+      "stderr": "",
+      "duration_s": 30.6454336643219
+    },
+    {
+      "bot_a": "bots/earl",
+      "bot_b": "bots/baron",
+      "map": "vault",
+      "seed": 1,
+      "swapped": true,
+      "winner": "B",
+      "winner_bot": "bots/baron",
+      "turns": 435,
+      "condition": "core_destroyed",
+      "replay": "test_results/optuna_test/replays/earl_vs_baron__vault__s1__swapped.replay26",
+      "ok": true,
+      "stats": {
+        "a_titanium": 0,
+        "a_titanium_collected": 0,
+        "b_titanium": 1453,
+        "b_titanium_collected": 4580,
+        "a_units": 7,
+        "a_buildings": 0,
+        "b_units": 14,
+        "b_buildings": 52
+      },
+      "resign_message": null,
+      "error": "",
+      "stderr": "",
+      "duration_s": 33.867695569992065
+    }
+  ]
+}

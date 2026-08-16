@@ -1,0 +1,1 @@
+"""knight tests package."""

@@ -1,0 +1,130 @@
+[
+  {
+    "rank": 1,
+    "team_id": "57175ea4-e87f-44ed-a8c4-d5ee8ba31ecd",
+    "team_name": "sporks",
+    "rating": 2098.8327316242303,
+    "matches_played": 498,
+    "active_version": 9
+  },
+  {
+    "rank": 2,
+    "team_id": "3a7b78b8-5d79-4e55-94a3-7732fcaa4105",
+    "team_name": "Pantheon",
+    "rating": 2021.469067662502,
+    "matches_played": 1013,
+    "active_version": 56
+  },
+  {
+    "rank": 3,
+    "team_id": "017419af-711a-40b0-9826-60cc754bd840",
+    "team_name": "Lorem Ipsum",
+    "rating": 1973.6814585386085,
+    "matches_played": 635,
+    "active_version": 25
+  },
+  {
+    "rank": 4,
+    "team_id": "fb0e7053-f8f3-4cc8-a38f-1856a518c7d2",
+    "team_name": "not adgato",
+    "rating": 1934.0154193120948,
+    "matches_played": 597,
+    "active_version": 19
+  },
+  {
+    "rank": 5,
+    "team_id": "78b72cb2-22c7-4e17-bd36-2883eb5a8524",
+    "team_name": "The Flotte Experience",
+    "rating": 1907.0610332302783,
+    "matches_played": 1039,
+    "active_version": 42
+  },
+  {
+    "rank": 6,
+    "team_id": "20064efa-c6a9-4c46-acb7-3f7ea9f9b1c9",
+    "team_name": "Pivot",
+    "rating": 1892.4708571556616,
+    "matches_played": 757,
+    "active_version": 75
+  },
+  {
+    "rank": 7,
+    "team_id": "8cf9b751-00d3-484a-b0ed-e3073ae1d46f",
+    "team_name": "Jython",
+    "rating": 1880.3798758917974,
+    "matches_played": 832,
+    "active_version": 101
+  },
+  {
+    "rank": 8,
+    "team_id": "9810ba35-66a9-4af3-9a2f-06651aef4109",
+    "team_name": "Erebus",
+    "rating": 1877.7994760092797,
+    "matches_played": 1054,
+    "active_version": 61
+  },
+  {
+    "rank": 9,
+    "team_id": "648d1d5b-5443-4257-a0aa-7048661b612d",
+    "team_name": "team lazy",
+    "rating": 1849.3934684164135,
+    "matches_played": 1043,
+    "active_version": 143
+  },
+  {
+    "rank": 10,
+    "team_id": "03ab46df-7058-49ec-a9f5-592f86e9a95a",
+    "team_name": "Clankers",
+    "rating": 1840.9174151839943,
+    "matches_played": 142,
+    "active_version": 4
+  },
+  {
+    "rank": 11,
+    "team_id": "12fdece5-48c9-4913-9533-6d95b73e22ab",
+    "team_name": "HTTP 418",
+    "rating": 1783.325501739821,
+    "matches_played": 1045,
+    "active_version": 67
+  },
+  {
+    "rank": 12,
+    "team_id": "7419695b-3b8f-4a50-8cce-e545b086c670",
+    "team_name": "O(1)",
+    "rating": 1751.8416861164533,
+    "matches_played": 386,
+    "active_version": 12
+  },
+  {
+    "rank": 13,
+    "team_id": "c7571c87-f960-4c88-a13d-14340bb3200f",
+    "team_name": "kladde chatte tville (och oss)",
+    "rating": 1738.221035438542,
+    "matches_played": 541,
+    "active_version": 81
+  },
+  {
+    "rank": 14,
+    "team_id": "e9be6a8c-fb2a-4fd2-970e-5f19352b6d48",
+    "team_name": "Besvikomat",
+    "rating": 1728.2974269486222,
+    "matches_played": 1055,
+    "active_version": 29
+  },
+  {
+    "rank": 15,
+    "team_id": "b538e523-2250-4c1d-b718-e73b77ebad55",
+    "team_name": "Landers",
+    "rating": 1719.4806918581608,
+    "matches_played": 1054,
+    "active_version": 112
+  },
+  {
+    "rank": 16,
+    "team_id": "f3362833-2d7a-4636-9a3c-e4f10fcebdc1",
+    "team_name": "Big O",
+    "rating": 1711.6828542082014,
+    "matches_played": 85,
+    "active_version": 3
+  }
+]

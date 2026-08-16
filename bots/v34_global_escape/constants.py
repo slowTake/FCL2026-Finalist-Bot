@@ -1,0 +1,228 @@
+from fcode import Direction, EntityType, Environment, GameConstants
+
+# Backward-compatibility fallback attributes on EntityType and Environment for fcode
+for attr, fallback in [
+    ("ROAD", EntityType.CONVEYOR),
+    ("BRIDGE", EntityType.CONVEYOR),
+    ("ARMOURED_CONVEYOR", EntityType.CONVEYOR),
+    ("FOUNDRY", EntityType.HARVESTER),
+    ("BREACH", EntityType.BARRIER),
+    ("MARKER", EntityType.BARRIER),
+]:
+    if not hasattr(EntityType, attr):
+        setattr(EntityType, attr, fallback)
+
+if not hasattr(Environment, "ORE_AXIONITE"):
+    setattr(Environment, "ORE_AXIONITE", None)
+
+
+def _gc(name: str, default):
+    """Read a GameConstants value with a safe fallback."""
+    return getattr(GameConstants, name, default)
+
+
+# Map grid cell encodings
+MAP_UNKNOWN = 0
+MAP_FREE = 1         # Empty tile
+MAP_OBSTACLE = 2     # Wall (natural)
+
+# Walkable friendly buildings (bots can move on these)
+MAP_CONVEYOR = 4
+MAP_SPLITTER = 5
+MAP_CORE = 8
+MAP_ROAD = MAP_CONVEYOR
+MAP_BRIDGE = MAP_CONVEYOR
+MAP_ARMOURED_CONV = MAP_CONVEYOR
+
+# Non-walkable friendly buildings
+MAP_BARRIER = 10
+MAP_HARVESTER = 11
+MAP_LAUNCHER = 13
+MAP_GUNNER = 14
+MAP_SENTINEL = 15
+MAP_FOUNDRY = MAP_HARVESTER
+MAP_BREACH = MAP_BARRIER
+MAP_MARKER = MAP_BARRIER
+
+# Natural resource tiles
+MAP_ORE_TITANIUM = 18
+MAP_ORE_AXIONITE = 18
+
+# Enemy & bot encodings
+MAP_ENEMY = 20
+MAP_OTHER_BOT = 21
+MAP_FRIENDLY_BOT = 22
+MAP_ENEMY_UNIT = 23
+MAP_ENEMY_TURRET = 24
+
+# Map dimensions
+MAP_MIN_SIZE = 8
+MAP_MAX_SIZE = 36
+
+# Builder bots can legally stand on these tile types
+WALKABLE_TILES = {MAP_FREE, MAP_UNKNOWN, MAP_CONVEYOR, MAP_SPLITTER, MAP_CORE}
+
+# Passable tiles for pathfinding
+PASSABLE_TILES = {MAP_FREE, MAP_UNKNOWN, MAP_CONVEYOR, MAP_SPLITTER, MAP_CORE}
+
+# Entity-to-tile encoding
+MAP_TILE_BY_ENTITY = {
+    EntityType.CONVEYOR: MAP_CONVEYOR,
+    EntityType.SPLITTER: MAP_SPLITTER,
+    EntityType.CORE: MAP_CORE,
+    EntityType.BARRIER: MAP_BARRIER,
+    EntityType.HARVESTER: MAP_HARVESTER,
+    EntityType.LAUNCHER: MAP_LAUNCHER,
+    EntityType.GUNNER: MAP_GUNNER,
+    EntityType.SENTINEL: MAP_SENTINEL,
+}
+
+TURRET_ENTITY_TYPES = {
+    EntityType.GUNNER,
+    EntityType.SENTINEL,
+    EntityType.LAUNCHER,
+}
+
+BUILDING_ENTITY_TYPES = {
+    EntityType.CORE,
+    EntityType.GUNNER,
+    EntityType.SENTINEL,
+    EntityType.LAUNCHER,
+    EntityType.CONVEYOR,
+    EntityType.SPLITTER,
+    EntityType.HARVESTER,
+    EntityType.BARRIER,
+}
+
+WALKABLE_BUILDING_ENTITY_TYPES = {
+    EntityType.CONVEYOR,
+    EntityType.SPLITTER,
+}
+
+DIRECTIONAL_ENTITY_TYPES = {
+    EntityType.CONVEYOR,
+    EntityType.SPLITTER,
+    EntityType.GUNNER,
+    EntityType.SENTINEL,
+}
+
+# -------------------------------
+# Engine Game Constants
+# -------------------------------
+MAX_TURNS = _gc("MAX_TURNS", 2000)
+MAX_TEAM_UNITS = _gc("MAX_TEAM_UNITS", 50)
+STACK_SIZE = _gc("STACK_SIZE", 10)
+STARTING_TITANIUM = _gc("STARTING_TITANIUM", 500)
+PASSIVE_TITANIUM_AMOUNT = _gc("PASSIVE_TITANIUM_AMOUNT", 10)
+PASSIVE_TITANIUM_INTERVAL = _gc("PASSIVE_TITANIUM_INTERVAL", 4)
+
+# Radii (squared)
+ACTION_RADIUS_SQ = _gc("ACTION_RADIUS_SQ", 2)
+CORE_ACTION_RADIUS_SQ = _gc("CORE_ACTION_RADIUS_SQ", 8)
+CORE_SPAWNING_RADIUS_SQ = _gc("CORE_SPAWNING_RADIUS_SQ", 8)
+CORE_VISION_RADIUS_SQ = _gc("CORE_VISION_RADIUS_SQ", 36)
+BUILDER_BOT_VISION_RADIUS_SQ = _gc("BUILDER_BOT_VISION_RADIUS_SQ", 20)
+GUNNER_VISION_RADIUS_SQ = _gc("GUNNER_VISION_RADIUS_SQ", 13)
+SENTINEL_VISION_RADIUS_SQ = _gc("SENTINEL_VISION_RADIUS_SQ", 32)
+LAUNCHER_VISION_RADIUS_SQ = _gc("LAUNCHER_VISION_RADIUS_SQ", 26)
+BUILDER_BOT_BASE_COST = _gc("BUILDER_BOT_BASE_COST", 30)
+CONVEYOR_BASE_COST = _gc("CONVEYOR_BASE_COST", 3)
+SPLITTER_BASE_COST = _gc("SPLITTER_BASE_COST", 6)
+HARVESTER_BASE_COST = _gc("HARVESTER_BASE_COST", 20)
+BARRIER_BASE_COST = _gc("BARRIER_BASE_COST", 3)
+GUNNER_BASE_COST = _gc("GUNNER_BASE_COST", 10)
+SENTINEL_BASE_COST = _gc("SENTINEL_BASE_COST", 30)
+LAUNCHER_BASE_COST = _gc("LAUNCHER_BASE_COST", 20)
+ROAD_BASE_COST = 1
+FOUNDRY_BASE_COST = 20
+BRIDGE_BASE_COST = 20
+ARMOURED_CONVEYOR_BASE_COST = 5
+BREACH_BASE_COST = 15
+
+# Scale contributions (% per built instance)
+SCALE_CONVEYOR = 1.0
+SCALE_SPLITTER = 1.0
+SCALE_BARRIER = 1.0
+SCALE_HARVESTER = 5.0
+SCALE_GUNNER = 10.0
+SCALE_LAUNCHER = 10.0
+SCALE_BUILDER_BOT = 20.0
+SCALE_SENTINEL = 20.0
+
+# Max HP
+CORE_MAX_HP = _gc("CORE_MAX_HP", 500)
+BUILDER_BOT_MAX_HP = _gc("BUILDER_BOT_MAX_HP", 40)
+CONVEYOR_MAX_HP = _gc("CONVEYOR_MAX_HP", 20)
+SPLITTER_MAX_HP = _gc("SPLITTER_MAX_HP", 20)
+HARVESTER_MAX_HP = _gc("HARVESTER_MAX_HP", 30)
+BARRIER_MAX_HP = _gc("BARRIER_MAX_HP", 30)
+GUNNER_MAX_HP = _gc("GUNNER_MAX_HP", 40)
+SENTINEL_MAX_HP = _gc("SENTINEL_MAX_HP", 30)
+LAUNCHER_MAX_HP = _gc("LAUNCHER_MAX_HP", 30)
+BRIDGE_MAX_HP = 20
+ARMOURED_CONVEYOR_MAX_HP = 50
+ROAD_MAX_HP = 5
+FOUNDRY_MAX_HP = 50
+MARKER_MAX_HP = 1
+BREACH_MAX_HP = 60
+
+# Combat specs
+BUILDER_BOT_ATTACK_DAMAGE = _gc("BUILDER_BOT_ATTACK_DAMAGE", 2)
+HEAL_AMOUNT = _gc("HEAL_AMOUNT", 4)
+GUNNER_DAMAGE = _gc("GUNNER_DAMAGE", 10)
+GUNNER_AMMO_COST = _gc("GUNNER_AMMO_COST", 2)
+GUNNER_ROTATE_COST = _gc("GUNNER_ROTATE_COST", 10)
+SENTINEL_DAMAGE = _gc("SENTINEL_DAMAGE", 18)
+SENTINEL_AMMO_COST = _gc("SENTINEL_AMMO_COST", 10)
+
+CARDINALS = [Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST]
+CARDINAL_DELTAS = [(0, -1), (1, 0), (0, 1), (-1, 0)]
+
+DIRECTION_BY_DELTA = {
+    (0, -1): Direction.NORTH,
+    (1,  0): Direction.EAST,
+    (0,  1): Direction.SOUTH,
+    (-1, 0): Direction.WEST,
+}
+
+# --- Role constants ---
+ROLE_DEFENDER = 1
+ROLE_ECONOMY = 2
+ROLE_HEALER = 3
+ROLE_MINER = 4
+ROLE_RAIDER = 5
+ROLE_SCOUT = 6
+ROLE_REPAIR_PATROL = 7
+
+VALID_ROLES = frozenset({
+    ROLE_DEFENDER,
+    ROLE_ECONOMY,
+    ROLE_HEALER,
+    ROLE_MINER,
+    ROLE_RAIDER,
+    ROLE_SCOUT,
+    ROLE_REPAIR_PATROL,
+})
+
+# --- IPC Store Slots (16-slot global shared store) ---
+STORE_SPAWN_ROLE = 0
+STORE_DEFENSE_STATUS = 1
+STORE_CORE_X = 2
+STORE_CORE_Y = 3
+
+MSG_DEFENSE_COMPLETE = 0x80
+
+# Competition toggle
+COMPETITION_MODE = True
+SHOW_MAP_DEBUG = False
+ENABLE_LOCAL_MAP_DUMPS = False
+ENABLE_ADJACENCY_LIST_DUMPS = False
+MAP_DEBUG_DUMP_EVERY_N = 20
+MAP_DEBUG_CORE_ONLY = False
+SHOW_EVENT_DEBUG = False
+RESET_LOGS_ON_START = False
+
+# Local-map update throttles
+MAP_UPDATE_EVERY_N_CORE = 1
+MAP_UPDATE_EVERY_N_BUILDER = 1
+MAP_UPDATE_EVERY_N_TURRET = 1
