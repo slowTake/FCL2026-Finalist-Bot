@@ -175,6 +175,11 @@ AMMO_FLOOR = 10
 AMMO_PER_GUNNER = GameConstants.GUNNER_AMMO_COST
 AMMO_PER_SENTINEL = GameConstants.SENTINEL_AMMO_COST
 
+# Never convert if it would draw the bank below this. Ammo is worthless if
+# there's nothing left to build or repair with — 30 is a starting point, not
+# measured yet.
+AMMO_TI_RESERVE = 30
+
 
 def _allyTurretCounts(ct: Controller, hm) -> tuple[int, int]:
     """Team-wide gunner/sentinel counts: what's currently visible, plus
@@ -226,10 +231,16 @@ def topUpAmmo(bot, ct: Controller) -> None:
     Held until the opening batch of builders is out (respawn.MAX_BUILDERS) so
     the gate tracks real state rather than a round number. By the time it
     opens, runCoreSpawn is already a no-op every turn (see respawn.py), so
-    there is nothing competing with this for Ti.
+    there is nothing competing with this for Ti — except this reserve, which
+    stops it converting Ti we'd rather keep for a build or a repair. Gated,
+    not clamped: below AMMO_TI_RESERVE we convert nothing this turn, not a
+    partial amount down to the floor.
     """
     if ct.read_store(store.BUILDERS) < MAX_BUILDERS:
         return
+
+    if ct.get_global_resources() <= AMMO_TI_RESERVE:
+        return  # broke, not blocked — same reserve-first spirit as respawn.BUILDER_RESERVE
 
     gunners, sentinels = _allyTurretCounts(ct, bot.hivemind)
     target = AMMO_FLOOR + AMMO_PER_GUNNER * gunners + AMMO_PER_SENTINEL * sentinels
