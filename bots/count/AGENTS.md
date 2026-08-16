@@ -14,7 +14,7 @@ known gaps) and [docs/roadmap.md](docs/roadmap.md) (what's next and why).
 
 | File | Purpose |
 |---|---|
-| `main.py` | `Player` dispatch and the per-unit state manifest — routes CORE to spawn, raid-target publishing and ammo top-up; BUILDER_BOT to `raidBot` or `ecoBot` by role; SENTINEL to `sentinelBot`. |
+| `main.py` | `Player` dispatch and the per-unit state manifest — routes CORE to spawn, raid-target publishing and ammo top-up; BUILDER_BOT to `raidBot` or `ecoBot` by role (first raider also plants the launcher); SENTINEL to `sentinelBot`; LAUNCHER to `launcher`. |
 | `movement.py` | Generic `walkTo`/`stepToward`/`exploreStep` — plan-once, cache, follow. |
 | `pathfindingHelpers.py` | Shared toolbox: tile reads, impassability, core geometry, network connectivity (`buildNetwork`), cost function + heuristic for A*. |
 | `pathing.py` | Generic weighted 4-connected A*/BFS (`astarFromSeeds`, `bfsFromSeeds`) — no game knowledge by design. |
@@ -22,6 +22,7 @@ known gaps) and [docs/roadmap.md](docs/roadmap.md) (what's next and why).
 | `raid.py` | Core-side sentinel emplacement selection (geometry-driven), plus the raider's local fallback when the published site goes stale. |
 | `guns.py` | Turret target priorities, the shared hostile gatherer, gunner/sentinel fire+rotate loops, and core-side ammo conversion. |
 | `store.py` | The communication-store layout: which slot holds what, and the only writer for the ones we own. |
+| `launcher.py` | All launcher logic: the first raider plants one beside the core; builders post their own goal to `store.LAUNCH_REQUEST` and hold; the LAUNCHER loop throws whoever is adjacent toward that goal. |
 | `relays.py` | Belt-laying/relay logic: plan, lay, contested-tile concession, obstruction clearing. |
 | `respawn.py` | Core spawn logic: builder cap, spawn-tile selection, raider designation. |
 | `telemetry.py` | Optional (`COUNT_CPU=1`) per-unit CPU sampling to stderr. |

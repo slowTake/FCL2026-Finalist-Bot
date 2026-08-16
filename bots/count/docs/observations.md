@@ -200,6 +200,18 @@ point-mirrored map is still badly skewed.
   belt it saw there is present, so `buildNetwork` can close a chain through a belt
   that no longer exists. Suspected cause of bad anchors; not yet confirmed.
 
+- **`my_index` is `respawn`'s pre-spawn count + 2, not + 1.** The hivemind
+  comment claims a newborn reads slot 4 at its birth round *before* its own spawn
+  write has landed, so the count it captures is "builders before me". Empirically
+  (COUNT_DEBUG, every map) the write has already landed: the first builder reads
+  1 and self-assigns `my_index = 2`, the second reads 2 → 3, and so on — the
+  produced indices are 2..MAX+1, never 1. So `respawn.runCoreSpawn`, which reads
+  the count *before* spawning, must publish a role under `built + 2` for
+  `main`'s `my_index == readRole(...)` test to name the intended body. The old
+  single raider worked only because `RAID_INDEX == MAX_BUILDERS` happened to be a
+  produced index (it actually tagged the second-to-last builder). Anyone keying a
+  role to a specific spawn order: use `built + 2`, and verify with COUNT_DEBUG.
+
 ## Known gaps
 
 - No store-backed ore claim, so two builders can race the same node. Spread is

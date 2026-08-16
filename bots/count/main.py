@@ -23,6 +23,7 @@ for _sub in ("hivemind", "roles"):
 from fcode import Controller, EntityType, Position  # noqa: E402
 
 import guns  # noqa: E402
+import launcher  # noqa: E402
 import raid  # noqa: E402
 import store  # noqa: E402
 from ecoBot import runEcoBot  # noqa: E402
@@ -59,6 +60,10 @@ class Player:
         self.oreTarget: Position | None = None
         self.oreSkip: dict[tuple[int, int], int] = {}
 
+        # Launcher one-off (launcher.py). Set once the first raider plants the
+        # core launcher, so it never plants a second after walking out of sight.
+        self._placedLauncher = False
+
         # Patience (patience.py)
         self.holdReason: str | None = None
         self.holdTurns = 0
@@ -89,6 +94,8 @@ class Player:
                 self._runBuilder(ct)
             elif etype == EntityType.SENTINEL:
                 self._runSentinel(ct)
+            elif etype == EntityType.LAUNCHER:
+                launcher.runLauncher(self, ct)
         except Exception:
             if self._cpu is not None:
                 self._cpu.fault()
@@ -117,10 +124,19 @@ class Player:
         if self.corePos is None:
             return
 
-        # The raider is named by index rather than by anything it can see, so the
-        # role survives losing sight of the core and never changes mid-match.
+        # Roles are named by index rather than by anything a builder can see, so
+        # they survive losing sight of the core and never change mid-match.
         index = self.hivemind.my_index
-        if index and index == store.readRole(ct, store.ROLE_RAIDER):
+        raider1 = store.readRole(ct, store.ROLE_RAIDER)
+        raider2 = store.readRole(ct, store.ROLE_RAIDER_2)
+
+        # The first raider's one-off: plant the launcher beside the core before it
+        # leaves to raid. placeCoreLauncher holds the turn while it's still placing
+        # and returns False once the launcher exists (or it gave up).
+        if index and index == raider1 and launcher.placeCoreLauncher(self, ct):
+            return
+
+        if index and index in (raider1, raider2):
             runRaidBot(self, ct)
             return
 

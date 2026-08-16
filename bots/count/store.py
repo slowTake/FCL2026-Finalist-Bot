@@ -23,7 +23,12 @@ from fcode import Controller
 HARVESTERS = 0        # running count of harvesters built (ecoBot)
 RAID_TARGET = 1       # packed sentinel emplacement, or 0 (raid.packTarget)
 ROLES = 2             # packed builder indices, one field per role
-FREE = 3              # unclaimed — the next role's target belongs here
+LAUNCH_REQUEST = 3    # transient launch request: packed (requester, target) or 0
+# NOTE: the 2026-08-15 roadmap reserved this slot "free for defence". Launch
+# requests are transient (last-write-wins, consumed the turn they're read), so a
+# persistent defence signal cannot share it — when guardian work lands, one of
+# the two needs a different home. Flagged here rather than in the roadmap so the
+# next writer sees it. See launcher.packRequest for the encoding.
 
 # --- HiveMind's. Read freely, never write. ----------------------------------
 
@@ -38,6 +43,7 @@ _FIRST_HIVEMIND_SLOT = 4
 # what it should.
 
 ROLE_RAIDER = 0
+ROLE_RAIDER_2 = 1     # second raider — the opening pair raids (respawn.py)
 
 _ROLE_BITS = 5
 _ROLE_MASK = (1 << _ROLE_BITS) - 1

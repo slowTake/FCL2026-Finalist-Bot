@@ -18,6 +18,7 @@ from fcode import Controller, Direction, EntityType, GameConstants, Position
 
 import debug
 import heal
+import launcher
 import pathfindingHelpers as ph
 import raid
 import store
@@ -63,6 +64,11 @@ def runRaidBot(bot, ct: Controller) -> None:
         )
 
     if buildSentinel(bot, ct, site, facing):
+        return
+    # Beside the launcher and still a long walk from the emplacement? Get thrown
+    # toward it instead of stepping there a tile at a time. Held turns fall
+    # through to the walk once patience runs out.
+    if launcher.requestLaunch(bot, ct, site):
         return
     if approach(bot, ct, site):
         return

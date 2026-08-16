@@ -28,12 +28,22 @@ MAX_BUILDERS = 5
 MIN_BUILDERS = 2
 BUILDER_RESERVE = 60
 
-# The last of the opening batch is the raider, so it leaves with the same cost
-# scale as its siblings rather than paying +20% for being an afterthought. It is a
-# reassignment, not an extra body: the economy runs on four builders once this one
-# departs. On a map we cannot fingerprint there is no enemy core to aim at, so the
-# designation is skipped and the fifth stays on eco.
-RAID_INDEX = MAX_BUILDERS
+# The opening two builders are the raiders — the first out of the gate, so they
+# reach the enemy core soonest, and the first also plants the launcher (see
+# launcher.placeCoreLauncher) that flings the rest of the crew outbound. This is
+# a reassignment, not extra bodies: the economy runs on the later builders once
+# the pair departs (was: eco on all, one raider last). On a map we cannot
+# fingerprint there is no enemy core to aim at, so the designation is skipped and
+# both stay on eco.
+#
+# Keyed by *my_index*, not by respawn's pre-spawn count. The newborn's my_index
+# is `built + 2`, not `built + 1`: the spawn's slot-4 write has already landed by
+# the time the builder captures the count on its birth round (hivemind index
+# timing), so the count it reads is one past what respawn saw here. The first two
+# builders therefore self-identify as my_index 2 and 3 — those are the values
+# main.py compares against, so those are the values we publish.
+_MYINDEX_OFFSET = 2
+_OPENING_RAIDERS = {2: store.ROLE_RAIDER, 3: store.ROLE_RAIDER_2}
 
 # A spawn tile needs somewhere to go. One open neighbour is a corridor the builder
 # can still be pushed back into; below that it is a pocket.
@@ -151,9 +161,10 @@ def runCoreSpawn(bot, ct: Controller) -> None:
         # spawn_builder here, not ct.spawn_builder: it increments slot 4, which is
         # what gives each builder its my_index and metronome turn.
         if bot.hivemind.spawn_builder(ct, tile):
-            if built + 1 == RAID_INDEX and _raidReady(bot, ct):
-                # spawn_builder just wrote slot 4 = built + 1, and that value is
-                # the my_index this newborn will read for itself, so it is the
-                # name to publish it under.
-                store.assignRole(ct, store.ROLE_RAIDER, built + 1)
+            myIndex = built + _MYINDEX_OFFSET
+            role = _OPENING_RAIDERS.get(myIndex)
+            if role is not None and _raidReady(bot, ct):
+                # Publish under the my_index this newborn will read for itself, so
+                # main.py's `my_index == readRole(...)` test names the right body.
+                store.assignRole(ct, role, myIndex)
             return

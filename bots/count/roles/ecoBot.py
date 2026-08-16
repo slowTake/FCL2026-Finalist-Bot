@@ -5,6 +5,7 @@ from __future__ import annotations
 from fcode import Controller, EntityType, Position
 
 import heal
+import launcher
 import pathfindingHelpers as ph
 from movement import exploreStep, walkTo
 from patience import clearHold, waitTi
@@ -124,6 +125,11 @@ def seekOre(bot, ct: Controller) -> bool:
         # Already in position. Hold it: walkTo reports arrival as False, and
         # falling through on that would send the builder off exploring on the
         # exact turn it got where it was going.
+        return True
+
+    # Beside the core launcher with the ore still a walk away? Get flung toward
+    # it. Held turns fall through to walkTo once patience runs out.
+    if launcher.requestLaunch(bot, ct, ore):
         return True
 
     def beside(p: Position) -> bool:
