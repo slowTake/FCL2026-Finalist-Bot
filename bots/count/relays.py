@@ -32,6 +32,11 @@ _RELAY_MAX_ITERS = 450
 # taking it a third time only restarts the loop.
 BELT_CONTEST_LIMIT = 2
 
+# How far a merge check follows a belt's facing chain toward the core looking for a
+# *visible* break before giving up and trusting it. A cut the builder can see sits
+# within a few tiles; past that we're out of vision and won't reject on a guess.
+_CHAIN_MAX_HOPS = 8
+
 
 def relayToHome(bot, ct: Controller) -> bool:
     """Cover every tile from the harvester back to the network, harvester end first.
@@ -83,6 +88,41 @@ def hijackRelay(bot, ct: Controller, harvester: Position) -> bool:
 # --- Planning ---------------------------------------------------------------
 
 
+def _chainVisiblyIntact(ctx, ct: Controller, hm, belt: Position) -> bool:
+    """Follow `belt`'s facing chain toward the core. True if it reaches a network
+    member, loops, or runs out of *visible* knowledge — we never reject on a tile we
+    cannot currently see. False only on a break we can see right now: a belt facing
+    into an in-vision tile that is neither an ally belt nor a network member.
+
+    The cheap half of "is this line still connected": it catches a belt dead-ending
+    into a barrier or gap inside the builder's own vision, the common cut. A cut
+    hidden downstream needs the shared-ledger fix (out of scope — see observations.md
+    on destroyed belts living forever in local_map). `belt` is already known to be an
+    ally belt (the caller gated on isAllyBelt), so cur is always one as we advance."""
+    cur = belt
+    seen: set[tuple[int, int]] = set()
+    for _ in range(_CHAIN_MAX_HOPS):
+        if ctx.isNetworkMember(cur):
+            return True
+        t = ph.readTile(ct, hm, cur)
+        if t.facing is None:
+            return True  # unreadable facing — can't trace, don't invent a cut
+        dx, dy = t.facing.delta()
+        nxt = Position(cur.x + dx, cur.y + dy)
+        if ctx.isNetworkMember(nxt):
+            return True
+        if not ct.is_in_vision(nxt):
+            return True  # out of vision — cannot disprove; keep the old trust
+        nt = ph.readTile(ct, hm, nxt)
+        if nt.etype not in ph.BELT_TYPES or nt.enemy:
+            return False  # visible break: belt runs into a non-belt we can see
+        if (nxt.x, nxt.y) in seen:
+            return True  # loop guard; 2-cycles are caught at lay time (_pointsBackAtUs)
+        seen.add((nxt.x, nxt.y))
+        cur = nxt
+    return True
+
+
 def planRelay(bot, ct: Controller) -> bool:
     if bot.corePos is None:
         return False
@@ -98,17 +138,27 @@ def planRelay(bot, ct: Controller) -> bool:
     if source is None:
         return False
 
-    # Merge onto any ally belt, not only a proven-network one. buildNetwork can
-    # only recognise a belt whose whole chain to the core this unit personally
-    # knows (vision + ledger); a builder beside a belt usually can't see that
-    # belt's downstream, so it fails the proof and — with the strict check —
-    # plows through the belt toward the core, re-facing a line that was already
-    # delivering. Trusting any ally belt (core ∪ all ally belts) stops the relay
-    # at the nearest existing belt instead. In the healthy case every nearby
-    # ally belt is already a network member, so this is identical to the old
-    # check; it only diverges where an unrecognised belt exists — the churn case.
+    # Merge onto a proven-network tile, or a bare ally belt we can't see to be cut.
+    # buildNetwork only recognises a belt whose whole chain to the core this unit
+    # personally knows (vision + ledger); a builder beside a belt usually can't see
+    # its downstream, so the strict check would fail and plow through toward the
+    # core, re-facing a line already delivering. So we still trust a bare ally belt —
+    # but only when _chainVisiblyIntact finds no *visible* break along its facing
+    # chain, which stops us grafting onto a belt we can watch dead-end into a barrier
+    # or gap. Out-of-vision chains stay trusted, so the healthy case is unchanged.
+    # Memoised: the A* isGoal loop asks this once per frontier tile.
+    _cut: dict[tuple[int, int], bool] = {}
+
     def mergeable(p: Position) -> bool:
-        return ctx.isNetworkMember(p) or ph.isAllyBelt(ct, bot.hivemind, p)
+        if ctx.isNetworkMember(p):
+            return True
+        if not ph.isAllyBelt(ct, bot.hivemind, p):
+            return False
+        key = (p.x, p.y)
+        hit = _cut.get(key)
+        if hit is None:
+            hit = _cut[key] = _chainVisiblyIntact(ctx, ct, bot.hivemind, p)
+        return hit
 
     if any(mergeable(n) for n in ph.orthogonalTiles(source)):
         return False  # already feeding a belt; nothing to lay
@@ -215,6 +265,10 @@ def layBelt(bot, ct: Controller, tile: Position, nextTile: Position) -> bool:
         # isn't. Route around rather than trust it.
         return _replanAvoiding(bot, ct, tile)
 
+    # Never point a belt into a harvester: it delivers to adjacent buildings but
+    # never forwards a belt's input, so the whole branch's Ti would dead-end in
+    # it. The A* prices enemy harvesters as passable, so a path can run up to one
+    # — route around it (to the belt it feeds, or another nearby line) instead.
     t = ph.readTile(ct, bot.hivemind, tile)
     replacing = False
 

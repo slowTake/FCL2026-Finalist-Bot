@@ -506,6 +506,17 @@ def makeCostFn(ctx: CostContext):
         cost = BASE
         t = readTile(ct, hm, pos)
 
+        # A relay never routes through ore: a belt on ore wastes the node, and —
+        # the bug this guards — a path planned across empty ore gets a belt laid
+        # facing it once a harvester is later built there, dead-ending the branch
+        # (harvesters deliver, never forward input). Every harvester sits on ore,
+        # so this also keeps relays off both teams' harvesters. Relay-only: the
+        # walk profile still prices ore normally (making it globally impassable
+        # regressed fjordgate).
+        if not walk and t.ore:
+            memo[key] = None
+            return None
+
         if t.etype is not None:
             if t.enemy:
                 cost += _ENEMY_BUILD_COST.get(t.etype, ALLY_BUILD)

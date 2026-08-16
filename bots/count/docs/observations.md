@@ -221,6 +221,22 @@ point-mirrored map is still badly skewed.
   that needs the enemy core must go through `raid.enemyCorePos`, not the hivemind
   field.
 
+- **Relays must not route through ore, and `makeCostFn` (not `isImpassable`) is
+  where that lives.** A harvester delivers to adjacent buildings but never
+  *forwards* a belt's input, so a belt pointing into one dead-ends that branch's
+  Ti. The A* prices an empty ore tile as any other empty tile (`isImpassable`
+  ignores ore; `beltPassable` excludes it but A* doesn't use `beltPassable`), so a
+  relay path can cross ore — and when a harvester is later built there, the belt
+  before it is left feeding the harvester (`_nextUncovered` reads it as correctly
+  facing its planned next tile and never fixes it). Fix: `makeCostFn` returns
+  `None` for any ore tile on the **relay** profile (`not walk and t.ore`), so
+  relays route around all ore — which also covers both teams' harvesters (all sit
+  on ore). Two dead ends found the hard way: a reactive "don't face a harvester"
+  guard in `layBelt` stops the belt 1 tile short (re-planning seeds at the source
+  harvester, which sees its own laid-but-dead-ending chain as "already feeding a
+  belt" and bails); and making ore/harvesters impassable *globally* (walk too)
+  regressed fjordgate — keep it relay-scoped.
+
 ## Known gaps
 
 - No store-backed ore claim, so two builders can race the same node. Spread is
