@@ -384,13 +384,23 @@ class HiveMind:
             if is_core:
                 total_builders = ct.read_store(4)
                 if total_builders > 0:
+                    # Cycle over 2..total_builders+1, NOT 1..total_builders.
+                    # Builders self-assign my_index = _pre_spawn_count + 1 (see
+                    # step 2), and _pre_spawn_count already counts this unit, so
+                    # the produced indices are 2..total_builders+1 — index 1 is
+                    # never assigned and the newest builder is total_builders+1.
+                    # A 1-based cycle therefore wasted every `current == 1` round
+                    # on nobody AND never reached the newest builder (it stopped
+                    # at total_builders), so ~1/N of broadcasts were dropped and
+                    # the last builder was permanently mute. Match the real index
+                    # range exactly. (Shared by count/baron/bandit via symlink.)
                     current = ct.read_store(13)
-                    if current == 0:
-                        current = 1
+                    if current < 2:
+                        current = 2
                     else:
                         current += 1
-                        if current > total_builders:
-                            current = 1
+                        if current > total_builders + 1:
+                            current = 2
                     ct.write_store(13, current)
                     # Clear slots
                     for i in range(8):
