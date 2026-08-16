@@ -224,10 +224,11 @@ def fallbackEmplacement(bot, ct: Controller, primarySite: Position | None = None
     core's job, not a stuck builder's. Standoff is not preferred here — closer is
     fine, getting a sentinel down beats waiting on the core to republish.
 
-    No threat filtering, for the same reason chooseEmplacement does none: the
-    only threat set available is the cost layer's, which is empty on any unit
-    that has not been pathing and is built from the wrong end of the map
-    anyway. When the raider learns to read fire for itself, both paths get it.
+    Threat filtering *is* done here, unlike chooseEmplacement: this runs on the
+    raider, which can see the ground beside the enemy core, so it drops any pad a
+    visible enemy turret already bears on at its current facing — no free shot on
+    the sentinel the instant it's built. chooseEmplacement (core-side, no vision)
+    still can't, so buildSentinel re-vets the published target the same way.
     """
     enemyCore = enemyCorePos(bot, ct)
     if enemyCore is None:
@@ -239,10 +240,21 @@ def fallbackEmplacement(bot, ct: Controller, primarySite: Position | None = None
     reach = {d: set(offsets) for d, offsets in _reachOffsets(ct).items()}
     pos = ct.get_position()
 
+    # Local import: guns imports raid, so a module-level import here would cycle
+    # (same break as roles/ecoBot).
+    import guns
+    turrets = guns.enemyTurrets(ct)
+    losCache: dict = {}
+
     for pad in ph.orthogonalTiles(pos):
         if primarySite is not None and (pad.x, pad.y) == (primarySite.x, primarySite.y):
             continue
         if not _buildable(ct, hm, pad, enemySet):
+            continue
+        # Never emplace where a visible enemy gun already bears — a stationary
+        # sentinel eats that shot with no rotation needed (esp. an enemy sentinel,
+        # whose line ignores belt cover).
+        if guns.siteInDirectTurretLos(ct, pad, turrets, cache=losCache):
             continue
         for d, hits in reach.items():
             if not any((aim.x - pad.x, aim.y - pad.y) in hits for aim in footprint):

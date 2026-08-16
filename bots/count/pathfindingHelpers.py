@@ -29,8 +29,15 @@ ENEMY_BARRIER = 75
 ENEMY_HARVESTER = 75
 ENEMY_TURRET = 500
 ALLY_BUILD = 300      # ours and worth keeping: path around, don't bulldoze
-UNIT = 8              # a builder in the way moves on its own (walk profile only —
-                      # a belt can be built straight under one)
+UNIT = 30             # a builder in the way *can* move on its own, but at 8 the
+                      # surcharge lost to a one-tile detour (~BASE) and every raider
+                      # converging on the same waypoint funnelled onto the same
+                      # tile instead of spreading out — the pile-up that then sits
+                      # and blocks each other in a gunner's line. 30 reliably beats
+                      # a short detour while staying well under CHOKE (50, real
+                      # terrain) and ENEMY_FIRE (500) — a strong nudge to route
+                      # around allies, not a wall (walk profile only — a belt can
+                      # still be built straight under one).
 
 # Cheapest step any profile can produce. The A* heuristic is scaled by this so
 # it stays admissible; deriving it here means changing a weight above can never

@@ -28,6 +28,16 @@ MAX_BUILDERS = 5
 MIN_BUILDERS = 2
 BUILDER_RESERVE = 60
 
+# Raider replenishment. Once the bank first reaches REPLENISH_TI the core keeps a
+# steady trickle of extra raiders coming: one the moment it arrives at the
+# threshold, then one more every REPLENISH_INTERVAL rounds for as long as we're
+# sitting on that much titanium. Every body it spawns is past MAX_BUILDERS and is
+# always a raider (main.py routes them by index via isReplenishmentRaider) — if
+# the bank is this deep the economy is already saturated and the marginal builder
+# is worth more pressing the enemy core than farming.
+REPLENISH_TI = 800
+REPLENISH_INTERVAL = 100
+
 # The opening two builders are the raiders — the first out of the gate, so they
 # reach the enemy core soonest, and the first also plants the launcher (see
 # launcher.placeCoreLauncher) that flings the rest of the crew outbound. This is
@@ -108,7 +118,7 @@ def _predictTarget(bot, ct: Controller) -> Position | None:
 
     core = bot.corePos
     myIndex = ct.read_store(store.BUILDERS) + _MYINDEX_OFFSET
-    if myIndex in _OPENING_RAIDERS:
+    if myIndex in _OPENING_RAIDERS or isReplenishmentRaider(myIndex):
         return raid.enemyCorePos(bot, ct)
 
     def distTo(ore: Position) -> int:
@@ -141,19 +151,61 @@ def _raidReady(bot, ct: Controller) -> bool:
     return raid.enemyCorePos(bot, ct) is not None
 
 
+def isReplenishmentRaider(myIndex: int) -> bool:
+    """True for any builder spawned past MAX_BUILDERS.
+
+    The 800-Ti replenishment (_replenishDue) is the only thing that ever spawns
+    beyond the cap, and every body it spawns is a raider. Keyed on index alone so
+    it survives losing sight of the core, exactly like the opening pair — main.py
+    routes on it the same way it routes the two role slots.
+    """
+    return myIndex >= MAX_BUILDERS + _MYINDEX_OFFSET
+
+
+def _replenishDue(bot, ct: Controller) -> bool:
+    """Should the 800-Ti raider replenishment spawn a body this turn.
+
+    True on the first round the bank reaches REPLENISH_TI, then once every
+    REPLENISH_INTERVAL rounds while it stays at/above it. Gated on there being an
+    enemy core to aim at — a raider with nothing to press just wanders, so a body
+    with no target is not worth the +20% cost (see _raidReady). The interval clock
+    (`bot._lastReplenishRound`) is only advanced by an actual spawn, so a turn we
+    were rich but boxed out of the ring or capped at MAX_TEAM_UNITS does not burn
+    the slot — the next open turn still spawns.
+    """
+    if ct.get_global_resources() < REPLENISH_TI:
+        return False
+    if not _raidReady(bot, ct):
+        return False
+    last = bot._lastReplenishRound
+    if last is None:
+        return True
+    return ct.get_current_round() - last >= REPLENISH_INTERVAL
+
+
 def runCoreSpawn(bot, ct: Controller) -> None:
-    """Spawn at most one builder, on the tile that best starts its journey."""
+    """Spawn at most one builder, on the tile that best starts its journey.
+
+    Up to MAX_BUILDERS on the normal reserve-gated path; past the cap only the
+    800-Ti raider replenishment spawns, and everything it spawns is a raider.
+    """
     if bot.corePos is None or ct.get_action_cooldown() != 0:
         return
 
     built = ct.read_store(store.BUILDERS)
-    if built >= MAX_BUILDERS:
-        return
 
-    cost = ct.get_builder_bot_cost()
-    reserve = BUILDER_RESERVE if built >= MIN_BUILDERS else 0
-    if ct.get_global_resources() < cost + reserve:
-        return
+    replenish = False
+    if built >= MAX_BUILDERS:
+        # Past the normal cap: the only body that spawns now is a replenishment
+        # raider, and only when the bank is deep enough to earn it.
+        if not _replenishDue(bot, ct):
+            return
+        replenish = True
+    else:
+        cost = ct.get_builder_bot_cost()
+        reserve = BUILDER_RESERVE if built >= MIN_BUILDERS else 0
+        if ct.get_global_resources() < cost + reserve:
+            return
 
     sites = spawnSites(ct, bot.hivemind, bot.corePos)
     if not sites:
@@ -170,9 +222,16 @@ def runCoreSpawn(bot, ct: Controller) -> None:
         # what gives each builder its my_index and metronome turn.
         if bot.hivemind.spawn_builder(ct, tile):
             myIndex = built + _MYINDEX_OFFSET
-            role = _OPENING_RAIDERS.get(myIndex)
-            if role is not None and _raidReady(bot, ct):
-                # Publish under the my_index this newborn will read for itself, so
-                # main.py's `my_index == readRole(...)` test names the right body.
-                store.assignRole(ct, role, myIndex)
+            if replenish:
+                # A raider identified by index (isReplenishmentRaider) — no role
+                # slot to publish. Advancing the clock only on a real spawn is what
+                # holds the every-100-rounds cadence.
+                bot._lastReplenishRound = ct.get_current_round()
+            else:
+                role = _OPENING_RAIDERS.get(myIndex)
+                if role is not None and _raidReady(bot, ct):
+                    # Publish under the my_index this newborn will read for itself,
+                    # so main.py's `my_index == readRole(...)` test names the right
+                    # body.
+                    store.assignRole(ct, role, myIndex)
             return

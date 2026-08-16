@@ -60,6 +60,40 @@ def walkTo(bot, ct: Controller, isGoal, heuristicGoal: Position | None, goal) ->
     return stepToward(bot, ct, nextTile)
 
 
+def walkOrRetarget(bot, ct: Controller, isGoal, heuristicGoal: Position | None, goal) -> bool:
+    """Like walkTo, but tells the caller when the *current goal* is the
+    problem, so it can retarget instead of retrying the same dead search
+    forever.
+
+    walkTo returns False for three unrelated reasons a caller can't otherwise
+    tell apart: arrival, a single blocked tile (stepToward already
+    self-heals that one via its own blacklist), and _plan finding no route
+    to the goal at all (the "noRoute" hold in walkTo, above). Only the last
+    is actually stuck — bot.holdReason == "noRoute" once BLOCKED_WAIT_TURNS
+    patience for it is spent. Arrival clears the hold itself; a blocked-tile
+    retry leaves a different reason ("walkBlocked") or none.
+
+    On that stuck case: wipe the stale path/goal/avoid state and the hold,
+    and report True. Nothing here decides *what* to walk toward next — that
+    stays the caller's call (see raidBot.py's site-vs-core fallback) — this
+    just guarantees the next attempt, whatever the target, gets a clean
+    search instead of one poisoned by a walkAvoid built for a route that's
+    already given up on.
+    """
+    used = walkTo(bot, ct, isGoal, heuristicGoal, goal)
+    if used or bot.holdReason != "noRoute":
+        return False
+
+    if debug.ENABLED:
+        debug.log("walkTo", f"idx={bot.hivemind.my_index} goal={goal} "
+                             f"pos={ct.get_position()} GIVING UP — no route found, retargeting")
+    bot.walkPath = None
+    bot.walkGoal = None
+    bot.walkAvoid.clear()
+    clearHold(bot)
+    return True
+
+
 def stepToward(bot, ct: Controller, tile: Position) -> bool:
     d = ph.beltFacing(ct.get_position(), tile)
     if d is not None and ph.canStandNow(ct, tile) and ct.can_move(d):

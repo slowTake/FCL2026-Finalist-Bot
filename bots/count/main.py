@@ -29,7 +29,7 @@ import store  # noqa: E402
 from ecoBot import runEcoBot  # noqa: E402
 from hivemind import CoreState, HiveMind, unpack_cores  # noqa: E402
 from raidBot import runRaidBot  # noqa: E402
-from respawn import runCoreSpawn  # noqa: E402
+from respawn import isReplenishmentRaider, runCoreSpawn  # noqa: E402
 from sentinelBot import runSentinelBot  # noqa: E402
 from telemetry import ENABLED as CPU_TELEMETRY, CpuMeter  # noqa: E402
 
@@ -76,6 +76,11 @@ class Player:
         # core launcher, so it never plants a second after walking out of sight.
         self._placedLauncher = False
 
+        # Raider replenishment clock (respawn.runCoreSpawn). Round the core last
+        # spawned an 800-Ti replenishment raider, so the next waits out the
+        # interval. None until the first one; only ever set on the core.
+        self._lastReplenishRound: int | None = None
+
         # Gunner idle timer (guns.gunnerLoop). Round this gunner last fired; it
         # recycles itself after guns.IDLE_SELF_DESTRUCT_ROUNDS idle rounds. None
         # until its first loop, which seeds the clock at birth so a never-fired
@@ -96,6 +101,14 @@ class Player:
         self._ctxRound: int = -1
         self._ctxNetwork: set[tuple[int, int]] = set()
         self._ctxThreat: set[tuple[int, int]] = set()
+
+        # Tiles this raider fled from enemy gunner fire, tile -> round marked
+        # (roles/raidBot._siege). Only avoiding a gunner's *live* facing means a
+        # tile reads safe again the instant the gunner rotates off it, so without
+        # this the raider ping-pongs between two tiles and eats the hit on
+        # arrival — blacklisting the vacated tile for a few turns makes it orbit
+        # instead. Empty on any unit that never sieges.
+        self._siegeDodgeBlacklist: dict[tuple[int, int], int] = {}
 
         # Instrumentation (telemetry.py) — None unless COUNT_CPU=1.
         self._cpu = CpuMeter() if CPU_TELEMETRY else None
@@ -156,7 +169,7 @@ class Player:
         if index and index == raider1 and launcher.placeCoreLauncher(self, ct):
             return
 
-        if index and index in (raider1, raider2):
+        if index and (index in (raider1, raider2) or isReplenishmentRaider(index)):
             runRaidBot(self, ct)
             return
 

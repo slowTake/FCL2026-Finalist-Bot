@@ -23,7 +23,7 @@ import launcher
 import pathfindingHelpers as ph
 import raid
 import store
-from movement import walkTo
+from movement import walkOrRetarget, walkTo
 from patience import BLOCKED_WAIT_TURNS, clearHold, holdTask
 from pathing import manhattan
 
@@ -83,9 +83,19 @@ def runRaidBot(bot, ct: Controller) -> None:
             # stepping there a tile at a time. Held turns fall through to the walk.
             if launcher.requestLaunch(bot, ct, site):
                 return
-            if approach(bot, ct, site):
+            handled, stuck = approach(bot, ct, site)
+            if stuck:
+                # No route to this emplacement at all — abandon it and press
+                # the core instead, same turn (a stuck turn never moved us,
+                # so nothing is wasted). The core will pick a fresh site.
+                _giveUpOnSite(bot, ct)
+                pressCore(bot, ct)
                 return
-            advance(bot, ct, site)
+            if handled:
+                return
+            if advance(bot, ct, site):
+                _giveUpOnSite(bot, ct)
+                pressCore(bot, ct)
             return
 
     # Below the surplus gate, or nothing to build: press and besiege the core.
@@ -110,6 +120,15 @@ _SIEGE_RADIUS = 3
 # the raider's whole job below that gate.
 _SIEGE_MIN_TI = 15
 
+# How long a tile the raider fled from gunner fire stays barred (kept in
+# bot._siegeDodgeBlacklist). Long enough that a gunner rotating to track can't
+# lure it straight back onto the tile it just left and take the hit on arrival.
+_SIEGE_DODGE_MEMORY_TURNS = 3
+
+# How far to look for a tile out of a gunner's live line when stepping off it.
+# Small on purpose — the raider dances just off the line, it does not retreat.
+_DODGE_RADIUS = 2
+
 
 def _siegeTileNeedsWork(bot, ct: Controller, tile: Position) -> bool:
     """True if this core-ring tile is either an enemy belt to cut or an open gap
@@ -123,21 +142,101 @@ def _siegeTileNeedsWork(bot, ct: Controller, tile: Position) -> bool:
     return False
 
 
-def _nextSiegeTile(bot, ct: Controller, ringTiles) -> Position | None:
+def _nextSiegeTile(bot, ct: Controller, ringTiles, gunners, cache) -> Position | None:
     """Nearest core-ring tile that still needs cutting or walling, or None once
-    the ring is fully severed and sealed."""
+    the ring is fully severed and sealed.
+
+    With gunners in sight, a tile whose every approach is in a live line is
+    deprioritised so the raider circles to a safe side of the core. With none,
+    this is byte-for-byte the original nearest-by-manhattan pick — `noSafe` is a
+    constant False, and strict `<` keeps the first tile at the min distance in
+    ring order, exactly as before. Keeping the no-gunner path identical matters:
+    perturbing tie-breaks or the walk target here (an earlier version did) shifts
+    which belt is cut turn to turn and stalls the siege even with no threat."""
     pos = ct.get_position()
     best = None
-    bestD = None
+    bestKey = None
     for t in ringTiles:
         if not ph.inBounds(ct, t):
             continue
         if not _siegeTileNeedsWork(bot, ct, t):
             continue
-        d = manhattan(pos, t)
-        if bestD is None or d < bestD:
-            best, bestD = t, d
+        noSafe = bool(gunners) and _safeStandTile(bot, ct, t, gunners, cache) is None
+        key = (noSafe, manhattan(pos, t))
+        if bestKey is None or key < bestKey:
+            best, bestKey = t, key
     return best
+
+
+def _pruneDodge(bot, ct: Controller) -> dict[tuple[int, int], int]:
+    """Drop dodge-blacklist entries older than _SIEGE_DODGE_MEMORY_TURNS; return
+    the live dict (bot._siegeDodgeBlacklist)."""
+    mem = bot._siegeDodgeBlacklist
+    if mem:
+        rnd = ct.get_current_round()
+        for k in [k for k, marked in mem.items()
+                  if rnd - marked >= _SIEGE_DODGE_MEMORY_TURNS]:
+            del mem[k]
+    return mem
+
+
+def _safeStandTile(bot, ct: Controller, ringTile: Position, gunners, cache) -> Position | None:
+    """The standable tile beside `ringTile` that is out of every gunner's live line
+    and closest to where the raider already stands — minimal displacement, never a
+    flight away from the gunner. None if every side is in a live line this turn.
+
+    Belt-shielded tiles qualify for free: a gunner's line is blocked by the enemy's
+    own belt, so the far side of a hostile relay reads safe. Tiles the raider just
+    fled are skipped so a tracking gunner can't lure it back onto one."""
+    pos = ct.get_position()
+    mem = bot._siegeDodgeBlacklist
+    best = None
+    bestKey = None
+    for n in ph.orthogonalTiles(ringTile):
+        if not ph.canStandNow(ct, n):
+            continue
+        if (n.x, n.y) in mem:
+            continue
+        if guns.tileUnderGunnerFire(ct, n, gunners, cache=cache):
+            continue
+        key = (manhattan(pos, n), n.x, n.y)
+        if bestKey is None or key < bestKey:
+            best, bestKey = n, key
+    return best
+
+
+def _stepOffFire(bot, ct: Controller, gunners, cache, dodge, objective: Position) -> bool:
+    """Step to the nearest tile out of every gunner's live line, biased toward
+    `objective` (the ring tile we want to work, or the enemy core). Records the
+    vacated tile in dodge memory so a tracking gunner can't lure us straight back.
+
+    True if it moved (or held the move out for a cooldown); False if no off-line
+    tile is within reach — genuinely boxed in, and the caller just holds.
+    Candidates rank by progress toward the objective first, then by how little we
+    move, never by distance from the gunner: the raider dances just off the line
+    and stays on the core, which also bleeds the enemy's ammo as it re-aims."""
+    pos = ct.get_position()
+    best = None
+    bestKey = None
+    for dy in range(-_DODGE_RADIUS, _DODGE_RADIUS + 1):
+        for dx in range(-_DODGE_RADIUS, _DODGE_RADIUS + 1):
+            if dx == 0 and dy == 0:
+                continue
+            cand = Position(pos.x + dx, pos.y + dy)
+            if not ph.canStandNow(ct, cand):
+                continue
+            if (cand.x, cand.y) in dodge:
+                continue
+            if guns.tileUnderGunnerFire(ct, cand, gunners, cache=cache):
+                continue
+            key = (manhattan(cand, objective), manhattan(pos, cand), cand.x, cand.y)
+            if bestKey is None or key < bestKey:
+                best, bestKey = cand, key
+    if best is None:
+        return False
+    dodge[(pos.x, pos.y)] = ct.get_current_round()
+    return walkTo(bot, ct, lambda p, b=best: p.x == b.x and p.y == b.y,
+                  best, ("siegeDodge", best.x, best.y))
 
 
 def _siege(bot, ct: Controller, enemyCore: Position) -> bool:
@@ -145,6 +244,12 @@ def _siege(bot, ct: Controller, enemyCore: Position) -> bool:
 
     Returns True once the raider is in siege range (committed to the ring),
     False while it's still too far — the caller then closes the distance.
+
+    Safety: the raider never fires or walls from a tile in a gunner's live
+    (current-facing) line, and never stands to work from one. When the near
+    approach is exposed it circles to a covered side (_nextSiegeTile /
+    _safeStandTile); when nothing near is safe it steps one tile off the line and
+    dances rather than retreating (_stepOffFire).
     """
     pos = ct.get_position()
     if ph.manhattanToCore(pos, enemyCore) > _SIEGE_RADIUS:
@@ -153,7 +258,15 @@ def _siege(bot, ct: Controller, enemyCore: Position) -> bool:
     ringTiles = ph.coreRing(enemyCore)
     canSpend = ct.get_global_resources() >= _SIEGE_MIN_TI
 
-    if ct.get_action_cooldown() == 0 and canSpend:
+    gunners = guns.enemyGunners(ct)
+    fireCache: dict = {}
+    dodge = _pruneDodge(bot, ct)
+    exposed = bool(gunners) and guns.tileUnderGunnerFire(ct, pos, gunners, cache=fireCache)
+
+    # Act only from a tile outside every gunner's live line. Standing in one, we
+    # skip the cut/wall this turn and reposition below — a supply cut is never
+    # worth handing the gun a free shot.
+    if ct.get_action_cooldown() == 0 and canSpend and not exposed:
         # 1) Sever an adjacent incoming belt — supply denial first.
         for t in ringTiles:
             if manhattan(pos, t) != 1:
@@ -174,12 +287,35 @@ def _siege(bot, ct: Controller, enemyCore: Position) -> bool:
                     debug.log("raidBot", f"siege-wall {pos}->{t} rnd={ct.get_current_round()}")
                 return True
 
-    # No adjacent work (done, broke, or on cooldown): move to the next ring tile
-    # that needs it. If the ring is fully sealed, hold — the siege is maintained,
-    # and re-engages the moment the enemy breaks a barrier or lays a new belt.
-    nxt = _nextSiegeTile(bot, ct, ringTiles)
-    if nxt is not None:
-        walkTo(bot, ct, lambda p: manhattan(p, nxt) == 1, nxt, ("siege", nxt.x, nxt.y))
+    # No adjacent work (done, broke, on cooldown, or this spot is exposed): move
+    # toward the next ring tile that needs work.
+    nxt = _nextSiegeTile(bot, ct, ringTiles, gunners, fireCache)
+
+    if not gunners:
+        # No threat: the original walk, untouched — head for any tile beside nxt,
+        # hold once there. Keeping this path identical to before is what stops the
+        # safety machinery from perturbing an unthreatened siege (see _nextSiegeTile).
+        if nxt is not None:
+            walkTo(bot, ct, lambda p: manhattan(p, nxt) == 1, nxt, ("siege", nxt.x, nxt.y))
+        return True
+
+    # Gunners in sight: approach nxt only from a tile off their live line, and
+    # only if such a tile exists (else the ring's exposed here — dance below).
+    if nxt is not None and _safeStandTile(bot, ct, nxt, gunners, fireCache) is not None:
+        def safeBeside(p, tgt=nxt):
+            return (manhattan(p, tgt) == 1
+                    and not guns.tileUnderGunnerFire(ct, p, gunners, cache=fireCache)
+                    and (p.x, p.y) not in bot._siegeDodgeBlacklist)
+
+        walkTo(bot, ct, safeBeside, nxt, ("siege", nxt.x, nxt.y))
+        return True
+
+    # Ring sealed, or every approach to nxt is in a live line right now. If we're
+    # sitting in one, step off it (biased toward the work / the core) instead of
+    # dying in place; otherwise hold — the sentinel ring keeps grinding the core.
+    if exposed:
+        _stepOffFire(bot, ct, gunners, fireCache, dodge,
+                     nxt if nxt is not None else enemyCore)
     return True
 
 
@@ -197,7 +333,12 @@ def pressCore(bot, ct: Controller) -> None:
         return
     if launcher.requestLaunch(bot, ct, enemyCore):
         return
-    if approach(bot, ct, enemyCore):
+    # The enemy core is already the terminal target — there's nothing further
+    # to fall back to, so `stuck` is dropped on the floor here. walkOrRetarget
+    # still did its job internally (clean walkPath/walkGoal/walkAvoid), which
+    # is what keeps this from grinding the same dead search every turn.
+    handled, _stuck = approach(bot, ct, enemyCore)
+    if handled:
         return
     advance(bot, ct, enemyCore)
 
@@ -211,6 +352,21 @@ def buildSentinel(bot, ct: Controller, site: Position, facing: Direction) -> boo
         return False
 
     if ct.get_action_cooldown() != 0:
+        return True
+
+    # The core picks published targets blind (no vision at the enemy core). Re-vet
+    # here with the raider's own eyes: never drop a sentinel where a visible enemy
+    # gun already bears at its current facing — a free shot the instant it's built.
+    # Take a vetted neighbour if one still reaches the core, else clear the target
+    # so the core republishes.
+    if guns.siteInDirectTurretLos(ct, site, guns.enemyTurrets(ct), cache={}):
+        choice = raid.fallbackEmplacement(bot, ct, site)
+        if choice is not None:
+            clearHold(bot)
+            _finishBuild(ct, *choice)
+            return True
+        store.put(ct, store.RAID_TARGET, 0)
+        clearHold(bot)
         return True
 
     if ct.can_build_sentinel(site, facing):
@@ -262,6 +418,17 @@ def buildSentinel(bot, ct: Controller, site: Position, facing: Direction) -> boo
     return True
 
 
+def _giveUpOnSite(bot, ct: Controller) -> None:
+    """The published emplacement is unroutable — clear it so the core picks a
+    fresh one. Sibling to buildSentinel's raidSiteBlocked cleanup above, for
+    the walk-there half instead of the build-it half. No clearHold: the
+    walkOrRetarget call that reported `stuck` already cleared it."""
+    if debug.ENABLED:
+        debug.log("raidBot", f"idx={bot.hivemind.my_index} pos={ct.get_position()} "
+                              f"site unroutable — abandoning RAID_TARGET")
+    store.put(ct, store.RAID_TARGET, 0)
+
+
 def _finishBuild(ct: Controller, site: Position, facing: Direction) -> None:
     ct.build_sentinel(site, facing)
     # Clear the slot so the core picks the next emplacement. Store writes are
@@ -308,33 +475,45 @@ def buildLocalSentinel(bot, ct: Controller) -> bool:
     return True
 
 
-def approach(bot, ct: Controller, site: Position) -> bool:
+def approach(bot, ct: Controller, site: Position) -> tuple[bool, bool]:
     """Final stretch: goal is a tile beside the emplacement, not the emplacement
-    itself — a builder standing on it cannot build on it."""
+    itself — a builder standing on it cannot build on it.
+
+    Returns (handled, stuck). handled is unrelated to whether the walk
+    succeeded — it's just "close enough that this is our call to make" — so
+    callers keep checking it exactly as before. stuck is True only when
+    walkOrRetarget gave up on reaching `site` specifically (no route at all,
+    patience spent); callers use that to abandon this target rather than
+    spin on it forever (see runRaidBot / pressCore).
+    """
     pos = ct.get_position()
     if manhattan(pos, site) > _CHUNK:
-        return False
+        return False, False
 
     def beside(p: Position) -> bool:
         return ph.beltFacing(p, site) is not None
 
-    used = walkTo(bot, ct, beside, site, ("raidSite", site.x, site.y))
+    stuck = walkOrRetarget(bot, ct, beside, site, ("raidSite", site.x, site.y))
     if debug.ENABLED:
         debug.log("raidBot", f"idx={bot.hivemind.my_index} approach pos={pos} "
-                              f"site={site} walkTo_returned={used}")
-    return True
+                              f"site={site} stuck={stuck}")
+    return True, stuck
 
 
-def advance(bot, ct: Controller, site: Position) -> None:
-    """Too far for one search: walk a waypoint at a time instead."""
+def advance(bot, ct: Controller, site: Position) -> bool:
+    """Too far for one search: walk a waypoint at a time instead.
+
+    Returns True iff walkOrRetarget gave up reaching `site` — see approach's
+    docstring for what callers do with that.
+    """
     wp = _waypoint(bot, ct, site)
     if wp is None:
-        return
+        return False
 
     def atWaypoint(p: Position) -> bool:
         return p.x == wp.x and p.y == wp.y
 
-    walkTo(bot, ct, atWaypoint, wp, ("waypoint", wp.x, wp.y))
+    return walkOrRetarget(bot, ct, atWaypoint, wp, ("waypoint", wp.x, wp.y))
 
 
 def _towardTarget(pos: Position, target: Position, budget: int) -> Position:
