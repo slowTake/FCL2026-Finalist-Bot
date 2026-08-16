@@ -52,11 +52,15 @@ and would be expensive to relearn.
   tiles are only ever attached pointing *into* an already-connected member, so
   connectivity holds by induction and never needs re-proving. This is what
   replaces baron's five-function merge check.
-- **Only walls and ally harvesters are truly impassable.** Everything else is
-  priced by `tileCost`, so A* can decide that smashing through one enemy
-  conveyor beats a 15-tile detour. Planning uses `isImpassable` + `tileCost`;
-  the per-turn move uses `canStandNow`. Conflating the two forces a replan every
-  time anything is in the way.
+- **Only walls and ally harvesters are truly impassable — plus ore, and only on
+  the relay profile.** Everything else is priced by `tileCost`, so A* can decide
+  that smashing through one enemy conveyor beats a 15-tile detour. The one
+  profile-specific block is ore: `makeCostFn` returns impassable for an ore tile
+  while relaying (belts don't belong on ore, and crossing one strands a belt
+  feeding a harvester built there later — see the relay-vs-ore note below); the
+  walk profile still prices it normally. Planning otherwise uses `isImpassable` +
+  `tileCost`; the per-turn move uses `canStandNow`. Conflating the two forces a
+  replan every time anything is in the way.
 - **Hold, don't abandon.** A builder that can't act this turn usually can in two
   or three. `patience.holdTask` is the single place that judgement lives.
 - **The relay goal is a tile *beside* the network, not on it.** The anchor the
@@ -231,11 +235,16 @@ point-mirrored map is still badly skewed.
   facing its planned next tile and never fixes it). Fix: `makeCostFn` returns
   `None` for any ore tile on the **relay** profile (`not walk and t.ore`), so
   relays route around all ore — which also covers both teams' harvesters (all sit
-  on ore). Two dead ends found the hard way: a reactive "don't face a harvester"
-  guard in `layBelt` stops the belt 1 tile short (re-planning seeds at the source
-  harvester, which sees its own laid-but-dead-ending chain as "already feeding a
-  belt" and bails); and making ore/harvesters impassable *globally* (walk too)
-  regressed fjordgate — keep it relay-scoped.
+  on ore). This is the *routing* half; the *merge* half is `planRelay`'s
+  `_chainVisiblyIntact`, which refuses to graft onto an ally belt whose facing
+  chain visibly dead-ends (into a barrier or gap) instead of reaching the network.
+  Together a relay neither routes *into* a harvester nor merges *onto* a line that
+  feeds one; observed harvester-feeding went to zero. Two dead ends found the hard
+  way: a reactive "don't face a harvester" guard in `layBelt` stops the belt 1
+  tile short (re-planning seeds at the source harvester, which sees its own
+  laid-but-dead-ending chain as "already feeding a belt" and bails); and making
+  ore/harvesters impassable *globally* (walk too) regressed fjordgate — keep it
+  relay-scoped.
 
 ## Known gaps
 

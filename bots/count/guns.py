@@ -21,6 +21,8 @@ from fcode import Controller, Direction, EntityType, GameConstants, Position
 import debug
 import pathfindingHelpers as ph
 import store
+from movement import walkTo
+from patience import BLOCKED_WAIT_TURNS, holdTask
 from pathing import manhattan
 from respawn import MAX_BUILDERS
 
@@ -245,6 +247,35 @@ def _coveredByAllyGunner(ct: Controller, myTeam, target: Position) -> bool:
     return False
 
 
+def _dropGunnerOn(ct: Controller, target: Position) -> bool:
+    """Build a gunner on the first orthogonal pad of the calling unit that bears on
+    `target`, unless an ally gunner already covers it. True iff it built one.
+
+    The shared pad-scan behind both placeGunner (harvester denial) and defendCore
+    (home defence); the callers differ only in which targets they pass and which
+    economy gate they clear first."""
+    myTeam = ct.get_team()
+    if _coveredByAllyGunner(ct, myTeam, target):
+        return False
+    here = ct.get_position()
+    for pad in ph.orthogonalTiles(here):
+        facing = _gunFacing(pad, target)
+        if facing is None:
+            continue
+        if not ct.can_fire_from(pad, facing, EntityType.GUNNER, target):
+            continue
+        if ct.can_build_gunner(pad, facing):
+            ct.build_gunner(pad, facing)
+            if debug.ENABLED:
+                debug.log(
+                    "gun",
+                    f"placed at {pad} facing {facing} -> {target} "
+                    f"rnd={ct.get_current_round()}",
+                )
+            return True
+    return False
+
+
 def placeGunner(bot, ct: Controller) -> bool:
     """Opportunistically plant a gunner to suppress a nearby enemy harvester.
 
@@ -274,24 +305,89 @@ def placeGunner(bot, ct: Controller) -> bool:
     targets.sort(key=lambda p: manhattan(here, p))
 
     for target in targets[:_GUN_TARGET_LIMIT]:
-        if _coveredByAllyGunner(ct, myTeam, target):
-            continue
-        for pad in ph.orthogonalTiles(here):
-            facing = _gunFacing(pad, target)
-            if facing is None:
-                continue
-            if not ct.can_fire_from(pad, facing, EntityType.GUNNER, target):
-                continue
-            if ct.can_build_gunner(pad, facing):
-                ct.build_gunner(pad, facing)
-                if debug.ENABLED:
-                    debug.log(
-                        "gun",
-                        f"placed at {pad} facing {facing} -> {target} "
-                        f"rnd={ct.get_current_round()}",
-                    )
-                return True
+        if _dropGunnerOn(ct, target):
+            return True
     return False
+
+
+# --- Home defence -----------------------------------------------------------
+# First-cut guardian: an eco-bot near our own core drops a gunner on an enemy
+# closing on it. Reactive and vision-limited — only a bot that can already see the
+# threat responds, and it never abandons a relay/build to march home (it sits below
+# those in runEcoBot). What it buys is the mechanic: a rush at the core draws fire
+# instead of nothing. gunnerLoop aims and fires the gunner after; the idle
+# self-destruct recycles it once the threat clears.
+
+# Mirrors ecoBot.CORE_DEFENSE_RADIUS by value, kept local so guns does not depend on
+# a role module (raidBot depends on guns, not the other way).
+CORE_THREAT_RADIUS = 8
+
+# Enemy types that actually threaten the core — mobile attackers and turrets. A
+# harvester or the enemy core never comes to kill ours, so neither counts.
+_CORE_THREAT_TYPES = (
+    EntityType.BUILDER_BOT,
+    EntityType.GUNNER,
+    EntityType.SENTINEL,
+    EntityType.LAUNCHER,
+)
+
+
+def _nearestCoreThreat(bot, ct: Controller) -> Position | None:
+    """Nearest visible enemy attacker within CORE_THREAT_RADIUS of our core, or None.
+    Distance is to the core — the thing we protect — so the threat closest to home is
+    engaged first."""
+    core = bot.corePos
+    if core is None:
+        return None
+    myTeam = ct.get_team()
+    best = None
+    bestD = None
+    for eid in ct.get_nearby_entities():
+        if ct.get_team(eid) == myTeam:
+            continue
+        if ct.get_entity_type(eid) not in _CORE_THREAT_TYPES:
+            continue
+        p = ct.get_position(eid)
+        d = ph.manhattanToCore(p, core)
+        if d > CORE_THREAT_RADIUS:
+            continue
+        if bestD is None or d < bestD:
+            best, bestD = p, d
+    return best
+
+
+def defendCore(bot, ct: Controller) -> bool:
+    """Home defence: drop a gunner on an enemy closing on our core, or move into
+    range so a pad bears on it. True if it acted this turn.
+
+    Gated on affordability only — defence deliberately bypasses the offensive surplus
+    gate, because a core under attack is worth spending the bank down for. But if we
+    can't afford a gunner at all we bail rather than idle beside the threat: better to
+    go earn than sit there useless.
+
+    Reactive v1: fires only for a threat this builder can see, and never leaves a
+    relay/build to run home (it sits below those in runEcoBot)."""
+    if bot.corePos is None:
+        return False
+    threat = _nearestCoreThreat(bot, ct)
+    if threat is None:
+        return False
+    if ct.get_global_resources() < ct.get_gunner_cost():
+        return False
+    if ct.get_action_cooldown() == 0 and _dropGunnerOn(ct, threat):
+        if debug.ENABLED:
+            debug.log("gun", f"home-defence gunner vs {threat} "
+                             f"rnd={ct.get_current_round()}")
+        return True
+    # Affordable but not placed (cooldown, or no pad bears yet). Close in and hold
+    # station rather than fall through to seekOre and wander off the threat. walkTo
+    # tracks a moving goal, so a shifting raider stays covered.
+    def inRange(p: Position) -> bool:
+        return p.distance_squared(threat) <= GUNNER_RANGE_SQ
+
+    if walkTo(bot, ct, inRange, threat, ("defend", threat.x, threat.y)):
+        return True
+    return holdTask(bot, "defendHold", BLOCKED_WAIT_TURNS)
 
 
 # --- Ammo ---------------------------------------------------------------

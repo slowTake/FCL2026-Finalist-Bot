@@ -80,6 +80,14 @@ def runEcoBot(bot, ct: Controller) -> None:
     if heal.healNearby(bot, ct, heal.ECO_HEAL_TYPES):
         return
 
+    # Home defence before repair or new ore: shoot an attacker closing on the core
+    # rather than only patch the belt it cut. Function-level import — a module-level
+    # `import guns` cycles ecoBot -> guns -> respawn -> ecoBot (respawn imports
+    # chooseOre from here). The neutral-module fix is the guardian plan's follow-up.
+    import guns
+    if guns.defendCore(bot, ct):
+        return
+
     # Restore a supply line the enemy cut near our core (barrier over a belt tile)
     # before seeking new ore — a severed line loses a whole harvester's output,
     # worth more than another node. Below build so it never interrupts one.
