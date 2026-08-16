@@ -14,10 +14,17 @@ launcher reads that next turn and throws it at the in-range tile nearest that
 goal. Role-agnostic, and always aimed at the right place because the body itself
 chose it.
 
-All launcher logic lives here (placement, the turret loop, the builder-side
-request). `main.py` only wires the LAUNCHER dispatch and calls
-`placeCoreLauncher` for the first raider; the role files each make one
-`requestLaunch` call. See docs/roadmap.md / store.py for the slot-3 trade-off.
+**Defence.** Before serving its own team's throw requests the launcher checks
+for an enemy builder within reach and flings it back toward the enemy core —
+free (no ammo), and a builder thrown five tiles home is five tiles of walking
+it has to redo before it can threaten our launcher or economy again. Gated on
+`can_launch`, which is the ground truth on whether an enemy body is grabbable.
+
+All launcher logic lives here (placement, the turret loop with its defensive and
+request-serving steps, and the builder-side request). `main.py` only wires the
+LAUNCHER dispatch and calls `placeCoreLauncher` for the first raider; the role
+files each make one `requestLaunch` call. See docs/roadmap.md / store.py for the
+slot-3 trade-off.
 """
 
 from __future__ import annotations
@@ -204,6 +211,50 @@ def requestLaunch(bot, ct: Controller, target: Position | None) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Defence
+# ---------------------------------------------------------------------------
+
+
+def _repelHostile(bot, ct: Controller) -> bool:
+    """Fling the nearest grabbable enemy builder back toward the enemy core.
+
+    Nearest first because that is both the most urgent threat and the one most
+    likely to be inside pickup range; `can_launch` is the real gate on whether it
+    can actually be picked up, so out-of-reach candidates simply fail and the
+    loop moves on. The throw goal is the enemy core, so `_bestThrow` sends the
+    body toward its own side — away from our launcher and economy.
+    """
+    enemyCore = raid.enemyCorePos(bot, ct)
+    if enemyCore is None:
+        return False
+
+    me = ct.get_team()
+    launcherPos = ct.get_position()
+    hostiles = [
+        ct.get_position(eid)
+        for eid in ct.get_nearby_entities()
+        if ct.get_team(eid) != me
+        and ct.get_entity_type(eid) == EntityType.BUILDER_BOT
+    ]
+    hostiles.sort(key=lambda p: manhattan(launcherPos, p))
+
+    for hp in hostiles:
+        target = _bestThrow(bot, ct, hp, enemyCore)
+        if target is None:
+            continue
+        if ct.can_launch(hp, target):
+            ct.launch(hp, target)
+            if debug.ENABLED:
+                debug.log(
+                    "launcher",
+                    f"repelled {hp} -> {target} (enemyCore {enemyCore}) "
+                    f"rnd={ct.get_current_round()}",
+                )
+            return True
+    return False
+
+
+# ---------------------------------------------------------------------------
 # The launcher turret loop
 # ---------------------------------------------------------------------------
 
@@ -238,12 +289,17 @@ def _bestThrow(bot, ct: Controller, requester: Position, target: Position):
 
 
 def runLauncher(bot, ct: Controller) -> None:
-    """Serve one posted launch request per turn.
+    """One action per turn: defend first, then serve a posted launch request.
 
-    Request-driven only: with no request there is nothing to aim, so the launcher
-    idles rather than guessing where an adjacent builder wants to go.
+    Defence outranks ferrying our own builders — an enemy body at the door can
+    destroy the launcher, and there's only one throw to spend. With no hostile
+    and no request there is nothing to aim, so the launcher idles rather than
+    guessing where an adjacent builder wants to go.
     """
     if ct.get_action_cooldown() != 0:
+        return
+
+    if _repelHostile(bot, ct):
         return
 
     req = unpackRequest(ct.read_store(store.LAUNCH_REQUEST))

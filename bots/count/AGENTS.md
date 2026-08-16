@@ -14,21 +14,21 @@ known gaps) and [docs/roadmap.md](docs/roadmap.md) (what's next and why).
 
 | File | Purpose |
 |---|---|
-| `main.py` | `Player` dispatch and the per-unit state manifest — routes CORE to spawn, raid-target publishing and ammo top-up; BUILDER_BOT to `raidBot` or `ecoBot` by role (first raider also plants the launcher); SENTINEL to `sentinelBot`; LAUNCHER to `launcher`. |
+| `main.py` | `Player` dispatch and the per-unit state manifest — routes CORE to spawn, raid-target publishing and ammo top-up; BUILDER_BOT to `raidBot` or `ecoBot` by role (first raider also plants the launcher); SENTINEL to `sentinelBot`; GUNNER to `guns.gunnerLoop`; LAUNCHER to `launcher`. |
 | `movement.py` | Generic `walkTo`/`stepToward`/`exploreStep` — plan-once, cache, follow. |
 | `pathfindingHelpers.py` | Shared toolbox: tile reads, impassability, core geometry, network connectivity (`buildNetwork`), cost function + heuristic for A*. |
 | `pathing.py` | Generic weighted 4-connected A*/BFS (`astarFromSeeds`, `bfsFromSeeds`) — no game knowledge by design. |
 | `patience.py` | Single shared "give up yet?" counter (`holdTask`/`clearHold`/`waitTi`). |
 | `raid.py` | Core-side sentinel emplacement selection (geometry-driven), plus the raider's local fallback when the published site goes stale. |
-| `guns.py` | Turret target priorities, the shared hostile gatherer, gunner/sentinel fire+rotate loops, and core-side ammo conversion. |
+| `guns.py` | Turret target priorities, the shared hostile gatherer, gunner/sentinel fire+rotate loops, core-side ammo conversion, the `TI_SURPLUS_THRESHOLD` combat gate (`surplusReady`), and `placeGunner` — the raider's opportunistic gunner drop on an adjacent pad bearing on an enemy harvester/belt. |
 | `store.py` | The communication-store layout: which slot holds what, and the only writer for the ones we own. |
-| `launcher.py` | All launcher logic: the first raider plants one beside the core; builders post their own goal to `store.LAUNCH_REQUEST` and hold; the LAUNCHER loop throws whoever is adjacent toward that goal. |
+| `launcher.py` | All launcher logic: the first raider plants one beside the core; builders post their own goal to `store.LAUNCH_REQUEST` and hold; the LAUNCHER loop defends first (flings a grabbable enemy builder back toward the enemy core) then throws a requesting ally toward its goal. |
 | `relays.py` | Belt-laying/relay logic: plan, lay, contested-tile concession, obstruction clearing. |
 | `respawn.py` | Core spawn logic: builder cap, spawn-tile selection, raider designation. |
 | `telemetry.py` | Optional (`COUNT_CPU=1`) per-unit CPU sampling to stderr. |
 | `hivemind/` | Symlinks into `components/` — shared with baron/bandit, see below. |
 | `roles/ecoBot.py` | Builder economy role: harvester build/seize, ore seeking/picking. |
-| `roles/raidBot.py` | Raider role: walk to the published emplacement, build the sentinel. |
+| `roles/raidBot.py` | Raider role — a core-sieger, never an eco bot. Drops a gunner beside enemy harvesters (`guns.placeGunner`, harvesters only), builds surplus-gated sentinels (published emplacement + `buildLocalSentinel` to densify). With nothing to build it `pressCore`s: at the enemy core ring it severs the incoming belts and walls the ring with barriers (`_siege`), else it closes in. It never harvests, relays, or hijacks (that's `ecoBot`'s job). |
 | `roles/sentinelBot.py` | Sentinel role: fire only — facing is permanent, so there is no rotate step. |
 | `docs/mistakes.md` | Agent errors and traps. |
 | `docs/observations.md` | Game facts, design rationale, known gaps. |

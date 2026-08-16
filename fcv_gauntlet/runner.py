@@ -80,6 +80,65 @@ def resolve_maps(maps_dir: Path, override: list[str] | None, all_maps: bool) -> 
     return maps
 
 
+def _maybe_run_oracle(
+    report_data: dict[str, Any],
+    run_oracle: bool,
+    oracle_yes: bool,
+) -> tuple[str | None, float | None]:
+    """Optionally run fcv_gauntlet.oracle's AI root-cause diagnosis.
+
+    Costs real API money from a personal budget — never calls the API unless
+    both run_oracle and oracle_yes are True. With run_oracle=True and
+    oracle_yes=False this prints a cost estimate and returns without spending
+    anything, so `--oracle` alone is always a safe dry run. See
+    fcv_gauntlet/oracle/AGENT.md before setting oracle_yes=True programmatically.
+    """
+    if not run_oracle:
+        return None, None
+
+    try:
+        from fcv_gauntlet.oracle import (
+            diagnose, check_budget, estimate_cost, format_budget_report, OracleError,
+        )
+    except ImportError:
+        print(
+            "Warning: --oracle requested but the 'anthropic' package is not installed "
+            "(pip install anthropic). Skipping AI diagnosis.",
+            file=sys.stderr,
+        )
+        return None, None
+
+    status = check_budget()
+    print(format_budget_report(status))
+    if not status.ok:
+        print(f"Skipping AI diagnosis: {status.reason}", file=sys.stderr)
+        return None, None
+
+    if not oracle_yes:
+        est_low = estimate_cost(3_000, 800)
+        est_high = estimate_cost(30_000, 3_000)
+        print(
+            f"\n--oracle given without --oracle-yes: estimated cost "
+            f"${est_low:.3f}-${est_high:.3f}. No API call made — this would spend "
+            f"real money from a personal budget. Re-run with --oracle-yes only "
+            f"after a human has explicitly approved this run's cost.",
+            file=sys.stderr,
+        )
+        return None, None
+
+    try:
+        result = diagnose(report_data, confirmed=True)
+    except OracleError as exc:
+        print(f"Oracle diagnosis failed: {exc}", file=sys.stderr)
+        return None, None
+
+    print(
+        f"Oracle diagnosis complete — cost ${result.cost_usd:.4f} "
+        f"({result.tool_calls_used} file reads, stopped: {result.stopped_reason})"
+    )
+    return result.text, result.cost_usd
+
+
 def _build_badge_str(counts: dict[str, int]) -> str:
     crashes = counts.get("crash", 0)
     orphans = counts.get("orphan_harvester", 0)
@@ -241,6 +300,8 @@ def run_standalone_replay_analysis(
     json_output_path: str | None = None,
     csv_metrics_path: str | None = None,
     markdown_report_path: str | None = None,
+    oracle: bool = False,
+    oracle_yes: bool = False,
 ) -> int:
     """Analyze a single .replay26 file directly without running matches."""
     p = Path(replay_path)
@@ -269,12 +330,14 @@ def run_standalone_replay_analysis(
         verdict_counts={"SINGLE_REPLAY": 1},
     )
 
+    oracle_text, oracle_cost = _maybe_run_oracle(report_data, oracle, oracle_yes)
+
     if json_output_path:
         write_json_report(report_data, json_output_path)
     if csv_metrics_path:
         write_csv_metrics(report_data["games"], csv_metrics_path)
     if markdown_report_path:
-        write_markdown_report(report_data, markdown_report_path)
+        write_markdown_report(report_data, markdown_report_path, oracle_text=oracle_text, oracle_cost_usd=oracle_cost)
 
     tot_loss = total_estimated_loss(events)
     print(f"FCV Standalone Replay Diagnostic: {replay_path}")
@@ -313,6 +376,8 @@ def run_full_gauntlet(
     fail_on_regression: bool = False,
     warn_on_oscillation: int | None = None,
     badges_only: bool = False,
+    oracle: bool = False,
+    oracle_yes: bool = False,
 ) -> int:
     bot1 = bot_name
     bot2 = opponent_name
@@ -507,6 +572,8 @@ def run_full_gauntlet(
         warn_on_oscillation=warn_on_oscillation,
     )
 
+    oracle_text, oracle_cost = _maybe_run_oracle(report_data, oracle, oracle_yes)
+
     # Output generation
     if json_output_path:
         write_json_report(report_data, json_output_path)
@@ -515,7 +582,7 @@ def run_full_gauntlet(
     if save_baseline_path:
         save_baseline(report_data, save_baseline_path)
     if markdown_report_path:
-        write_markdown_report(report_data, markdown_report_path)
+        write_markdown_report(report_data, markdown_report_path, oracle_text=oracle_text, oracle_cost_usd=oracle_cost)
 
     # Print GitHub Actions annotations if in CI
     for err in gate_errors:

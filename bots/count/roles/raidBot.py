@@ -17,12 +17,12 @@ from __future__ import annotations
 from fcode import Controller, Direction, EntityType, GameConstants, Position
 
 import debug
+import guns
 import heal
 import launcher
 import pathfindingHelpers as ph
 import raid
 import store
-from ecoBot import runEcoBot
 from movement import walkTo
 from patience import BLOCKED_WAIT_TURNS, clearHold, holdTask
 from pathing import manhattan
@@ -31,48 +31,175 @@ from pathing import manhattan
 _CHUNK = 8
 # How far from an unreachable waypoint to look for a usable one.
 _WAYPOINT_SLACK = 3
+# Manhattan-to-core cutoff for even attempting a local emplacement. A sentinel's
+# diagonal standoff is Manhattan 8 from the core and the raider stands one tile
+# off its pad, so ~9 is the real reach; 10 is slack. Past it `fallbackEmplacement`
+# would find nothing anyway — this just skips its eight engine calls while the
+# raider is still travelling (it runs near the 10ms limit).
+_LOCAL_SENTINEL_RADIUS = 10
 
 
 def runRaidBot(bot, ct: Controller) -> None:
-    # Checked first, every turn: a turret we placed is a standing 30-Ti
-    # investment with nothing else defending it out here, so responding to it
-    # taking fire outranks continuing to travel or starting the next build.
+    # A raider is a harasser, not an eco bot. It never builds harvesters, never
+    # relays, never hijacks for economy — those divert the opening pressure into
+    # farming (the bug this chain was rewritten to kill). Its whole job is to
+    # press the enemy core and grind the supply feeding it.
+
+    # Checked first, every turn: a turret we placed is a standing investment with
+    # nothing else defending it out here, so responding to it taking fire
+    # outranks continuing to travel or starting the next build.
     if heal.healNearby(bot, ct, heal.TURRET_HEAL_TYPES):
         return
 
-    target = raid.readTarget(ct)
-    if target is None:
-        # No emplacement published — either the map was never fingerprinted, or
-        # the core is one round behind re-picking after the last sentinel went up.
-        # Either way the body is worth more on ore than standing still.
-        runEcoBot(bot, ct)
+    # Harvesters get a gunner dropped beside them and nothing else — no
+    # hand-grinding. Surplus-gated and persistent.
+    if guns.placeGunner(bot, ct):
         return
 
-    site, facing = target
-    if debug.ENABLED:
-        nearby = [
-            (ct.get_entity_type(eid), ct.get_position(eid))
-            for eid in ct.get_nearby_entities()
-            if ct.get_team(eid) != ct.get_team()
-        ]
-        debug.log(
-            "raidBot",
-            f"idx={bot.hivemind.my_index} id={ct.get_id()} rnd={ct.get_current_round()} "
-            f"pos={ct.get_position()} site={site} "
-            f"facing={facing} dist={manhattan(ct.get_position(), site)} "
-            f"hp={ct.get_hp()}/{ct.get_max_hp()} nearbyEnemies={nearby}",
-        )
+    # Turrets are bought out of surplus only, so the economy is never starved to
+    # arm a raider. This gates *spending*, not the role — below it the raider
+    # keeps pressing, it just can't build yet.
+    if guns.surplusReady(ct):
+        # Parked in range of the core? Densify the sentinel ring locally instead
+        # of walking the whole map back for the next published target.
+        if buildLocalSentinel(bot, ct):
+            return
 
-    if buildSentinel(bot, ct, site, facing):
+        target = raid.readTarget(ct)
+        if target is not None:
+            site, facing = target
+            if debug.ENABLED:
+                debug.log(
+                    "raidBot",
+                    f"idx={bot.hivemind.my_index} id={ct.get_id()} "
+                    f"rnd={ct.get_current_round()} pos={ct.get_position()} "
+                    f"site={site} facing={facing} "
+                    f"dist={manhattan(ct.get_position(), site)} "
+                    f"hp={ct.get_hp()}/{ct.get_max_hp()}",
+                )
+            if buildSentinel(bot, ct, site, facing):
+                return
+            # A long walk from the emplacement? Get thrown toward it instead of
+            # stepping there a tile at a time. Held turns fall through to the walk.
+            if launcher.requestLaunch(bot, ct, site):
+                return
+            if approach(bot, ct, site):
+                return
+            advance(bot, ct, site)
+            return
+
+    # Below the surplus gate, or nothing to build: press and besiege the core.
+    # Never economy.
+    pressCore(bot, ct)
+
+
+# --- Core siege -------------------------------------------------------------
+# The raider's endgame at the enemy core: sever the belts feeding it and wall
+# its ring with barriers, so supply is cut and the enemy's own builders can't
+# reach the core to repair it or rebuild the line — leaving the sentinels at
+# standoff to grind it down uncontested. Harvesters are not touched here; they
+# get a gunner (guns.placeGunner) and nothing else.
+
+# Manhattan-to-core within which the raider switches from travelling to siege
+# work. The 12 core-ring tiles sit at Manhattan 1-2 from the footprint and the
+# raider works from a tile beside them, so ~3 covers being in position.
+_SIEGE_RADIUS = 3
+
+# Don't spend the bank to zero on 2-3 Ti siege actions — keep this much back for
+# the economy. A floor, not the combat surplus gate: the siege is cheap and is
+# the raider's whole job below that gate.
+_SIEGE_MIN_TI = 15
+
+
+def _siegeTileNeedsWork(bot, ct: Controller, tile: Position) -> bool:
+    """True if this core-ring tile is either an enemy belt to cut or an open gap
+    to wall. Already-barriered tiles, our own turrets, walls, ore, and occupied
+    tiles are all 'done' and skipped."""
+    t = ph.readTile(ct, bot.hivemind, tile)
+    if t.enemy and t.etype in ph.BELT_TYPES:
+        return True  # incoming belt to sever
+    if t.etype is None and not t.wall and not t.ore and not t.builder:
+        return True  # open gap to wall in
+    return False
+
+
+def _nextSiegeTile(bot, ct: Controller, ringTiles) -> Position | None:
+    """Nearest core-ring tile that still needs cutting or walling, or None once
+    the ring is fully severed and sealed."""
+    pos = ct.get_position()
+    best = None
+    bestD = None
+    for t in ringTiles:
+        if not ph.inBounds(ct, t):
+            continue
+        if not _siegeTileNeedsWork(bot, ct, t):
+            continue
+        d = manhattan(pos, t)
+        if bestD is None or d < bestD:
+            best, bestD = t, d
+    return best
+
+
+def _siege(bot, ct: Controller, enemyCore: Position) -> bool:
+    """Cut a belt / wall a gap on the core ring, or reposition along it.
+
+    Returns True once the raider is in siege range (committed to the ring),
+    False while it's still too far — the caller then closes the distance.
+    """
+    pos = ct.get_position()
+    if ph.manhattanToCore(pos, enemyCore) > _SIEGE_RADIUS:
+        return False
+
+    ringTiles = ph.coreRing(enemyCore)
+    canSpend = ct.get_global_resources() >= _SIEGE_MIN_TI
+
+    if ct.get_action_cooldown() == 0 and canSpend:
+        # 1) Sever an adjacent incoming belt — supply denial first.
+        for t in ringTiles:
+            if manhattan(pos, t) != 1:
+                continue
+            tile = ph.readTile(ct, bot.hivemind, t)
+            if tile.enemy and tile.etype in ph.BELT_TYPES and ct.can_fire(t):
+                ct.fire(t)
+                if debug.ENABLED:
+                    debug.log("raidBot", f"siege-cut {pos}->{t} rnd={ct.get_current_round()}")
+                return True
+        # 2) Wall an adjacent open ring tile (also seals a belt tile we just cleared).
+        for t in ringTiles:
+            if manhattan(pos, t) != 1:
+                continue
+            if ct.can_build_barrier(t):
+                ct.build_barrier(t)
+                if debug.ENABLED:
+                    debug.log("raidBot", f"siege-wall {pos}->{t} rnd={ct.get_current_round()}")
+                return True
+
+    # No adjacent work (done, broke, or on cooldown): move to the next ring tile
+    # that needs it. If the ring is fully sealed, hold — the siege is maintained,
+    # and re-engages the moment the enemy breaks a barrier or lays a new belt.
+    nxt = _nextSiegeTile(bot, ct, ringTiles)
+    if nxt is not None:
+        walkTo(bot, ct, lambda p: manhattan(p, nxt) == 1, nxt, ("siege", nxt.x, nxt.y))
+    return True
+
+
+def pressCore(bot, ct: Controller) -> None:
+    """The raider's default when it has nothing to build: besiege the core.
+
+    At the ring, run the siege (cut belts, wall gaps). Otherwise close in — a
+    launcher fling toward the core if one's adjacent, then the chunked walk.
+    """
+    enemyCore = raid.enemyCorePos(bot, ct)
+    if enemyCore is None:
+        return  # designated raiders always know the core; nothing to press
+
+    if _siege(bot, ct, enemyCore):
         return
-    # Beside the launcher and still a long walk from the emplacement? Get thrown
-    # toward it instead of stepping there a tile at a time. Held turns fall
-    # through to the walk once patience runs out.
-    if launcher.requestLaunch(bot, ct, site):
+    if launcher.requestLaunch(bot, ct, enemyCore):
         return
-    if approach(bot, ct, site):
+    if approach(bot, ct, enemyCore):
         return
-    advance(bot, ct, site)
+    advance(bot, ct, enemyCore)
 
 
 def buildSentinel(bot, ct: Controller, site: Position, facing: Direction) -> bool:
@@ -140,6 +267,45 @@ def _finishBuild(ct: Controller, site: Position, facing: Direction) -> None:
     # Clear the slot so the core picks the next emplacement. Store writes are
     # buffered, so the core sees this next round, not this one.
     store.put(ct, store.RAID_TARGET, 0)
+
+
+def buildLocalSentinel(bot, ct: Controller) -> bool:
+    """Lay another sentinel right where the raider stands, if a neighbour tile
+    still reaches the enemy core. This is what turns one-and-done into a ring:
+    after building the published emplacement a raider is already parked in range
+    of the core, so instead of walking the whole map back for the next published
+    target it fills the adjacent standoff tiles one per turn.
+
+    Surplus is the caller's gate. `fallbackEmplacement` (no primarySite) does the
+    work — it only returns pads whose sentinel bears on the enemy core and are
+    buildable, so "in range of the core" and "not stacking on an existing turret"
+    both fall out of it, and it never fires anywhere but beside the core.
+    """
+    if ct.get_action_cooldown() != 0:
+        return False
+    if ct.get_global_resources() < ct.get_sentinel_cost():
+        return False
+    if ct.get_unit_count() >= GameConstants.MAX_TEAM_UNITS:
+        return False
+
+    enemyCore = raid.enemyCorePos(bot, ct)
+    if enemyCore is None:
+        return False
+    if ph.manhattanToCore(ct.get_position(), enemyCore) > _LOCAL_SENTINEL_RADIUS:
+        return False
+
+    choice = raid.fallbackEmplacement(bot, ct)
+    if choice is None:
+        return False
+    site, facing = choice
+    ct.build_sentinel(site, facing)
+    if debug.ENABLED:
+        debug.log(
+            "raidBot",
+            f"localSentinel at {site} facing {facing} "
+            f"idx={bot.hivemind.my_index} rnd={ct.get_current_round()}",
+        )
+    return True
 
 
 def approach(bot, ct: Controller, site: Position) -> bool:

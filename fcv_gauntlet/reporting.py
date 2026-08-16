@@ -45,8 +45,20 @@ def write_csv_metrics(games_data: list[dict[str, Any]], path: str | Path) -> Non
             })
 
 
-def write_markdown_report(report_data: dict[str, Any], path: str | Path) -> None:
-    """Generate an automated, self-contained Markdown Diagnostic Audit Report."""
+def write_markdown_report(
+    report_data: dict[str, Any],
+    path: str | Path,
+    oracle_text: str | None = None,
+    oracle_cost_usd: float | None = None,
+) -> None:
+    """Generate an automated, self-contained Markdown Diagnostic Audit Report.
+
+    oracle_text/oracle_cost_usd are optional — pass them only when the caller
+    already ran fcv_gauntlet.oracle.diagnose() (which costs real API money and
+    requires explicit human confirmation; see fcv_gauntlet/oracle/AGENT.md).
+    This function never calls the API itself and has no dependency on the
+    oracle package — it just renders whatever text it's handed.
+    """
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
 
@@ -81,7 +93,16 @@ def write_markdown_report(report_data: dict[str, Any], path: str | Path) -> None
         for c in chains:
             lines.append(f"- **[{c.get('chain_id')}]**: {c.get('summary')}")
 
-    lines.append("\n## 💡 Automated Actionable Fix Suggestions")
+    if oracle_text:
+        lines.append("\n## 🔮 Oracle Root-Cause Diagnosis")
+        lines.append(
+            "*AI-generated from the diagnostics below plus the actual bot source "
+            f"(cost: ${oracle_cost_usd:.4f}). Read alongside, not instead of, the "
+            "static checks below.*\n"
+        )
+        lines.append(oracle_text)
+
+    lines.append("\n## 💡 Automated Actionable Fix Suggestions (static heuristics)")
 
     suggestions = 0
     if counts.get("orphan_harvester", 0) > 10 or counts.get("harvester_no_output", 0) > 10:

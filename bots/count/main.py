@@ -94,6 +94,8 @@ class Player:
                 self._runBuilder(ct)
             elif etype == EntityType.SENTINEL:
                 self._runSentinel(ct)
+            elif etype == EntityType.GUNNER:
+                guns.gunnerLoop(self, ct)
             elif etype == EntityType.LAUNCHER:
                 launcher.runLauncher(self, ct)
         except Exception:

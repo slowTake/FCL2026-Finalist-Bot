@@ -24,6 +24,7 @@ from fcode import Controller, Direction, EntityType, Position
 
 import pathfindingHelpers as ph
 import store
+from hivemind import CoreState, unpack_cores
 
 # Packing order matters only in that pack and unpack agree.
 _DIRS = (
@@ -56,11 +57,21 @@ def unpackTarget(val: int):
 
 
 def enemyCorePos(bot, ct: Controller) -> Position | None:
-    """Fingerprinted maps hand this over at turn 0; otherwise it stays unknown."""
-    hm = bot.hivemind
-    pos = getattr(hm, "enemy_core_pos", None)
+    """The enemy core, for any unit — None only on a map we never fingerprinted.
+
+    `hm.enemy_core_pos` is set at turn 0 *on the core's hivemind only*, so a
+    builder (raider) reading its own instance always sees None. The core also
+    publishes both cores into the packed-cores slot the same turn, and that slot
+    is readable by everyone — so fall through to it. Without this fall-through
+    `fallbackEmplacement` and any raider-side emplacement math are dead: they ask
+    this and get None every time.
+    """
+    pos = getattr(bot.hivemind, "enemy_core_pos", None)
     if pos is not None:
         return pos
+    _ally, enemy = unpack_cores(ct.read_store(store.PACKED_CORES))
+    if enemy[0] != CoreState.UNKNOWN:
+        return Position(enemy[1], enemy[2])
     return None
 
 
@@ -156,13 +167,19 @@ def chooseEmplacement(bot, ct: Controller, enemyCore: Position):
     return None
 
 
-def fallbackEmplacement(bot, ct: Controller, primarySite: Position):
-    """A nearby alternative when `primarySite` turns out to be unbuildable by
-    the time the raider gets there — typically the core's ledger hasn't yet
-    learned the site was already claimed. Only the raider's own orthogonal
-    neighbours: a fresh board search is the core's job, not a stuck
-    builder's. Standoff is not preferred here — closer is fine, getting a
-    sentinel down beats waiting on the core to notice and republish.
+def fallbackEmplacement(bot, ct: Controller, primarySite: Position | None = None):
+    """A buildable sentinel emplacement among the raider's own orthogonal
+    neighbours — one whose sentinel reaches the enemy core. Two callers:
+
+    * `buildSentinel` passes the `primarySite` it just failed on, to skip it —
+      typically the core's ledger hasn't yet learned that site was claimed.
+    * `buildLocalSentinel` passes nothing, to lay another sentinel right where
+      the raider already stands, densifying the ring around the core instead of
+      walking back for the next published target.
+
+    Only the raider's own neighbours either way: a fresh board search is the
+    core's job, not a stuck builder's. Standoff is not preferred here — closer is
+    fine, getting a sentinel down beats waiting on the core to republish.
 
     No threat filtering, for the same reason chooseEmplacement does none: the
     only threat set available is the cost layer's, which is empty on any unit
@@ -180,7 +197,7 @@ def fallbackEmplacement(bot, ct: Controller, primarySite: Position):
     pos = ct.get_position()
 
     for pad in ph.orthogonalTiles(pos):
-        if (pad.x, pad.y) == (primarySite.x, primarySite.y):
+        if primarySite is not None and (pad.x, pad.y) == (primarySite.x, primarySite.y):
             continue
         if not _buildable(ct, hm, pad, enemySet):
             continue

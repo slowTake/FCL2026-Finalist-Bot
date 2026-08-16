@@ -7,27 +7,36 @@ sentinel's line ignores them, and the engine already knows which rule applies
 to the unit asking. Re-deriving that with a manual ray-walk only creates a
 second place for the two answers to disagree (see mistakes.md).
 
-Placement lives in raid.py, not here. A generic gunner-pad search briefly
-existed in this module and was deleted: `can_build_gunner` only answers for a
-tile orthogonally adjacent to the *calling builder*, so a board-wide search
-was structurally incapable of working, and its pad filter had already lost
-the escape-neighbour rule raid.py paid for. Re-derive it against a real
-caller rather than restoring it.
-
-gunnerLoop is correct but currently unreachable: nothing builds a gunner, so
-main.py has no GUNNER dispatch. Wiring is one branch plus a builder.
+Sentinel placement lives in raid.py. Gunner placement (`placeGunner`) lives
+here, re-derived against a real caller as the old deleted board-wide search
+never could be: `can_build_gunner` only answers for a tile orthogonally
+adjacent to the *calling builder*, so the raider is the one that scans its own
+pads. `main.py` dispatches GUNNER here, and `raidBot` calls `placeGunner`.
 """
 
 from __future__ import annotations
 
 from fcode import Controller, Direction, EntityType, GameConstants, Position
 
+import debug
 import pathfindingHelpers as ph
 import store
 from pathing import manhattan
 from respawn import MAX_BUILDERS
 
 _DIRS = tuple(d for d in Direction if d != Direction.CENTRE)
+
+# --- Combat economy gate ----------------------------------------------------
+# Nothing offensive is bought below this bank. One dial for "how rich must we be
+# before we burn Ti on turrets". A live read, no store slot — every unit derives
+# the same answer from the same shared bank on the same turn. Untuned; a starting
+# point sized so a normal opening (5 builders + their harvesters) clears it
+# before raiders arrive at the enemy core, but a starved one gates combat off.
+TI_SURPLUS_THRESHOLD = 150
+
+
+def surplusReady(ct: Controller) -> bool:
+    return ct.get_global_resources() >= TI_SURPLUS_THRESHOLD
 
 # Lower rank fires/rotates first. Equal ranks (the three turret types, in
 # both tables) break on distance only — see _bestCandidate.
@@ -164,6 +173,102 @@ def sentinelLoop(bot, ct: Controller) -> None:
     target = _bestCandidate(here, hostiles, SENTINEL_PRIORITY, ct.can_fire)
     if target is not None:
         ct.fire(target[0])
+
+
+# --- Gunner placement -------------------------------------------------------
+# Re-derived against a real caller, the way the deleted board-wide search could
+# not be: the raider drops a gunner on an *adjacent* pad from which it can hit a
+# nearby enemy harvester. Gunners are cheap (10 Ti), tough (40 HP) and
+# short-range (r**2 = 13) — the close-in harvester-denial tool, complementing the
+# raider's long-range sentinels aimed at the core itself.
+
+GUNNER_RANGE_SQ = GameConstants.GUNNER_VISION_RADIUS_SQ
+
+# What a gunner is placed to suppress: enemy harvesters — the source of the
+# supply. Belts are the raider's job to cut and barrier (roles/raidBot.siege),
+# not to gun, so they're deliberately absent here. HARVESTER is a GUNNER_PRIORITY
+# target, so gunnerLoop keeps firing on it.
+_GUN_TARGET_TYPES = (EntityType.HARVESTER,)
+
+# Cap on targets probed per turn. The raider runs near the 10ms limit, so the
+# scan is bounded rather than exhaustive — nearest few are the ones in reach.
+_GUN_TARGET_LIMIT = 3
+
+
+def _gunFacing(pad: Position, target: Position) -> Direction | None:
+    """The facing a gunner on `pad` needs to bear on `target`, or None if the
+    target isn't on a straight line within range. Geometry pre-check so we spend
+    one `can_fire_from` (the LoS oracle) per pad, not eight."""
+    dx = target.x - pad.x
+    dy = target.y - pad.y
+    if dx == 0 and dy == 0:
+        return None
+    if not (dx == 0 or dy == 0 or abs(dx) == abs(dy)):
+        return None  # not on a cardinal or perfect-diagonal ray
+    if pad.distance_squared(target) > GUNNER_RANGE_SQ:
+        return None
+    return pad.direction_to(target)
+
+
+def _coveredByAllyGunner(ct: Controller, myTeam, target: Position) -> bool:
+    """Is an ally gunner already in range of `target` — don't stack a second."""
+    for bid in ct.get_nearby_buildings():
+        if ct.get_team(bid) != myTeam:
+            continue
+        if ct.get_entity_type(bid) != EntityType.GUNNER:
+            continue
+        if ct.get_position(bid).distance_squared(target) <= GUNNER_RANGE_SQ:
+            return True
+    return False
+
+
+def placeGunner(bot, ct: Controller) -> bool:
+    """Opportunistically plant a gunner to suppress a nearby enemy harvester.
+
+    Cheap early-exits first (this runs every raider turn, and the raider is
+    CPU-tight): must be able to build this turn, must be past the surplus gate,
+    must afford it. Only then does it scan. Builds on the first adjacent pad from
+    which a gunner bears on an uncovered target; `gunnerLoop` does the aiming and
+    firing thereafter. Returns True iff it built one (consuming the turn).
+    """
+    if ct.get_action_cooldown() != 0:
+        return False
+    if not surplusReady(ct):
+        return False
+    if ct.get_global_resources() < ct.get_gunner_cost():
+        return False
+
+    myTeam = ct.get_team()
+    here = ct.get_position()
+    targets = [
+        ct.get_position(eid)
+        for eid in ct.get_nearby_entities()
+        if ct.get_team(eid) != myTeam
+        and ct.get_entity_type(eid) in _GUN_TARGET_TYPES
+    ]
+    if not targets:
+        return False
+    targets.sort(key=lambda p: manhattan(here, p))
+
+    for target in targets[:_GUN_TARGET_LIMIT]:
+        if _coveredByAllyGunner(ct, myTeam, target):
+            continue
+        for pad in ph.orthogonalTiles(here):
+            facing = _gunFacing(pad, target)
+            if facing is None:
+                continue
+            if not ct.can_fire_from(pad, facing, EntityType.GUNNER, target):
+                continue
+            if ct.can_build_gunner(pad, facing):
+                ct.build_gunner(pad, facing)
+                if debug.ENABLED:
+                    debug.log(
+                        "gun",
+                        f"placed at {pad} facing {facing} -> {target} "
+                        f"rnd={ct.get_current_round()}",
+                    )
+                return True
+    return False
 
 
 # --- Ammo ---------------------------------------------------------------

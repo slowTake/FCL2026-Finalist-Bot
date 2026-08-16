@@ -212,6 +212,15 @@ point-mirrored map is still badly skewed.
   produced index (it actually tagged the second-to-last builder). Anyone keying a
   role to a specific spawn order: use `built + 2`, and verify with COUNT_DEBUG.
 
+- **`hm.enemy_core_pos` is set on the core's hivemind only.** `_detect_and_store_map`
+  runs `if is_core and global_turn == 0`, so a builder's own instance always reads
+  None — which silently made `raid.fallbackEmplacement` dead code for raiders (it
+  asked `enemyCorePos` and got None every time). The cross-unit source is the
+  packed-cores store slot the core also writes at turn 0; `raid.enemyCorePos` now
+  falls through to it, so any unit can resolve either core. Anything on a builder
+  that needs the enemy core must go through `raid.enemyCorePos`, not the hivemind
+  field.
+
 ## Known gaps
 
 - No store-backed ore claim, so two builders can race the same node. Spread is

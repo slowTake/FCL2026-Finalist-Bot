@@ -49,6 +49,15 @@ def main() -> int:
     parser.add_argument("--fail-on-regression", action="store_true", help="Fail CI run if metrics regress against baseline")
     parser.add_argument("--warn-on-oscillation", type=int, metavar="COUNT", help="Warn if path oscillation count exceeds threshold")
 
+    # AI Oracle Diagnosis (costs real API money — see fcv_gauntlet/oracle/AGENT.md)
+    parser.add_argument("--oracle", action="store_true",
+                         help="Run AI root-cause diagnosis over the findings (fcv_gauntlet.oracle). "
+                              "Without --oracle-yes, only prints a cost estimate and makes no API call.")
+    parser.add_argument("--oracle-yes", action="store_true",
+                         help="Confirm explicit human sign-off to spend money on this run's oracle diagnosis. "
+                              "Requires --oracle. Never pass this without the account owner's explicit approval "
+                              "for this specific run.")
+
     args = parser.parse_args()
 
     if args.from_json:
@@ -67,6 +76,8 @@ def main() -> int:
             json_output_path=args.json_output,
             csv_metrics_path=args.csv_metrics,
             markdown_report_path=args.markdown_report,
+            oracle=args.oracle,
+            oracle_yes=args.oracle_yes,
         )
 
     return run_full_gauntlet(
@@ -87,6 +98,8 @@ def main() -> int:
         fail_on_regression=args.fail_on_regression,
         warn_on_oscillation=args.warn_on_oscillation,
         badges_only=args.badges_only,
+        oracle=args.oracle,
+        oracle_yes=args.oracle_yes,
     )
 
 
