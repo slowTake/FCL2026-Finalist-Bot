@@ -202,6 +202,18 @@ def beltPassable(ct: Controller, hm, pos: Position) -> bool:
     return t.etype in BELT_TYPES
 
 
+def isAllyBelt(ct: Controller, hm, pos: Position) -> bool:
+    """An ally conveyor/splitter occupies this tile (vision or ledger).
+
+    A superset of network membership: a proven-connected belt is one of these,
+    but so is a belt whose downstream chain to the core this unit simply can't
+    see. relayPlan merges onto these rather than only onto proven-network
+    tiles, so it stops at the nearest existing belt instead of plowing through
+    it toward the core (see relays.planRelay)."""
+    t = readTile(ct, hm, pos)
+    return t.etype in BELT_TYPES and not t.enemy
+
+
 # --- Adjacency --------------------------------------------------------------
 
 

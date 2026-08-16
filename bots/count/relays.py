@@ -98,8 +98,20 @@ def planRelay(bot, ct: Controller) -> bool:
     if source is None:
         return False
 
-    if any(ctx.isNetworkMember(n) for n in ph.orthogonalTiles(source)):
-        return False  # already feeding a connected belt; nothing to lay
+    # Merge onto any ally belt, not only a proven-network one. buildNetwork can
+    # only recognise a belt whose whole chain to the core this unit personally
+    # knows (vision + ledger); a builder beside a belt usually can't see that
+    # belt's downstream, so it fails the proof and — with the strict check —
+    # plows through the belt toward the core, re-facing a line that was already
+    # delivering. Trusting any ally belt (core ∪ all ally belts) stops the relay
+    # at the nearest existing belt instead. In the healthy case every nearby
+    # ally belt is already a network member, so this is identical to the old
+    # check; it only diverges where an unrecognised belt exists — the churn case.
+    def mergeable(p: Position) -> bool:
+        return ctx.isNetworkMember(p) or ph.isAllyBelt(ct, bot.hivemind, p)
+
+    if any(mergeable(n) for n in ph.orthogonalTiles(source)):
+        return False  # already feeding a belt; nothing to lay
 
     seeds = [
         n for n in ph.orthogonalTiles(source)
@@ -108,17 +120,17 @@ def planRelay(bot, ct: Controller) -> bool:
     if not seeds:
         return False
 
-    # Goal is a tile *beside* the network, not on it: the anchor is frequently the
-    # core, which no builder can stand on or build on, and a working belt is not
-    # ours to overwrite.
+    # Goal is a tile *beside* a merge target, not on it: you can't build on an
+    # occupied belt, and the target is frequently the core, which no builder can
+    # stand on either.
     def isGoal(p: Position) -> bool:
-        if ctx.isNetworkMember(p):
+        if mergeable(p):
             return False
-        return any(ctx.isNetworkMember(n) for n in ph.orthogonalTiles(p))
+        return any(mergeable(n) for n in ph.orthogonalTiles(p))
 
     # No heuristic: the goal is a set, not a point, and manhattan-to-core can
-    # overestimate the distance to a nearer network tile. Dijkstra is correct and
-    # stops the moment it reaches the network, which is usually close.
+    # overestimate the distance to a nearer merge tile. Dijkstra is correct and
+    # stops the moment it reaches one, which is usually close.
     path = astarFromSeeds(
         seeds,
         costFn=ph.makeCostFn(ctx),
@@ -145,7 +157,7 @@ def planRelay(bot, ct: Controller) -> bool:
         return False
 
     anchor = next(
-        (n for n in ph.orthogonalTiles(path[-1]) if ctx.isNetworkMember(n)), None
+        (n for n in ph.orthogonalTiles(path[-1]) if mergeable(n)), None
     )
     if anchor is None:
         bot.relayPath = None
