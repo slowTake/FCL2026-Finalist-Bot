@@ -97,11 +97,19 @@ def _predictTarget(bot, ct: Controller) -> Position | None:
     a few turns of the match starting, so that vision is a radius-6 keyhole. Steering
     off that sample measured *worse* than not steering — saga, which is not in
     `MAP_ID_TO_NAME`, went from an even mirror to 1.64 skewed. Unknown map, no guess.
+
+    Opening raiders are the exception: they don't want ore at all, they want the
+    enemy-facing side of the core. Steer them at the enemy core so they're born on
+    the front — that's where the first raider plants the launcher (behind the core
+    is useless defensively) and where both are headed anyway.
     """
     if bot.corePos is None or bot.hivemind.map_id == 0:
         return None
 
     core = bot.corePos
+    myIndex = ct.read_store(store.BUILDERS) + _MYINDEX_OFFSET
+    if myIndex in _OPENING_RAIDERS:
+        return raid.enemyCorePos(bot, ct)
 
     def distTo(ore: Position) -> int:
         return ph.manhattanToCore(ore, core)

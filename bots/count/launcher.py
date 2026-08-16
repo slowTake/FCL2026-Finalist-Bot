@@ -159,6 +159,7 @@ def placeCoreLauncher(bot, ct: Controller) -> bool:
             debug.log(
                 "launcher",
                 f"placed at {site} by idx={bot.hivemind.my_index} "
+                f"core={bot.corePos} enemy={raid.enemyCorePos(bot, ct)} "
                 f"rnd={ct.get_current_round()}",
             )
         return True
