@@ -360,6 +360,9 @@ def buildSentinel(bot, ct: Controller, site: Position, facing: Direction) -> boo
     # Take a vetted neighbour if one still reaches the core, else clear the target
     # so the core republishes.
     if guns.siteInDirectTurretLos(ct, site, guns.enemyTurrets(ct), cache={}):
+        if debug.ENABLED:
+            debug.log("raidBot", f"veto published site {site} — in enemy turret "
+                                 f"line rnd={ct.get_current_round()}")
         choice = raid.fallbackEmplacement(bot, ct, site)
         if choice is not None:
             clearHold(bot)

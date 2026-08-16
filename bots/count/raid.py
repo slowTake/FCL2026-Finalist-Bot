@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from fcode import Controller, Direction, EntityType, Position
 
+import debug
 import pathfindingHelpers as ph
 import store
 from hivemind import CoreState, unpack_cores
@@ -255,6 +256,9 @@ def fallbackEmplacement(bot, ct: Controller, primarySite: Position | None = None
         # sentinel eats that shot with no rotation needed (esp. an enemy sentinel,
         # whose line ignores belt cover).
         if guns.siteInDirectTurretLos(ct, pad, turrets, cache=losCache):
+            if debug.ENABLED:
+                debug.log("raid", f"veto pad {pad} — in enemy turret line "
+                                  f"rnd={ct.get_current_round()}")
             continue
         for d, hits in reach.items():
             if not any((aim.x - pad.x, aim.y - pad.y) in hits for aim in footprint):
