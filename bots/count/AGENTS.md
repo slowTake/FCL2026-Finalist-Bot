@@ -27,7 +27,7 @@ known gaps) and [docs/roadmap.md](docs/roadmap.md) (what's next and why).
 | `respawn.py` | Core spawn logic: builder cap, spawn-tile selection, raider designation. |
 | `telemetry.py` | Optional (`COUNT_CPU=1`) per-unit CPU sampling to stderr. |
 | `hivemind/` | Symlinks into `components/` — shared with baron/bandit, see below. |
-| `roles/ecoBot.py` | Builder economy role: harvester build/seize, ore seeking/picking. |
+| `roles/ecoBot.py` | Builder economy role: harvester build/seize, ore seeking/picking, and `repairCoreBelts` — an idle builder grinds an enemy barrier that has severed a live supply line near our core (barrier adjacent to our network with a real feeder) and re-lays the belt. Barrier-only by design: a plain gap is indistinguishable from a normal relay still being built, so keying off gaps churned live relays. |
 | `roles/raidBot.py` | Raider role — a core-sieger, never an eco bot. Drops a gunner beside enemy harvesters (`guns.placeGunner`, harvesters only), builds surplus-gated sentinels (published emplacement + `buildLocalSentinel` to densify). With nothing to build it `pressCore`s: at the enemy core ring it severs the incoming belts and walls the ring with barriers (`_siege`), else it closes in. It never harvests, relays, or hijacks (that's `ecoBot`'s job). |
 | `roles/sentinelBot.py` | Sentinel role: fire only — facing is permanent, so there is no rotate step. |
 | `docs/mistakes.md` | Agent errors and traps. |

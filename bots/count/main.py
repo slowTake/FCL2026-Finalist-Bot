@@ -60,6 +60,13 @@ class Player:
         self.oreTarget: Position | None = None
         self.oreSkip: dict[tuple[int, int], int] = {}
 
+        # Core-line repair (ecoBot.repairCoreBelts). The enemy barrier this builder
+        # committed to clearing and the connected tile to re-lay the belt toward —
+        # held across the multi-turn grind so the belt goes back the moment the
+        # barrier falls, and so the tile isn't re-scanned as a fresh target.
+        self._repairTile: Position | None = None
+        self._repairFace: Position | None = None
+
         # Launcher one-off (launcher.py). Set once the first raider plants the
         # core launcher, so it never plants a second after walking out of sight.
         self._placedLauncher = False

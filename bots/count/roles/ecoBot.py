@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from fcode import Controller, EntityType, Position
 
+import debug
 import heal
 import launcher
 import pathfindingHelpers as ph
 from movement import exploreStep, walkTo
-from patience import clearHold, waitTi
+from patience import BLOCKED_WAIT_TURNS, clearHold, holdTask, waitTi
 import store
 from relays import hijackRelay, relayToHome
 
@@ -16,6 +17,15 @@ from relays import hijackRelay, relayToHome
 # my_index, so two builders with different indices rarely pick the same node.
 # Not a claim — see observations.md.
 ORE_SPREAD = 4
+
+# Manhattan is blind to walls: a node behind one reads as near as an open node at
+# the same beeline distance, but the walk around the wall is longer. Add an estimate
+# of that detour back — each wall tile on the straight line to a node costs a builder
+# roughly this many extra steps to round. A cheap proxy for a true path cost (too
+# expensive to run per node inside the 10ms budget); it only has to rank walled-off
+# nodes below clear ones, not price them exactly. Tuned on mirror_gauntlet; 0 restores
+# the old pure-Manhattan behaviour.
+DETOUR_PER_WALL = 2
 
 # A remembered ore sighting older than this is worth walking back to verify. The
 # harvester we think is on it may be long dead: nothing refreshes a tile once a
@@ -39,6 +49,12 @@ HIJACK_MAX_MANHATTAN = 12
 # target. It saves the (scaling) harvester cost and denies them the node, so it is
 # worth a short detour — but not an expedition.
 HIJACK_BONUS = 4
+
+# Manhattan radius from our core within which an idle builder will clear an enemy
+# barrier that has severed one of our supply lines and re-lay the belt. Bounded to
+# "near the core" on purpose: this is a defensive bandage for the enemy's
+# core-siege (mirror of raidBot._siege), not a map-wide relay-repair system.
+CORE_DEFENSE_RADIUS = 8
 
 
 def runEcoBot(bot, ct: Controller) -> None:
@@ -64,14 +80,188 @@ def runEcoBot(bot, ct: Controller) -> None:
     if heal.healNearby(bot, ct, heal.ECO_HEAL_TYPES):
         return
 
+    # Restore a supply line the enemy cut near our core (barrier over a belt tile)
+    # before seeking new ore — a severed line loses a whole harvester's output,
+    # worth more than another node. Below build so it never interrupts one.
+    if repairCoreBelts(bot, ct):
+        return
+
     if seekOre(bot, ct):
         return
 
     exploreStep(bot, ct)
 
 
+# ---------------------------------------------------------------------------
+# Core-line repair — clear enemy barriers that sever our supply near the core
+# ---------------------------------------------------------------------------
+
+
+def _hasFeeder(bot, ct: Controller, tile: Position, network_side: Position) -> bool:
+    """Is `tile` fed by one of ours that would resume delivering once it carries a
+    belt into `network_side`.
+
+    A feeder is an ally harvester (delivers to any adjacent building), or an ally
+    belt whose facing points at `tile` — which, because its output currently runs
+    into `tile` and `tile` is not a belt, is by definition disconnected from the
+    core. Requiring a real feeder is what stops us grinding a barrier that isn't
+    actually cutting anything.
+    """
+    for f in ph.orthogonalTiles(tile):
+        if (f.x, f.y) == (network_side.x, network_side.y):
+            continue
+        t = ph.readTile(ct, bot.hivemind, f)
+        if t.enemy:
+            continue
+        if t.etype == EntityType.HARVESTER:
+            return True
+        if (
+            t.etype in ph.BELT_TYPES
+            and t.facing is not None
+            and t.facing == ph.beltFacing(f, tile)
+        ):
+            return True
+    return False
+
+
+def _nearestBarrier(bot, ct: Controller, ctx):
+    """Nearest (barrier_tile, network_side) near the core where the enemy has cut a
+    line: an enemy barrier adjacent to a still-connected network member, with a
+    disconnected feeder on another side. None if no line is barriered.
+
+    Only ever an enemy *barrier* — never a plain empty gap. A gap near the core is
+    indistinguishable from a normal relay still being built (relays lay from the
+    harvester end first, so the core end is the last gap), and treating those as
+    severances made idle builders fight live relays and churn belts. An enemy
+    barrier is unambiguous: a healthy line never has one on it.
+    """
+    core = bot.corePos
+    pos = ct.get_position()
+    best = None
+    bestD = None
+    for (nx, ny) in ctx.network:
+        N = Position(nx, ny)
+        if ph.manhattanToCore(N, core) > CORE_DEFENSE_RADIUS:
+            continue
+        for T in ph.orthogonalTiles(N):
+            if (T.x, T.y) in ctx.network or not ph.inBounds(ct, T):
+                continue
+            if ph.manhattanToCore(T, core) > CORE_DEFENSE_RADIUS:
+                continue
+            t = ph.readTile(ct, bot.hivemind, T)
+            if not (t.etype == EntityType.BARRIER and t.enemy):
+                continue
+            if not _hasFeeder(bot, ct, T, N):
+                continue
+            d = abs(pos.x - T.x) + abs(pos.y - T.y)
+            if bestD is None or d < bestD:
+                best, bestD = (T, N), d
+    return best
+
+
+def _clearRepair(bot) -> None:
+    bot._repairTile = None
+    bot._repairFace = None
+
+
+def repairCoreBelts(bot, ct: Controller) -> bool:
+    """Clear an enemy barrier severing a supply line near our core, then re-lay the
+    belt back into the network. True while committed to a repair (walking, grinding
+    or re-laying); False when there's no barriered line to fix.
+
+    Commits to one barrier via `bot._repairTile` and sees it through in
+    `_finishRepair` — so the belt goes back the instant the barrier falls, and the
+    now-empty tile isn't re-scanned as a fresh target."""
+    if bot.corePos is None:
+        return False
+
+    if bot._repairTile is not None:
+        return _finishRepair(bot, ct)
+
+    ctx = ph.costContext(bot, ct, "relay")
+    found = _nearestBarrier(bot, ct, ctx)
+    if found is None:
+        return False
+    tile, network_side = found
+
+    pos = ct.get_position()
+    if abs(pos.x - tile.x) + abs(pos.y - tile.y) != 1:
+        def beside(p: Position) -> bool:
+            return abs(p.x - tile.x) + abs(p.y - tile.y) == 1
+
+        if walkTo(bot, ct, beside, tile, ("repair", tile.x, tile.y)):
+            return True
+        return holdTask(bot, "repairApproach", BLOCKED_WAIT_TURNS)
+
+    if ct.get_action_cooldown() != 0:
+        return holdTask(bot, "repairWait", BLOCKED_WAIT_TURNS)
+    if not ct.can_fire(tile):
+        return holdTask(bot, "repairFire", BLOCKED_WAIT_TURNS)
+
+    ct.fire(tile)
+    bot._repairTile = tile          # commit: grind it down, then re-lay the belt
+    bot._repairFace = network_side
+    if debug.ENABLED:
+        debug.log("repair", f"grind barrier {tile} rnd={ct.get_current_round()}")
+    return True
+
+
+def _finishRepair(bot, ct: Controller) -> bool:
+    """Drive a committed repair: keep grinding the barrier, then lay the belt back
+    into the network once it's gone. Clears the commitment on completion, on being
+    displaced with no way back, or if the tile becomes something we don't handle."""
+    tile, network_side = bot._repairTile, bot._repairFace
+    if not ph.inBounds(ct, tile):
+        _clearRepair(bot)
+        return False
+
+    pos = ct.get_position()
+    if abs(pos.x - tile.x) + abs(pos.y - tile.y) != 1:
+        def beside(p: Position) -> bool:
+            return abs(p.x - tile.x) + abs(p.y - tile.y) == 1
+
+        if walkTo(bot, ct, beside, tile, ("repair", tile.x, tile.y)):
+            return True
+        _clearRepair(bot)  # shoved off and can't get back — drop it
+        return False
+
+    t = ph.readTile(ct, bot.hivemind, tile)
+
+    if t.etype == EntityType.BARRIER and t.enemy:
+        if ct.get_action_cooldown() != 0:
+            return holdTask(bot, "repairWait", BLOCKED_WAIT_TURNS)
+        if ct.can_fire(tile):
+            ct.fire(tile)
+            return True
+        return holdTask(bot, "repairFire", BLOCKED_WAIT_TURNS)
+
+    if t.etype is None and not t.wall and not t.ore:
+        facing = ph.beltFacing(tile, network_side)
+        if ct.get_action_cooldown() != 0:
+            return holdTask(bot, "repairWait", BLOCKED_WAIT_TURNS)
+        if facing is not None and ct.can_build_conveyor(tile, facing):
+            ct.build_conveyor(tile, facing)
+            ph.invalidateTile(bot.hivemind, tile)
+            _clearRepair(bot)
+            if debug.ENABLED:
+                debug.log(
+                    "repair",
+                    f"restore belt {tile}->{network_side} rnd={ct.get_current_round()}",
+                )
+            return True
+        return holdTask(bot, "repairBuild", BLOCKED_WAIT_TURNS)
+
+    _clearRepair(bot)  # already filled (ally belt), or the enemy replaced it — done
+    return False
+
+
 def buildHarvester(bot, ct: Controller) -> bool:
-    """Plant a harvester on the claimed ore, then commit to relaying it home."""
+    """Plant a harvester on the claimed ore, then commit to relaying it home.
+
+    If the node is blocked when we arrive, deal with the blocker instead of just
+    dropping the claim: tap an enemy harvester sitting on it, or grind down an
+    enemy barrier denying it and build once the tile is clear.
+    """
     ore = bot.oreTarget
     if ore is None or ct.get_action_cooldown() != 0:
         return False
@@ -79,6 +269,25 @@ def buildHarvester(bot, ct: Controller) -> bool:
     pos = ct.get_position()
     if abs(pos.x - ore.x) + abs(pos.y - ore.y) != 1:
         return False  # builds are orthogonal-only; diagonal isn't close enough
+
+    # Blocked by an enemy? Handle it before the harvester-Ti gate: an enemy
+    # harvester wants tapping (not building), and a barrier is far cheaper to
+    # grind than the harvester we'd otherwise be saving up for.
+    t = ph.readTile(ct, bot.hivemind, ore)
+    if t.etype == EntityType.HARVESTER and t.enemy:
+        # seizeHarvester normally catches this a step earlier in runEcoBot; kept
+        # here so the build path itself never just abandons a tappable node.
+        bot.oreTarget = None
+        return hijackRelay(bot, ct, ore)
+    if t.etype == EntityType.BARRIER and t.enemy:
+        # Grind it down (2 Ti / 2 dmg a turn). Keep the claim: once it falls, the
+        # tile reads clear next pass and we build as normal.
+        if ct.can_fire(ore):
+            ct.fire(ore)
+            if debug.ENABLED:
+                debug.log("ore", f"clear barrier on ore {ore} rnd={ct.get_current_round()}")
+            return True
+        return holdTask(bot, "clearOreBarrier", BLOCKED_WAIT_TURNS)
 
     if waitTi(bot, ct, ct.get_harvester_cost()):
         return True
@@ -146,6 +355,34 @@ def seekOre(bot, ct: Controller) -> bool:
     return False
 
 
+def _detourPenalty(ct: Controller, hm, origin: Position, ore: Position) -> int:
+    """Extra steps a builder likely pays routing around walls between it and `ore`.
+
+    Walks the straight 4-connected line origin->ore and counts tiles a path can't
+    cross (walls, out-of-bounds, ally harvesters/cores — whatever `isImpassable`
+    forbids). Deliberately ignores enemy buildings: those are priced-not-forbidden
+    and transient, so they belong to A* and `_skipOre`, not to a static-geometry
+    proxy. The node tile itself is skipped — it is ore, not an obstacle.
+
+    Axis choice is magnitude-only, so the walk (and the penalty) is invariant under
+    the map reflections and 180deg rotations symmetry rests on. `readTile` is
+    round-memoised, so tiles shared by several candidates are read once.
+    """
+    x, y = origin.x, origin.y
+    blocked = 0
+    while (x, y) != (ore.x, ore.y):
+        dx, dy = ore.x - x, ore.y - y
+        if abs(dx) >= abs(dy):
+            x += 1 if dx > 0 else -1
+        else:
+            y += 1 if dy > 0 else -1
+        if (x, y) == (ore.x, ore.y):
+            break
+        if ph.isImpassable(ct, hm, Position(x, y)):
+            blocked += 1
+    return blocked * DETOUR_PER_WALL
+
+
 def pickOre(bot, ct: Controller) -> Position | None:
     """Nearest workable node, then a stale site to verify.
 
@@ -159,10 +396,13 @@ def pickOre(bot, ct: Controller) -> Position | None:
     spoken for, they go re-check the oldest sighting instead of exploring forever.
     """
     pos = ct.get_position()
+    hm = bot.hivemind
 
-    # Built once per call, not once per ore — this sits inside the 10ms budget.
+    # distTo is built once per call; the wall-detour term inside it is the only
+    # per-ore work, and it reads memoised tiles, so it stays inside the 10ms budget.
     def distTo(ore: Position) -> int:
-        return abs(ore.x - pos.x) + abs(ore.y - pos.y)
+        base = abs(ore.x - pos.x) + abs(ore.y - pos.y)
+        return base + _detourPenalty(ct, hm, pos, ore)
 
     return chooseOre(bot, ct, distTo, bot.hivemind.my_index)
 

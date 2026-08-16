@@ -11,7 +11,15 @@
       "Bash(find / -iname \"*florent*\" -maxdepth 4)",
       "Bash(python3 -m py_compile fcv_gauntlet/oracle/oracle.py fcv_gauntlet/oracle/__init__.py)",
       "Bash(python3 -m fcv_gauntlet.oracle.oracle --status)",
-      "Bash(python3 -m fcv_gauntlet.oracle.oracle)"
+      "Bash(python3 -m fcv_gauntlet.oracle.oracle)",
+      "Bash(python3 -m py_compile fcv_gauntlet/runner.py fcv_gauntlet/reporting.py scripts/fcv_bot_gauntlet.py)",
+      "Bash(python3 scripts/fcv_bot_gauntlet.py --from-json /tmp/nonexistent.json --oracle)",
+      "Bash(python3 -c ' *)",
+      "Bash(.venv/bin/python *)",
+      "Bash(git fetch *)",
+      "Bash(find / -maxdepth 6 -iname \"fcv\" -type d)",
+      "Bash(.venv/bin/pip list *)",
+      "Bash(xargs -I{} sh -c 'echo {}; cat {}/METADATA 2>/dev/null | grep -i \"Requires-Dist\\\\|fcv\"')"
     ]
   }
 }
