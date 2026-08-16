@@ -14,11 +14,16 @@ import sys
 # `from features import ...`, so those files have to be importable by bare name.
 # The submission zip is flattened by scripts/zip_bot.py, where these directories
 # do not exist — hence the isdir guard, which makes this a no-op there.
-_HERE = os.path.dirname(os.path.abspath(__file__))
-for _sub in ("hivemind", "roles"):
-    _path = os.path.join(_HERE, _sub)
-    if os.path.isdir(_path) and _path not in sys.path:
-        sys.path.insert(0, _path)
+# The runner execs main.py as source instead of importing it, so __file__ is not
+# always defined. That only happens in the flattened zip, where there is nothing
+# to add anyway, so a missing __file__ means skip the whole block.
+_HERE = globals().get("__file__")
+if _HERE:
+    _HERE = os.path.dirname(os.path.abspath(_HERE))
+    for _sub in ("hivemind", "roles"):
+        _path = os.path.join(_HERE, _sub)
+        if os.path.isdir(_path) and _path not in sys.path:
+            sys.path.insert(0, _path)
 
 from fcode import Controller, EntityType, Position  # noqa: E402
 

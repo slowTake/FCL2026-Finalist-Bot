@@ -7,13 +7,19 @@ Starts at the bot's main.py and follows local imports, so only modules the bot
 actually loads go in. Docs, replays, __pycache__ and unreachable modules are
 left out. Files land at the zip root (main.py must be the entry point). An
 existing zip for the same bot is replaced.
+
+The finished zip is smoke tested by loading it the way the league runner does —
+see smokeTest below for why that is not just an import.
 """
 
 from __future__ import annotations
 
 import argparse
 import ast
+import os
+import subprocess
 import sys
+import tempfile
 import zipfile
 from pathlib import Path
 
@@ -71,6 +77,53 @@ def reachableModules(botDir: Path) -> list[Path]:
     return sorted(index[n] for n in seen)
 
 
+# Run inside the extracted zip, by a fresh interpreter, with cwd as the only
+# import root. `exec` of the source rather than `import main` is the whole
+# point: the runner does it that way, so main.py has no __file__ and no
+# enclosing package. A plain import defines both and hides exactly the bugs
+# this is here to catch (count shipped a __file__ crash that imported fine).
+SMOKE_DRIVER = """
+import sys
+source = open("main.py").read()
+namespace = {"__name__": "__main__"}
+exec(compile(source, "main.py", "exec"), namespace)
+if "Player" not in namespace:
+    sys.exit("main.py defines no Player class")
+"""
+
+
+def smokeTest(zipPath: Path) -> None:
+    """Load the built zip the way the league runner loads it.
+
+    Skipped with a warning when this interpreter has no fcode: that means the
+    script is being run outside the venv, and a failure would say nothing about
+    the zip. Anything else is a real defect and exits non-zero.
+    """
+    try:
+        import fcode  # noqa: F401
+    except ImportError:
+        print("warning: no fcode in this interpreter — skipping smoke test (run from .venv to enable)")
+        return
+
+    with tempfile.TemporaryDirectory() as tmp:
+        with zipfile.ZipFile(zipPath) as zf:
+            zf.extractall(tmp)
+        env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+        result = subprocess.run(
+            [sys.executable, "-c", SMOKE_DRIVER],
+            cwd=tmp,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+
+    if result.returncode:
+        print(f"\nsmoke test FAILED — {zipPath.name} would not load in a game:\n", file=sys.stderr)
+        sys.stderr.write(result.stderr or result.stdout)
+        sys.exit(1)
+    print("smoke test passed: loads with no __file__ and no package context")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("bot", help=f"bot directory name under {BOTS_DIR.relative_to(REPO_ROOT)}/")
@@ -78,6 +131,7 @@ def main() -> None:
     parser.add_argument("--all", action="store_true", help="include every .py in the bot dir, not just imported ones")
     parser.add_argument("--include", action="append", default=[], metavar="NAME", help="extra file to add, relative to the bot dir (repeatable)")
     parser.add_argument("-n", "--dry-run", action="store_true", help="list what would be zipped and stop")
+    parser.add_argument("--no-smoke", action="store_true", help="skip the post-build load check")
     args = parser.parse_args()
 
     botDir = BOTS_DIR / args.bot
@@ -120,6 +174,9 @@ def main() -> None:
             zf.write(path, arcname=path.name)
     tmpPath.replace(zipPath)
     print(f"wrote {zipPath}")
+
+    if not args.no_smoke:
+        smokeTest(zipPath)
 
 
 if __name__ == "__main__":
