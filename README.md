@@ -37,7 +37,9 @@ source .venv/bin/activate
 pip install -r requirements-ci.txt
 ```
 
-Both gauntlets pit your bot (team A) against `starter` on every map in `maps/`. Each match prints:
+`bot_gauntlet.py`, `extreme_gauntlet.py`, and `mirror_gauntlet.py` all default to your bot's **live map pool** — the `MAP_ID_TO_NAME` table in your bot's own `features.py`, not every file sitting in `maps/` (`maps/` accumulates maps your bot was never fingerprinted for and has no ORE/WALL data for; testing against those runs your bot in a materially different, non-competitive mode). Pass `--maps` to override with a specific subset.
+
+Each gauntlet match prints:
 
 | Column | Meaning |
 | --- | --- |
@@ -48,11 +50,11 @@ Both gauntlets pit your bot (team A) against `starter` on every map in `maps/`. 
 | Enemy Ti | Titanium `starter` delivered to its core |
 | Turn | Final turn count |
 
-Optional: limit to specific maps with `--maps sprint strait`.
+Optional: limit to specific maps with `--maps sprint strait` (any map file in `maps/`, live pool or not — an explicit `--maps` always wins).
 
 ### `bot_gauntlet.py`
 
-Runs each map once. Passes only on **15/15 wins** (same bar as CI).
+Runs your bot against `starter` on your live map pool, once each. Passes only on **15/15 wins** (same bar as CI). `--tle <ms>` matches the server's real per-turn time limit (default 10ms, `--tle 0` disables it).
 
 ```bash
 python scripts/bot_gauntlet.py --bot <your-bot>
@@ -61,7 +63,7 @@ python scripts/bot_gauntlet.py --bot turtle --maps sprint strait
 
 ### `extreme_gauntlet.py`
 
-Runs each map **5 times** with different seeds (`base`, `base+1`, …). Reports total wins and win rate at the bottom. Passes only if every match is won.
+Runs your bot against `starter` on your live map pool, **5 times each** with different seeds (`base`, `base+1`, …). Reports total wins and win rate, plus a per-map win/loss letter grid. Passes only if every match is won.
 
 ```bash
 python scripts/extreme_gauntlet.py --bot <your-bot>
@@ -73,7 +75,40 @@ Example footer:
 ```
 Total: 12/15
 Win rate: 80.0%
+
+=== Per map (one letter per run, seeds 1..5) ===
+  sprint       WWWWW
+  strait       WWLWW
 ```
+
+### `mirror_gauntlet.py`
+
+Runs your bot **against itself** on your live map pool. There's no win/loss to grade — both sides are the same bot — so instead it catches:
+
+- **Crashes** — a Python exception inside your bot, surfaced from the replay's captured stdout even when the match completes normally (the engine swallows per-unit exceptions, so a crash never shows up as a bad exit code).
+- **Side imbalance** — anything but a roughly even outcome on a symmetric map points at a real bug, not matchup luck. Reported, not graded pass/fail.
+
+```bash
+python scripts/mirror_gauntlet.py --bot <your-bot>
+python scripts/mirror_gauntlet.py --bot turtle --maps sprint strait   # faster subset
+```
+
+### `replay_debugger.py`
+
+Reconstructs full game state from a `.replay26` file at any round, and can re-run your bot's `Player.run()` against a mock `Controller` backed by that state — reproduce a tournament bug locally, with your own debug prints, even without the opponent's code.
+
+```bash
+# Summarize world state + entities at round 150
+python scripts/replay_debugger.py replay.replay26 -r 150 --dump --list-entities
+
+# Re-run a specific unit's logic (defaults to --bot count)
+python scripts/replay_debugger.py replay.replay26 -r 150 -u 7 -t A --bot <your-bot>
+
+# Same, but first rebuild the communication store by replaying from round 0
+python scripts/replay_debugger.py replay.replay26 -r 150 -u 7 -t A --rebuild-store
+```
+
+Limitations: store slots (0–15) aren't in the replay — `--rebuild-store` reconstructs them by re-running your bot from round 0, which is slow. Actions are logged but don't mutate state (single-step, read-only). Run with `-h` for the full flag list and more workflows (TLE investigation, pathfinding debugging).
 
 ### `zip_bot.py`
 
