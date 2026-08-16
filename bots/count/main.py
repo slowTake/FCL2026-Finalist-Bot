@@ -86,11 +86,14 @@ class Player:
         # interval. None until the first one; only ever set on the core.
         self._lastReplenishRound: int | None = None
 
-        # Gunner idle timer (guns.gunnerLoop). Round this gunner last fired; it
-        # recycles itself after guns.IDLE_SELF_DESTRUCT_ROUNDS idle rounds. None
-        # until its first loop, which seeds the clock at birth so a never-fired
-        # gunner still ages out. Stays None on every non-gunner unit.
-        self._gunnerLastFired: int | None = None
+        # Gunner idle timer (guns.gunnerLoop). Round this gunner last had a
+        # target worth shooting in range — NOT the round it last fired: a gunner
+        # that can see a target but can't shoot it (empty ammo pool, cooldown) is
+        # on a live position with a broken economy, not a dead one, and must not
+        # recycle. It self-destructs after guns.IDLE_SELF_DESTRUCT_ROUNDS with an
+        # empty arc. None until its first loop, which seeds the clock at birth so
+        # a never-targeted gunner still ages out. Stays None on non-gunner units.
+        self._gunnerLastActive: int | None = None
 
         # Patience (patience.py)
         self.holdReason: str | None = None
