@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run a bot against starter on every map, 5 times each."""
+"""Run a bot against starter on its live map pool, 5 times each."""
 
 from __future__ import annotations
 
@@ -10,6 +10,10 @@ from pathlib import Path
 
 from fcode.config import find_config
 from fcode.fcode_engine import run_game
+
+SCRIPTS_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(SCRIPTS_DIR))
+from live_map_pool import resolve_maps  # noqa: E402
 
 RUNS_PER_MAP = 5
 
@@ -23,20 +27,6 @@ CONDITION_LABELS = {
     "coinflip": "Coinflip",
     "timeout": "Draw",
 }
-
-
-def resolve_maps(maps_dir: Path, override: list[str] | None) -> list[Path]:
-    if override:
-        maps = []
-        for name in override:
-            path = maps_dir / name
-            if not path.suffix:
-                path = path.with_suffix(".map26")
-            if not path.exists():
-                raise FileNotFoundError(f"Map not found: {path}")
-            maps.append(path)
-        return maps
-    return sorted(maps_dir.glob("*.map26"))
 
 
 def write_summary(lines: list[str]) -> None:
@@ -85,7 +75,7 @@ def run_extreme_gauntlet(bot_name: str, map_names: list[str] | None) -> int:
         print(f"Error: starter bot not found at {starter}", file=sys.stderr)
         return 1
 
-    maps = resolve_maps(maps_dir, map_names)
+    maps = resolve_maps(maps_dir, map_names, bots_dir / bot_name)
     if not maps:
         print(f"Error: no maps found in {maps_dir}", file=sys.stderr)
         return 1
@@ -168,7 +158,7 @@ def run_extreme_gauntlet(bot_name: str, map_names: list[str] | None) -> int:
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Run a bot against starter on every map, 5 times each. "
+            "Run a bot against starter on its live map pool, 5 times each. "
             "Pass only if all matches are won."
         )
     )
@@ -180,7 +170,11 @@ def main() -> None:
     parser.add_argument(
         "--maps",
         nargs="+",
-        help="Optional map names to run (default: all *.map26 in maps/)",
+        help=(
+            "Optional map names to run (default: the bot's own features.py "
+            "MAP_ID_TO_NAME pool, falling back to every *.map26 in maps/ if "
+            "the bot has none)"
+        ),
     )
     args = parser.parse_args()
     raise SystemExit(run_extreme_gauntlet(args.bot, args.maps))

@@ -15,8 +15,12 @@ side is a "win" on the other. What this catches instead:
      /fail on its own; the default maps aren't all fully symmetric, so a threshold
      would need per-map tuning this doesn't attempt yet.
 
-Defaults to 4 of the 15 live-rotation maps from bots/baron/features.py
-(MAP_ID_TO_NAME) — a size/shape spread, not the first 4 alphabetically.
+Defaults to the bot's own live map pool — its features.py MAP_ID_TO_NAME, read
+live via live_map_pool.py — not a hardcoded map list. A hardcoded default
+(DEFAULT_LIVE_MAPS used to name antler/atoll/heart/saga) drifts the moment the
+pool rotates and, worse, silently runs matches on maps the bot was never
+fingerprinted for: atoll/heart/saga were never in any bot's MAP_ID_TO_NAME to
+begin with. Pass --maps for a quick subset instead of the full pool.
 """
 
 from __future__ import annotations
@@ -31,6 +35,7 @@ from fcode.fcode_engine import run_game
 SCRIPTS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS_DIR))
 import florent_replay_pb2 as pb  # noqa: E402
+from live_map_pool import resolve_maps  # noqa: E402
 
 CONDITION_LABELS = {
     "core_destroyed": "Core destroyed",
@@ -42,10 +47,6 @@ CONDITION_LABELS = {
     "coinflip": "Coinflip",
     "timeout": "Draw",
 }
-
-# antler (14x18, small) / atoll (18x18, walled centre) / heart (28x20, large) /
-# saga (24x24, open) — a spread of sizes and layouts, not four similar maps.
-DEFAULT_LIVE_MAPS = ["antler", "atoll", "heart", "saga"]
 
 # Any of these appearing in a unit's captured stdout means the bot's own code
 # raised — the engine swallows per-unit exceptions and keeps the match running,
@@ -76,7 +77,7 @@ def _scan_replay_for_crashes(replay_path: str) -> list[str]:
     return found
 
 
-def run_mirror_gauntlet(bot_name: str, map_names: list[str]) -> int:
+def run_mirror_gauntlet(bot_name: str, map_names: list[str] | None) -> int:
     config, project_root = find_config()
     bots_dir = (project_root / config.bots_dir).resolve()
     maps_dir = (project_root / config.maps_dir).resolve()
@@ -88,15 +89,14 @@ def run_mirror_gauntlet(bot_name: str, map_names: list[str]) -> int:
         print(f"Error: bot not found at {candidate}", file=sys.stderr)
         return 1
 
-    maps: list[Path] = []
-    for name in map_names:
-        path = maps_dir / name
-        if not path.suffix:
-            path = path.with_suffix(".map26")
-        if not path.exists():
-            print(f"Error: map not found: {path}", file=sys.stderr)
-            return 1
-        maps.append(path)
+    try:
+        maps = resolve_maps(maps_dir, map_names, bots_dir / bot_name)
+    except FileNotFoundError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    if not maps:
+        print(f"Error: no maps found in {maps_dir}", file=sys.stderr)
+        return 1
 
     print(f"Mirror gauntlet: {bot_name} vs itself ({len(maps)} maps, seed={seed})")
     print()
@@ -175,8 +175,11 @@ def main() -> None:
     parser.add_argument(
         "--maps",
         nargs="+",
-        default=DEFAULT_LIVE_MAPS,
-        help=f"Map names to run (default: {' '.join(DEFAULT_LIVE_MAPS)})",
+        help=(
+            "Optional map names to run (default: the bot's own features.py "
+            "MAP_ID_TO_NAME pool, falling back to every *.map26 in maps/ if "
+            "the bot has none)"
+        ),
     )
     args = parser.parse_args()
     raise SystemExit(run_mirror_gauntlet(args.bot, args.maps))

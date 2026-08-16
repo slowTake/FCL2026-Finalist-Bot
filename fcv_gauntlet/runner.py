@@ -11,6 +11,10 @@ from typing import Any
 from fcode.config import find_config
 from fcode.fcode_engine import run_game
 
+_SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
+sys.path.insert(0, str(_SCRIPTS_DIR))
+from live_map_pool import resolve_maps  # noqa: E402
+
 from fcv.replay import Replay
 from fcv.metrics import compute as compute_metrics
 
@@ -37,12 +41,6 @@ from fcv_gauntlet.causal import build_causal_chains
 from fcv_gauntlet.reporting import build_full_report_dict, write_json_report, write_csv_metrics, write_markdown_report
 from fcv_gauntlet.baseline import save_baseline, compare_baseline, evaluate_ci_gates
 
-COMPETITIVE_MAPS = [
-    "antler", "archipelago", "auroraveil", "drakkarfjord", "drumlin",
-    "fjordgate", "frostgate", "glacierkeep", "icefloe", "midgard",
-    "nordkap", "ragnarok", "royale", "valkyrie", "yulerune",
-]
-
 CONDITION_LABELS = {
     "core_destroyed": "Core destroyed",
     "resigned": "Resigned",
@@ -53,31 +51,6 @@ CONDITION_LABELS = {
     "coinflip": "Coinflip",
     "timeout": "Draw",
 }
-
-
-def resolve_maps(maps_dir: Path, override: list[str] | None, all_maps: bool) -> list[Path]:
-    if override:
-        maps = []
-        for name in override:
-            path = maps_dir / name
-            if not path.suffix:
-                path = path.with_suffix(".map26")
-            if not path.exists():
-                raise FileNotFoundError(f"Map not found: {path}")
-            maps.append(path)
-        return maps
-
-    if all_maps:
-        return sorted(maps_dir.glob("*.map26"))
-
-    maps = []
-    for name in COMPETITIVE_MAPS:
-        path = (maps_dir / name).with_suffix(".map26")
-        if path.exists():
-            maps.append(path)
-        else:
-            print(f"Warning: competitive map missing: {path}", file=sys.stderr)
-    return maps
 
 
 def _maybe_run_oracle(
@@ -399,7 +372,7 @@ def run_full_gauntlet(
         print(f"Error: bot2 not found at {opponent}", file=sys.stderr)
         return 1
 
-    maps = resolve_maps(maps_dir, map_names, all_maps)
+    maps = resolve_maps(maps_dir, map_names, bot_dir=bots_dir / bot1, all_maps=all_maps)
     if not maps:
         print(f"Error: no maps found in {maps_dir}", file=sys.stderr)
         return 1
