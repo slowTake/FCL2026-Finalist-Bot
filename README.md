@@ -89,6 +89,29 @@ python scripts/zip_bot.py baron --include data.json   # add an extra file (repea
 
 Prints the file list and total size before writing, and (unless `--all`) which `.py` files in the bot dir were skipped as unimported — useful for catching a module you meant to wire in but forgot to import.
 
+### `fcv_bot_gauntlet.py`
+
+Diagnostic engine for replay analysis — behavioral detectors (crashes, orphan harvesters, friendly fire, oscillation, ...), causal event chains, cost-weighted "top Ti leaks," and JSON/CSV/Markdown reports. Lives in [`fcv_gauntlet/`](fcv_gauntlet/).
+
+**Needs the `fcv` package**, which isn't on PyPI — install it separately, once per venv:
+
+```bash
+git clone https://github.com/DataAthleteChamp/florent-code-visualiser.git
+pip install -e florent-code-visualiser/
+```
+
+Without it, `fcv_bot_gauntlet.py` fails immediately with `ModuleNotFoundError: No module named 'fcv'`.
+
+```bash
+# Analyze a single existing replay
+python scripts/fcv_bot_gauntlet.py --replay replay.replay26 --markdown-report /tmp/report.md
+
+# Full gauntlet with JSON/CSV output
+python scripts/fcv_bot_gauntlet.py <your-bot> starter --all-maps --json-output report.json --csv-metrics metrics.csv
+```
+
+Optional AI root-cause diagnosis (`--oracle`) uses the Claude API and **costs real money from a personal API budget** — it never spends without an explicit `--oracle-yes` on top of `--oracle`. See [`fcv_gauntlet/oracle/README.md`](fcv_gauntlet/oracle/README.md) for setup and budget caps, and [`fcv_gauntlet/oracle/AGENT.md`](fcv_gauntlet/oracle/AGENT.md) for the confirmation rule any agent must follow before using it.
+
 ## CI bot test
 
 When your bot is ready, commit it under `bots/<your-bot>/main.py` and open a PR.
