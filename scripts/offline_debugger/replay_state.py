@@ -2,6 +2,8 @@ import sys
 from pathlib import Path
 from dataclasses import dataclass, field
 
+import os
+sys.path.insert(0, "/home/nraatika/projects/florent/.venv/lib/python3.12/site-packages")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 import florent_replay_pb2 as pb
