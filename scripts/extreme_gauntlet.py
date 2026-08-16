@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from collections import defaultdict
 from pathlib import Path
 
 from fcode.config import find_config
@@ -95,6 +96,7 @@ def run_extreme_gauntlet(bot_name: str, map_names: list[str] | None) -> int:
 
     wins = 0
     rows: list[tuple[str, str, str, int, int, int]] = []
+    per_map: dict[str, list[str]] = defaultdict(list)
 
     for map_path in maps:
         for run in range(1, RUNS_PER_MAP + 1):
@@ -125,6 +127,7 @@ def run_extreme_gauntlet(bot_name: str, map_names: list[str] | None) -> int:
             label = "WIN" if won else "LOSS"
             map_label = map_path.stem if RUNS_PER_MAP == 1 else f"{map_path.stem}-{run}"
             rows.append((map_label, label, condition, ally_ti, enemy_ti, result["turns"]))
+            per_map[map_path.stem].append("W" if won else "L")
             print(
                 f"{map_label:<12} {label:<8} {condition:<24} {ally_ti:>8} "
                 f"{enemy_ti:>9} {result['turns']:>6}"
@@ -135,6 +138,11 @@ def run_extreme_gauntlet(bot_name: str, map_names: list[str] | None) -> int:
     print()
     print(f"Total: {wins}/{total_matches}")
     print(f"Win rate: {winrate:.1f}%")
+    print()
+    print(f"=== Per map (one letter per run, seeds {seed}..{seed + RUNS_PER_MAP - 1}) ===")
+    for map_path in maps:
+        letters = "".join(per_map[map_path.stem])
+        print(f"  {map_path.stem:<12} {letters}")
 
     summary_lines = [
         f"## Extreme gauntlet: `{bot_name}` vs `starter`",
