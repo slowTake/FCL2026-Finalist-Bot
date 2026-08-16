@@ -311,6 +311,7 @@ def run_standalone_replay_analysis(
     run_id = f"single-{uuid.uuid4().hex[:8]}"
     now_str = datetime.datetime.now(datetime.timezone.utc).isoformat()
     map_name = p.stem
+    cfg = load_config(config_path, profile_name or bot1)
 
     events, metrics = analyze_replay_all_detectors(str(p), map_name, "A", bot1, bot2, cfg)
     causal_chains = build_causal_chains(events)
