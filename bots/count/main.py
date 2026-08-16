@@ -71,6 +71,12 @@ class Player:
         # core launcher, so it never plants a second after walking out of sight.
         self._placedLauncher = False
 
+        # Gunner idle timer (guns.gunnerLoop). Round this gunner last fired; it
+        # recycles itself after guns.IDLE_SELF_DESTRUCT_ROUNDS idle rounds. None
+        # until its first loop, which seeds the clock at birth so a never-fired
+        # gunner still ages out. Stays None on every non-gunner unit.
+        self._gunnerLastFired: int | None = None
+
         # Patience (patience.py)
         self.holdReason: str | None = None
         self.holdTurns = 0

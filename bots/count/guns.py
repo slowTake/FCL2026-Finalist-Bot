@@ -118,10 +118,32 @@ def _bestCandidate(here, candidates, priority, reachable):
 
 # --- Live loops -------------------------------------------------------------
 
+# A gunner that hasn't fired in this many rounds is on a dead position — the
+# harvester it was placed to suppress is gone, or nothing ever crossed its arc.
+# It still holds a slot and draws ammo top-up (topUpAmmo banks a reload per built
+# turret), so recycle it rather than leave a mute turret parked; the raider drops
+# a fresh one when a new harvester is worth suppressing. Measured in engine rounds
+# via get_current_round().
+IDLE_SELF_DESTRUCT_ROUNDS = 50
+
 
 def gunnerLoop(bot, ct: Controller) -> None:
     """Fire before rotating — turning costs Ti and a tick, so the free option
     (something already on-facing) is always worth checking first."""
+    round_ = ct.get_current_round()
+    # Idle recycle. Seed the clock on the first loop (the gunner is born this
+    # turn), then self-destruct once IDLE_SELF_DESTRUCT_ROUNDS pass with no shot.
+    # Checked ahead of the cooldown gate so a mute gunner still ages out while on
+    # cooldown; self_destruct needs no action and costs no cooldown.
+    if bot._gunnerLastFired is None:
+        bot._gunnerLastFired = round_
+    elif round_ - bot._gunnerLastFired >= IDLE_SELF_DESTRUCT_ROUNDS:
+        if debug.ENABLED:
+            debug.log("gun", f"idle self-destruct at {ct.get_position()} "
+                             f"round={round_} lastFired={bot._gunnerLastFired}")
+        ct.self_destruct()
+        return
+
     if ct.get_action_cooldown() != 0:
         return
 
@@ -131,6 +153,7 @@ def gunnerLoop(bot, ct: Controller) -> None:
     onFacing = _bestCandidate(here, hostiles, GUNNER_PRIORITY, ct.can_fire)
     if onFacing is not None:
         ct.fire(onFacing[0])
+        bot._gunnerLastFired = round_
         return
 
     if ct.get_global_resources() < _ROTATE_MIN_TI:
