@@ -98,6 +98,18 @@ KNOWN_MAPS = {
     (20, 20, Team.B, 16, 9, 8): (44, 'yulerune', 2, 9),
 }
 
+# The actual competition rotation — narrower than MAP_ID_TO_NAME below, which is
+# every 2-core map ever fingerprinted (44, for KNOWN_MAPS lookups). Gauntlet
+# scripts must test against this list, not MAP_ID_TO_NAME's full set: the extra
+# fingerprinted maps (atoll/heart/saga included) are off-pool and were never part
+# of "the live map pool" in the competitive sense — see docs/observations.md and
+# live_map_pool.py.
+LIVE_MAP_POOL = [
+    'antler', 'archipelago', 'auroraveil', 'drakkarfjord', 'drumlin',
+    'fjordgate', 'frostgate', 'glacierkeep', 'icefloe', 'midgard', 'nordkap',
+    'ragnarok', 'royale', 'valkyrie', 'yulerune',
+]
+
 MAP_ID_TO_NAME = {
     1: 'antler',
     2: 'archipelago',

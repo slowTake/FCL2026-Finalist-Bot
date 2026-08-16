@@ -21,18 +21,24 @@ from pathlib import Path
 
 
 def live_map_pool(bot_dir: Path) -> list[str] | None:
-    """MAP_ID_TO_NAME's values from the bot's own features.py, if it has one.
+    """LIVE_MAP_POOL from the bot's own features.py, if it has one.
 
-    This is the actual map pool the bot fingerprints/recognizes (see
-    hivemind.py's _detect_and_store_map / KNOWN_MAPS) — narrower than every
-    *.map26 file sitting in maps_dir, which accumulates maps the bot has no
-    fingerprint table for and was never tuned against. Testing against those
-    extra maps runs the bot in a materially different mode (no ORE_LOCATIONS/
-    WALL_LOCATIONS, no fingerprinted enemy core) and produces regression
-    signal that doesn't reflect real competitive performance — this script's
-    own docstring used to say "every map in maps/, pass on 15/15," which only
-    ever matched MAP_ID_TO_NAME's count; maps_dir just grew past it over time
-    without this script being updated to filter back down.
+    This is the actual competition rotation, distinct from MAP_ID_TO_NAME —
+    features.py also carries every 2-core map the bot has ever fingerprinted
+    (for KNOWN_MAPS lookups), which is a materially larger, off-pool set
+    (atoll/heart/saga included) that was never part of "the live map pool" in
+    the competitive sense. LIVE_MAP_POOL used to just be read off
+    MAP_ID_TO_NAME back when the two happened to coincide (both were the same
+    15 names); once MAP_ID_TO_NAME grew to cover every fingerprinted map, that
+    silently expanded every gauntlet script's default run to the full 44 —
+    hence the dedicated constant now.
+
+    Narrower than every *.map26 file sitting in maps_dir, which further
+    accumulates maps with no fingerprint table at all and was never tuned
+    against. Testing against those extra maps runs the bot in a materially
+    different mode (no ORE_LOCATIONS/WALL_LOCATIONS, no fingerprinted enemy
+    core) and produces regression signal that doesn't reflect real
+    competitive performance.
 
     Searched recursively: bots may group shared components into a subdirectory
     (count/ keeps them in hivemind/). Missing it silently is expensive — the
@@ -42,7 +48,7 @@ def live_map_pool(bot_dir: Path) -> list[str] | None:
     Executed in an isolated namespace (not sys.modules) rather than imported,
     so gauntlet-ing multiple bots in one process can't cross-contaminate via
     Python's module cache — every bot's features.py shares the same module
-    name. None if the bot has no features.py or no MAP_ID_TO_NAME, so callers
+    name. None if the bot has no features.py or no LIVE_MAP_POOL, so callers
     can fall back to a full directory scan.
     """
     features_path = next(
@@ -62,10 +68,10 @@ def live_map_pool(bot_dir: Path) -> list[str] | None:
     except Exception as exc:
         print(f"Warning: could not read live map pool from {features_path}: {exc}", file=sys.stderr)
         return None
-    mapping = ns.get("MAP_ID_TO_NAME")
-    if not isinstance(mapping, dict) or not mapping:
+    pool = ns.get("LIVE_MAP_POOL")
+    if not isinstance(pool, list) or not pool:
         return None
-    return sorted(mapping.values())
+    return sorted(pool)
 
 
 def resolve_maps(
