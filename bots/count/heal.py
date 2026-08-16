@@ -42,16 +42,28 @@ def nearestDamagedAlly(ct: Controller, types) -> Position | None:
     for eid in ct.get_nearby_entities():
         if ct.get_team(eid) != myTeam:
             continue
-        if ct.get_entity_type(eid) not in types:
+        etype = ct.get_entity_type(eid)
+        if etype not in types:
             continue
         if ct.get_hp(eid) >= ct.get_max_hp(eid):
             continue
         pos = ct.get_position(eid)
-        if pos.x == here.x and pos.y == here.y:
+        # The core is a 2x2 building but get_position reports only its min-x/min-y
+        # anchor tile, so every builder that targets it converges on that one
+        # corner's two stand tiles and piles up on a single side. Expand it to its
+        # footprint and aim each builder at the nearest of the four tiles instead,
+        # so they spread around all sides — can_heal works off any of them since
+        # the core occupies them all.
+        if etype == EntityType.CORE:
+            cand = min(ph.coreFootprint(pos),
+                       key=lambda t: (manhattan(here, t), t.x, t.y))
+        else:
+            cand = pos
+        if cand.x == here.x and cand.y == here.y:
             continue  # can't heal our own tile — can_heal requires adjacency
-        d = manhattan(here, pos)
+        d = manhattan(here, cand)
         if bestDist is None or d < bestDist:
-            best, bestDist = pos, d
+            best, bestDist = cand, d
 
     return best
 

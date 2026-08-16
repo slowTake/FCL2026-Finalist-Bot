@@ -193,8 +193,18 @@ def isImpassable(ct: Controller, hm, pos: Position) -> bool:
 def canStandNow(ct: Controller, pos: Position) -> bool:
     """Can a builder legally occupy this tile *this turn*. For the move step only —
     planning uses isImpassable + tileCost so A* may route through what it intends
-    to clear."""
+    to clear.
+
+    Out-of-vision tiles answer False, not raise: `is_tile_passable` throws
+    `GameError: Position out of vision range` on a fogged tile, and callers that
+    scan candidate tiles around a target (raidBot._safeStandTile / _stepOffFire
+    probe ring-tile neighbours that can sit past the raider's ~4.5-tile vision)
+    would otherwise crash the whole unit for the rest of the match. "Can't see
+    it" is correctly "can't commit to standing there this turn."
+    """
     if not inBounds(ct, pos):
+        return False
+    if not ct.is_in_vision(pos):
         return False
     return ct.is_tile_passable(pos)
 
