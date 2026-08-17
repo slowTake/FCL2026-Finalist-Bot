@@ -583,11 +583,16 @@ def _defenceAnswers(ttype):
     but the other one does. Answering "faster" means "gets a shot off now", so the
     fallback fires exactly when the lead's pad scan comes up empty.
 
-    Only gunner/sentinel threats get the sentinel option; a builder or launcher rush
-    is a gunner job (a permanent single-arc sentinel is wasted on a mobile body)."""
+    A launcher gets the sentinel lead too — it is a *stationary* building, so the
+    "wasted on a mobile body" caveat that keeps a sentinel off a builder does not
+    apply, and a launcher is exactly what a sentinel is best against: a permanent
+    target hit from beyond the reach of the nuisance builder that plants and repairs
+    it (a close-in gunner is what that builder grinds down). A builder rush stays a
+    gunner job — it is genuinely mobile, and a permanent single-arc sentinel is
+    wasted the moment it steps off the arc."""
     gunner = (lambda ct: ct.get_gunner_cost(), _dropGunnerOn)
     sentinel = (lambda ct: ct.get_sentinel_cost(), _dropSentinelOn)
-    if ttype == EntityType.SENTINEL:
+    if ttype in (EntityType.SENTINEL, EntityType.LAUNCHER):
         return (sentinel, gunner)
     if ttype == EntityType.GUNNER:
         return (gunner, sentinel)
@@ -599,9 +604,11 @@ def defendCore(bot, ct: Controller) -> bool:
     range so a pad bears on it. True if it acted this turn. An enemy gunner or
     sentinel is answered with whichever of our own turrets bears this turn — a
     sentinel preferred against a sentinel, a gunner against a gunner, the other as a
-    fallback when the preferred one has no bearing pad this turn. A launcher, or an
-    enemy builder grinding one of our buildings, draws a gunner — a builder merely
-    passing the core does not (see _nearestCoreThreat / _builderThreateningStructure).
+    fallback when the preferred one has no bearing pad this turn. A launcher draws a
+    sentinel (it is stationary — the long-range answer that stays out of reach of the
+    builder repairing it), gunner as fallback. An enemy builder grinding one of our
+    buildings draws a gunner — a builder merely passing the core does not (see
+    _nearestCoreThreat / _builderThreateningStructure).
 
     Gated on affordability only — defence deliberately bypasses the offensive surplus
     gate, because a core under attack is worth spending the bank down for. But if we
