@@ -189,6 +189,13 @@ class Player:
         # difference is ever read, so it never needs resetting.
         self.noRouteSeq = 0
 
+        # Consecutive turns guns.defendCore has stood in range of a core threat that
+        # none of our pads bear on. Its own counter and not patience.holdTask,
+        # because walkTo clears the shared hold on every arrival — which silently
+        # made that patience infinite and kept a builder beside a threat until it
+        # died. Reset on any turn defence actually acts or gives up.
+        self._defendStuckTurns = 0
+
         # Instrumentation (telemetry.py) — None unless COUNT_CPU=1.
         self._cpu = CpuMeter() if CPU_TELEMETRY else None
 

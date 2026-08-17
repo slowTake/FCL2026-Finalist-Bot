@@ -23,7 +23,6 @@ import emplace
 import pathfindingHelpers as ph
 import store
 from movement import walkTo
-from patience import BLOCKED_WAIT_TURNS, holdTask
 from pathing import manhattan
 from respawn import MAX_BUILDERS
 
@@ -288,6 +287,13 @@ _CORE_SNIPE_RADIUS = 5
 # Cap on targets probed per turn. The raider runs near the 10ms limit, so the
 # scan is bounded rather than exhaustive — nearest few are the ones in reach.
 _GUN_TARGET_LIMIT = 3
+
+# Consecutive turns defendCore will stand in range of a threat that no pad of ours
+# bears on before giving up and going back to real work. A few turns is worth it —
+# a cooldown expires, a moving threat drifts into a bearing — but past that the
+# geometry is simply not there, and the builder is more use elsewhere than keeping
+# a vigil. See the note at the hold in defendCore for the counter this replaces.
+_DEFEND_STUCK_TURNS = 4
 
 
 def _gunFacing(pad: Position, target: Position) -> Direction | None:
@@ -685,8 +691,36 @@ def defendCore(bot, ct: Controller) -> bool:
         return p.distance_squared(threat) <= GUNNER_RANGE_SQ
 
     if walkTo(bot, ct, inRange, threat, ("defend", threat.x, threat.y)):
+        bot._defendStuckTurns = 0
         return True
-    return holdTask(bot, "defendHold", BLOCKED_WAIT_TURNS)
+
+    # walkTo returned False: we are already in range (it reports arrival that way)
+    # but no pad bore on the threat this turn, or there is no route to it. Standing
+    # here is only worth it if it is about to become useful.
+    #
+    # This used to be `holdTask(bot, "defendHold", BLOCKED_WAIT_TURNS)`, which reads
+    # like a 4-turn patience but never expired: walkTo calls clearHold on arrival, so
+    # every turn in range wiped holdReason, holdTask then saw a *changed* reason,
+    # reset the counter to 0, and returned 1 <= 4 — true forever. A builder that
+    # could never get a bearing kept a vigil beside the threat until something killed
+    # it. Measured on a drumlin mirror: a builder held at distance 2 from an enemy
+    # gunner from r121 until it died at r130. Own counter, so nothing else's
+    # clearHold can reset it.
+    bot._defendStuckTurns += 1
+    if bot._defendStuckTurns > _DEFEND_STUCK_TURNS:
+        bot._defendStuckTurns = 0
+        return False
+
+    # Self-preservation outranks the vigil: never hold station on a tile an enemy
+    # gunner is already aimed at. We are not answering the threat from here anyway —
+    # that is why we are in this branch — so waiting on that tile buys a free shot
+    # and nothing else. Computed only in this branch, which is rare, so the scan
+    # isn't paid on the turns defence actually works.
+    if emplace.tileUnderGunnerFire(ct, ct.get_position(), emplace.enemyGunners(ct)):
+        bot._defendStuckTurns = 0
+        return False
+
+    return True
 
 
 # --- Ammo ---------------------------------------------------------------
