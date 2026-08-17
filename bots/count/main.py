@@ -27,6 +27,7 @@ if _HERE:
 
 from fcode import Controller, EntityType, Position  # noqa: E402
 
+import debug  # noqa: E402
 import guns  # noqa: E402
 import launcher  # noqa: E402
 import raid  # noqa: E402
@@ -172,6 +173,22 @@ class Player:
         # every turn and TLEs. 0 = not backed off. Only ever set on a raider.
         self._pressCoreBackoffUntil = 0
 
+        # Tiles this raider's siege walk found no route to, tile -> round marked
+        # (roles/raidBot._markIfNoRoute) — both the ring tiles it works and the tiles
+        # it dodges to. Each has somewhere else to go, so a dead search bars that one
+        # tile and the pick moves on, rather than re-grinding the same ~9ms A*+BFS at
+        # it every turn (which is a per-turn TLE, i.e. a raider that visibly stops
+        # doing anything). Barring is temporary: ground opens and closes as both
+        # sides build.
+        self._siegeUnreachable: dict[tuple[int, int], int] = {}
+
+        # Count of dead searches this unit's walkTo has run (bumped in
+        # movement.walkTo). Callers snapshot it before a walk and compare after, to
+        # ask "did *that* walk fail" — the sticky holdReason can't answer it, and a
+        # round stamp can't either once two walks share a turn. Monotonic; only the
+        # difference is ever read, so it never needs resetting.
+        self.noRouteSeq = 0
+
         # Instrumentation (telemetry.py) — None unless COUNT_CPU=1.
         self._cpu = CpuMeter() if CPU_TELEMETRY else None
 
@@ -194,6 +211,18 @@ class Player:
         except Exception:
             if self._cpu is not None:
                 self._cpu.fault()
+            # Say what died, when tracing is on. The swallow itself is right — an
+            # escaping exception destroys this unit for the rest of the match — but
+            # swallowing it *silently* cost us a whole class of bug: a unit that
+            # throws on turn 1 and every turn after looks exactly like a unit that
+            # decided to stand still, and a raider bricked this way sat idle for 89
+            # rounds with a full bank before anyone thought to suspect a crash
+            # (emplace.enemyTurrets on an enemy launcher). One debug-gated line
+            # turns that silence into the answer.
+            if debug.ENABLED:
+                import traceback
+                debug.log("fault", f"id={ct.get_id()} rnd={ct.get_current_round()} "
+                                   f"{traceback.format_exc().strip().splitlines()[-1]}")
 
         # Sampled after the handler rather than in a `finally` — the engine's bot
         # validator rejects `finally` outright — so a faulted turn is measured

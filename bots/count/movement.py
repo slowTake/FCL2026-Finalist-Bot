@@ -43,6 +43,20 @@ def walkTo(bot, ct: Controller, isGoal, heuristicGoal: Position | None, goal) ->
     if idx is None or idx >= len(path) - 1:
         path = _plan(bot, ct, isGoal, heuristicGoal)
         if path is None:
+            # Tick the dead-search counter. `holdReason` alone can't answer "did the
+            # search I just ran come up empty?": it is sticky until some other call
+            # clears it, and the move-cooldown early return above exits before
+            # touching it — so a caller testing the reason can read a "noRoute" left
+            # over from an earlier turn, or from a different goal entirely, and give
+            # up on a target it never searched for.
+            #
+            # A counter and not a round stamp, because a raider can run two walks in
+            # one turn (runRaidBot: a failed `approach` to a sentinel site falls
+            # straight through to `pressCore`, which walks again). A stamp reads
+            # equal for both, so the second walk inherits the first one's failure and
+            # the caller blacklists a target it actually reached. Callers snapshot
+            # this before their walk and compare after — see raidBot._markIfNoRoute.
+            bot.noRouteSeq += 1
             if debug.ENABLED:
                 debug.log("walkTo", f"idx={bot.hivemind.my_index} goal={goal} "
                                      f"pos={pos} NO PATH FOUND (_plan returned None)")

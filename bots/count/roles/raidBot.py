@@ -161,6 +161,27 @@ _SIEGE_DODGE_MEMORY_TURNS = 3
 # Small on purpose — the raider dances just off the line, it does not retreat.
 _DODGE_RADIUS = 2
 
+# How long a tile the siege walk found no route to stays barred (kept in
+# bot._siegeUnreachable). Covers both tiles the siege walks to: the ring tiles it
+# works (_nextSiegeTile) and the tiles it dodges to (_stepOffFire).
+#
+# Neither walk had a dead-search guard: unlike pressCore's travel (gated by
+# _PRESS_CORE_BACKOFF_ROUNDS) they re-ran the full ~9ms A*+BFS at an unreachable
+# tile every single turn, which on a 10ms budget is a TLE every turn — the raider
+# stops acting entirely. On the ring it shows up right after the apron launcher
+# goes in: that seals the near edge tile, so _nextSiegeTile hands back a tile on
+# the far side of the core that may have no route at all. On the dodge it shows up
+# because canStandNow answers "legally occupiable", not "reachable" — a tile two
+# out across a wall passes it. Barring lets the next pick be one we can actually
+# get to; once every candidate is barred the caller holds without searching.
+#
+# Long enough to stop the grind, short enough that ground which opens up is
+# re-probed within a few builder-actions. Not shorter: the gunner-branch walk
+# (safeBeside) carries fire-line constraints, so its failures can be transient
+# geometry rather than true unreachability, and this window is the cost of that
+# coarseness — see _markIfNoRoute.
+_SIEGE_UNREACHABLE_MEMORY_TURNS = 20
+
 
 def _siegeTileNeedsWork(bot, ct: Controller, tile: Position) -> bool:
     """True if this core-ring tile is either an enemy belt to cut or an open gap
@@ -206,12 +227,20 @@ def _nextSiegeTile(bot, ct: Controller, ringTiles, gunners, cache) -> Position |
     constant False, and strict `<` keeps the first tile at the min distance in
     ring order, exactly as before. Keeping the no-gunner path identical matters:
     perturbing tie-breaks or the walk target here (an earlier version did) shifts
-    which belt is cut turn to turn and stalls the siege even with no threat."""
+    which belt is cut turn to turn and stalls the siege even with no threat.
+
+    Tiles the walk already proved unreachable are skipped (_markIfNoRoute). That
+    skip is what turns a dead search into a retarget instead of a per-turn TLE,
+    and it costs the untouched path nothing: the bar list is empty until a search
+    actually fails, so a healthy siege picks exactly the tile it always did."""
     pos = ct.get_position()
+    barred = bot._siegeUnreachable
     best = None
     bestKey = None
     for t in ringTiles:
         if not ph.inBounds(ct, t):
+            continue
+        if (t.x, t.y) in barred:
             continue
         if not _siegeTileNeedsWork(bot, ct, t):
             continue
@@ -232,6 +261,60 @@ def _pruneDodge(bot, ct: Controller) -> dict[tuple[int, int], int]:
                   if rnd - marked >= _SIEGE_DODGE_MEMORY_TURNS]:
             del mem[k]
     return mem
+
+
+def _pruneUnreachable(bot, ct: Controller) -> dict[tuple[int, int], int]:
+    """Drop siege-unreachable entries older than _SIEGE_UNREACHABLE_MEMORY_TURNS;
+    return the live dict (bot._siegeUnreachable). Same shape as _pruneDodge."""
+    mem = bot._siegeUnreachable
+    if mem:
+        rnd = ct.get_current_round()
+        for k in [k for k, marked in mem.items()
+                  if rnd - marked >= _SIEGE_UNREACHABLE_MEMORY_TURNS]:
+            del mem[k]
+    return mem
+
+
+def _markIfNoRoute(bot, ct: Controller, tile: Position, seq: int) -> None:
+    """Bar `tile` from siege walk targeting if the walk that just ran found no route
+    to it. `seq` is bot.noRouteSeq sampled immediately before that walk. Serves both
+    walk targets the siege picks — ring tiles to work, and dodge tiles to step to.
+
+    Keyed on the counter movement.walkTo bumps, not on holdReason and not on a
+    round stamp. holdReason is sticky across turns and goals; a round stamp is
+    ambiguous once two walks share a turn, which they do (runRaidBot lets a failed
+    `approach` fall through to `pressCore` in the same turn). Either would bar a
+    ring tile the raider actually reached — and a wrongly barred tile is a gap left
+    unwalled for the whole memory window.
+
+    Known coarseness, accepted: this records "the walk failed", which is not always
+    "the tile is unreachable". The gunner-branch goal (safeBeside) also demands the
+    approach be out of every gunner's live line, so a failure there can be transient
+    fire geometry — and because ring bars and dodge bars share one list, that tile
+    leaves the dodge pool too. It needs the geometry to line up (the _safeStandTile
+    precheck means a qualifying tile existed when the walk ran) and it self-heals on
+    expiry. If a replay ever shows a raider holding under fire beside a visibly open
+    tile, the fix is to tag bars with the goal kind and expire the constrained ones
+    sooner — not to drop the bar, which is what stops the per-turn TLE."""
+    if bot.noRouteSeq == seq:
+        return
+    bot._siegeUnreachable[(tile.x, tile.y)] = ct.get_current_round()
+    # Same cleanup walkOrRetarget does when it gives up on a goal: the cached path
+    # and the avoid-set were built for a route we've now abandoned, and leaving the
+    # avoid-set behind poisons the *next* tile's search with tiles that were only
+    # ever refused on the way to this one — which would bar that tile too, and so on
+    # around the ring.
+    bot.walkPath = None
+    bot.walkGoal = None
+    bot.walkAvoid.clear()
+    # Drop the hold too, for the same reason. We are not waiting on this tile any
+    # more — we've given up on it — so leaving "noRoute" set hands a later
+    # approach/advance a reason it never earned, which is the exact sticky-flag
+    # failure this whole change exists to remove.
+    clearHold(bot)
+    if debug.ENABLED:
+        debug.log("raidBot", f"siege-unreachable {tile} barred "
+                             f"rnd={ct.get_current_round()}")
 
 
 def _safeStandTile(bot, ct: Controller, ringTile: Position, gunners, cache) -> Position | None:
@@ -270,6 +353,7 @@ def _stepOffFire(bot, ct: Controller, gunners, cache, dodge, objective: Position
     move, never by distance from the gunner: the raider dances just off the line
     and stays on the core, which also bleeds the enemy's ammo as it re-aims."""
     pos = ct.get_position()
+    barred = bot._siegeUnreachable
     best = None
     bestKey = None
     for dy in range(-_DODGE_RADIUS, _DODGE_RADIUS + 1):
@@ -281,6 +365,11 @@ def _stepOffFire(bot, ct: Controller, gunners, cache, dodge, objective: Position
                 continue
             if (cand.x, cand.y) in dodge:
                 continue
+            # Standable is not reachable: a tile two out can sit across a wall, and
+            # walking to it is a dead A*+BFS re-run on every exposed turn — the same
+            # per-turn TLE the ring walk had. Skip the ones already proved routeless.
+            if (cand.x, cand.y) in barred:
+                continue
             if emplace.tileUnderGunnerFire(ct, cand, gunners, cache=cache):
                 continue
             key = (manhattan(cand, objective), manhattan(pos, cand), cand.x, cand.y)
@@ -289,8 +378,14 @@ def _stepOffFire(bot, ct: Controller, gunners, cache, dodge, objective: Position
     if best is None:
         return False
     dodge[(pos.x, pos.y)] = ct.get_current_round()
-    return walkTo(bot, ct, lambda p, b=best: p.x == b.x and p.y == b.y,
+    seq = bot.noRouteSeq
+    used = walkTo(bot, ct, lambda p, b=best: p.x == b.x and p.y == b.y,
                   best, ("siegeDodge", best.x, best.y))
+    # Barring here strictly beats the old behaviour: an unreachable pick used to
+    # cost the search *and* fail to move anyway. Now the next exposed turn spends
+    # its dodge on a tile it can actually get to, or correctly reports boxed-in.
+    _markIfNoRoute(bot, ct, best, seq)
+    return used
 
 
 def _siege(bot, ct: Controller, enemyCore: Position) -> bool:
@@ -321,6 +416,7 @@ def _siege(bot, ct: Controller, enemyCore: Position) -> bool:
     gunners = emplace.enemyGunners(ct)
     fireCache: dict = {}
     dodge = _pruneDodge(bot, ct)
+    _pruneUnreachable(bot, ct)
     exposed = bool(gunners) and emplace.tileUnderGunnerFire(ct, pos, gunners, cache=fireCache)
 
     # Act only from a tile outside every gunner's live line. Standing in one, we
@@ -375,26 +471,106 @@ def _siege(bot, ct: Controller, enemyCore: Position) -> bool:
         # hold once there. Keeping this path identical to before is what stops the
         # safety machinery from perturbing an unthreatened siege (see _nextSiegeTile).
         if nxt is not None:
+            seq = bot.noRouteSeq
             walkTo(bot, ct, lambda p: manhattan(p, nxt) == 1, nxt, ("siege", nxt.x, nxt.y))
+            _markIfNoRoute(bot, ct, nxt, seq)
         return True
 
-    # Gunners in sight: approach nxt only from a tile off their live line, and
-    # only if such a tile exists (else the ring's exposed here — dance below).
-    if nxt is not None and _safeStandTile(bot, ct, nxt, gunners, fireCache) is not None:
-        def safeBeside(p, tgt=nxt):
-            return (manhattan(p, tgt) == 1
-                    and not emplace.tileUnderGunnerFire(ct, p, gunners, cache=fireCache)
-                    and (p.x, p.y) not in bot._siegeDodgeBlacklist)
+    # Gunners in sight: approach nxt only from a tile off their live line, when we
+    # can actually identify one.
+    if nxt is not None:
+        if _safeStandTile(bot, ct, nxt, gunners, fireCache) is not None:
+            def safeBeside(p, tgt=nxt):
+                return (manhattan(p, tgt) == 1
+                        and not emplace.tileUnderGunnerFire(ct, p, gunners, cache=fireCache)
+                        and (p.x, p.y) not in bot._siegeDodgeBlacklist)
 
-        walkTo(bot, ct, safeBeside, nxt, ("siege", nxt.x, nxt.y))
-        return True
+            seq = bot.noRouteSeq
+            walkTo(bot, ct, safeBeside, nxt, ("siege", nxt.x, nxt.y))
+            _markIfNoRoute(bot, ct, nxt, seq)
+            return True
 
-    # Ring sealed, or every approach to nxt is in a live line right now. If we're
-    # sitting in one, step off it (biased toward the work / the core) instead of
-    # dying in place; otherwise hold — the sentinel ring keeps grinding the core.
+        if not exposed:
+            # No *identifiable* safe approach, but we are not under fire where we
+            # stand. Close in anyway with the plain walk instead of holding.
+            #
+            # Holding here was a hard freeze, and the common cause is not danger but
+            # ignorance: canStandNow answers False for a tile out of vision (it
+            # cannot commit to standing somewhere it can't see), so every approach to
+            # a ring tile more than ~4.5 tiles off reads unsafe, _safeStandTile
+            # returns None, and the raider refuses to walk to the one thing that
+            # would resolve it — getting close enough to look. Measured on a drumlin
+            # mirror: a raider sat on the same tile for 204 straight turns with a
+            # live work target and a full bank, while the enemy core it was besieging
+            # sat at full HP.
+            #
+            # Safe to close in because exposure is re-checked every turn from the
+            # tile we actually occupy: the moment this walk does step into a live
+            # line, `exposed` is True next turn and _stepOffFire dances us off it.
+            # Approaching and dodging is the loop this role is built on; standing
+            # still is the only state it cannot recover from.
+            seq = bot.noRouteSeq
+            walkTo(bot, ct, lambda p: manhattan(p, nxt) == 1, nxt, ("siege", nxt.x, nxt.y))
+            _markIfNoRoute(bot, ct, nxt, seq)
+            return True
+
+    # Ring sealed (nxt is None), or every approach is covered and we are standing in
+    # a live line. If we're in one, step off it (biased toward the work / the core)
+    # instead of dying in place; otherwise hold — the sentinel ring keeps grinding.
     if exposed:
         _stepOffFire(bot, ct, gunners, fireCache, dodge,
                      nxt if nxt is not None else enemyCore)
+    elif debug.ENABLED:
+        # The one remaining do-nothing state. Logged because "raider parked at the
+        # enemy core" is invisible in a replay until you count rounds — see the
+        # 204-turn freeze this branch used to swallow.
+        debug.log("raidBot", f"siege-park pos={pos} nxt={nxt} gunners={len(gunners)} "
+                             f"canSpend={canSpend} rnd={ct.get_current_round()}")
+    return True
+
+
+def _creepToward(bot, ct: Controller, target: Position) -> bool:
+    """One greedy cardinal step that strictly shortens the distance to `target`.
+    True if it moved (or is holding a move cooldown). No planner, no cache: four
+    neighbours, four engine calls, no A*.
+
+    This is what the raider does *instead of standing still* while the press-core
+    back-off suppresses real searching. The back-off exists to stop a dead ~9ms
+    A*+BFS re-running every turn, but on its own it also stopped the raider
+    moving at all for 25 rounds at a stretch, which in a replay is exactly the
+    reported "raider freezes mid-traversal" — the unit is fine, it is just
+    forbidden from planning and given nothing else to do.
+
+    Strictly-decreasing only, so it can never oscillate and never wanders: it
+    cannot round an obstacle by itself, which is fine, because rounding obstacles
+    is the planner's job and the back-off re-probes with a real search when it
+    expires. What the creep buys is that the re-probe happens from a *different
+    tile* — a raider flung against the outside of a wall drifts along it, and the
+    search that failed from the landing tile often succeeds a few tiles on.
+
+    Deliberately does not clear the back-off on success: a creep that moves most
+    turns would otherwise re-enable the search every turn and bring the TLE back."""
+    if ct.get_move_cooldown() != 0:
+        return True
+    pos = ct.get_position()
+    best = None
+    bestD = ph.manhattanToCore(pos, target)
+    for n in ph.orthogonalTiles(pos):
+        d = ph.manhattanToCore(n, target)
+        if d >= bestD:
+            continue
+        if not ph.canStandNow(ct, n):
+            continue
+        facing = ph.beltFacing(pos, n)
+        if facing is None or not ct.can_move(facing):
+            continue
+        best, bestD = facing, d
+    if best is None:
+        return False
+    ct.move(best)
+    if debug.ENABLED:
+        debug.log("raidBot", f"press-creep {pos} dir={best} "
+                             f"rnd={ct.get_current_round()}")
     return True
 
 
@@ -420,15 +596,24 @@ def pressCore(bot, ct: Controller) -> None:
     # and TLE. The no-route state won't change on its own, and _siege/requestLaunch
     # above still run every turn to catch it clearing, so once a search comes up
     # empty we hold off re-searching for a spell. Re-probes when the window expires.
+    #
+    # Suppressing the *search* is not a reason to stand still: creep one greedy
+    # step coreward instead (no planner, so the back-off's whole purpose holds).
+    # Idling here was the second half of the reported freeze — see _creepToward.
     if ct.get_current_round() < bot._pressCoreBackoffUntil:
+        _creepToward(bot, ct, enemyCore)
         return
 
+    seq = bot.noRouteSeq
     handled, stuck = approach(bot, ct, enemyCore)
     if not handled:
         stuck = advance(bot, ct, enemyCore)
-    # `stuck` is the patience-spent signal; holdReason=="noRoute" catches the earlier
-    # turns too, so the back-off trips on the first failed search, not the fourth.
-    if stuck or bot.holdReason == "noRoute":
+    # `stuck` is the patience-spent signal; the counter catches the earlier turns
+    # too, so the back-off trips on the first failed search, not the fourth. The
+    # counter and not holdReason: the reason is sticky across turns and goals, so a
+    # raider could inherit a "noRoute" left by an unrelated earlier walk and put
+    # itself in a 25-round back-off without ever having failed a search for the core.
+    if stuck or bot.noRouteSeq != seq:
         bot._pressCoreBackoffUntil = ct.get_current_round() + _PRESS_CORE_BACKOFF_ROUNDS
 
 
@@ -682,14 +867,20 @@ def advance(bot, ct: Controller, site: Position) -> bool:
     def atWaypoint(p: Position) -> bool:
         return p.x == wp.x and p.y == wp.y
 
+    seq = bot.noRouteSeq
     stuck = walkOrRetarget(bot, ct, atWaypoint, wp, ("waypoint", wp.x, wp.y))
-    if stuck or bot.holdReason == "noRoute":
+    if stuck or bot.noRouteSeq != seq:
         # No route to the committed waypoint from here — it can sit walled off after
         # a launcher fling drops us outside a wall it's behind, and neither the drift
         # nor the ledger-based impassable check catches that. Drop it so the next
         # attempt picks a fresh staging tile instead of re-grinding the same dead
         # search at the same unreachable tile. (`stuck` = patience spent, which
-        # already cleared the hold; holdReason=="noRoute" catches it mid-patience.)
+        # already cleared the hold; the counter catches it mid-patience.)
+        #
+        # The counter and not holdReason for the mid-patience half: the reason is
+        # sticky across turns and goals, so a stale one threw away a perfectly good
+        # waypoint every turn — and the commitment to a waypoint is precisely what
+        # keeps this walk from re-planning a full A* on every step.
         bot._raidWaypoint = None
     return stuck
 
