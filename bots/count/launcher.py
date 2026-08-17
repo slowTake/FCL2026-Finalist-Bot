@@ -64,6 +64,17 @@ APRON_RADIUS = 4
 # core — a launcher there is far outside this radius and keeps the defensive path.
 ENEMY_APRON_RADIUS = 3
 
+# A launched *friendly* builder must be able to walk back out of where it lands.
+# Some maps (royale) have fully walled rooms whose interior tiles read
+# passable-and-clear but are reachable only by being thrown in over the wall — a
+# permanent trap. A landing tile counts as escapable only if the walkable area
+# reachable from it is at least this big: open ground clears it in a ring or two,
+# and the largest sealed royale pocket (its 12-tile centre room) never does.
+# Tunable — anything in (12, ~25] separates trap from open there. Applied only to
+# our own builders; enemies are still flung into such rooms on purpose (a trap for
+# them is a win). See _escapable / _bestThrow(requireEscapable=True).
+ESCAPE_MIN_TILES = 20
+
 
 # ---------------------------------------------------------------------------
 # Request packing:  valid(1) | rx(7) | ry(7) | tx(7) | ty(7)  = 29 bits
@@ -302,12 +313,52 @@ def _repelAwayFromCore(bot, ct: Controller, enemyCore: Position) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _bestThrow(bot, ct: Controller, requester: Position, target: Position):
+def _escapable(bot, ct: Controller, tile: Position) -> bool:
+    """Can a builder dropped on `tile` walk back out — i.e. is `tile` in a walkable
+    area of at least ESCAPE_MIN_TILES, rather than a fully walled-off pocket.
+
+    Bounded flood over walkable tiles (`not ph.isImpassable`, which already forbids
+    walls, cores and ally harvesters). Stops the instant the reachable set hits the
+    threshold, so it visits at most ESCAPE_MIN_TILES tiles — cheap, and the launcher
+    has spare budget. An out-of-vision tile reads wall=False, so an unseen region
+    floods as open; the pocket walls sit beside our core and are in the ledger by
+    the time a launcher fires, so a real trap is still caught, and the unknown case
+    degrades to the old behaviour rather than regressing.
+    """
+    hm = bot.hivemind
+    seen = {(tile.x, tile.y)}
+    stack = [tile]
+    while stack:
+        if len(seen) >= ESCAPE_MIN_TILES:
+            return True
+        cur = stack.pop()
+        for n in ph.orthogonalTiles(cur):
+            key = (n.x, n.y)
+            if key in seen or ph.isImpassable(ct, hm, n):
+                continue
+            seen.add(key)
+            stack.append(n)
+    return len(seen) >= ESCAPE_MIN_TILES
+
+
+def _bestThrow(
+    bot,
+    ct: Controller,
+    requester: Position,
+    target: Position,
+    *,
+    requireEscapable: bool = False,
+):
     """The in-range tile that lands the builder closest to `target`.
 
     Only tiles strictly closer to the goal than the requester currently is are
     considered, so a launch is never wasted throwing a builder sideways or back.
     can_launch is the real legality check; this only ranks candidates.
+
+    `requireEscapable` (friendly throws only) rejects a landing tile inside a fully
+    walled-off pocket the builder could never walk out of. The flood is run only on
+    a strictly-improving candidate, so at most a handful per throw. Left off for the
+    enemy-repel callers on purpose: throwing an enemy into such a pocket traps it.
     """
     try:
         tiles = ct.get_attackable_tiles()
@@ -326,6 +377,8 @@ def _bestThrow(bot, ct: Controller, requester: Position, target: Position):
             continue  # must be a clear passable tile to land on
         d = manhattan(tile, target)
         if d < bestD:
+            if requireEscapable and not _escapable(bot, ct, tile):
+                continue
             bestD = d
             best = tile
     return best
@@ -409,7 +462,7 @@ def runLauncher(bot, ct: Controller) -> None:
     if not t.builder or t.builderEnemy:
         return
 
-    best = _bestThrow(bot, ct, requester, target)
+    best = _bestThrow(bot, ct, requester, target, requireEscapable=True)
     if best is None:
         return
 
