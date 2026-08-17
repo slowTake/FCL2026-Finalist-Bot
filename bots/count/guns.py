@@ -73,9 +73,15 @@ SENTINEL_PRIORITY: dict[EntityType, int] = {
     EntityType.BARRIER: 5,
 }
 
-# rotate()'s own Ti cost — skip the 8-direction scan outright if we can't
-# afford to act on whatever it finds.
-_ROTATE_MIN_TI = GameConstants.GUNNER_ROTATE_COST
+# Surplus floor for rotating a gunner, NOT the raw cost. Turning costs
+# GUNNER_ROTATE_COST (10 Ti) and a tick every time, so a gunner allowed to re-aim
+# whenever it can merely *afford* the cost churns the bank tracking targets it may
+# never get a shot at. Require a real buffer above the cost before spending a
+# rotation. Ported from baron (its GUNNER_ROTATE_MIN_TI = 50, tuned in a top-20
+# bot) as a starting point — not yet re-tuned against count's own economy. Also
+# gates the 8-direction scan: below this we skip it outright, since we could not act
+# on whatever it found.
+GUNNER_ROTATE_MIN_TI = 50
 
 
 # --- Targeting ----------------------------------------------------------
@@ -147,7 +153,7 @@ IDLE_SELF_DESTRUCT_ROUNDS = 50
 # rotate, so a hostile it can never bear on must not keep it alive (this is the one
 # deliberate difference from gunnerLoop, whose visible-keyed clock is correct only
 # because a gunner rotates onto any visible target).
-SENTINEL_IDLE_SELF_DESTRUCT_ROUNDS = 120
+SENTINEL_IDLE_SELF_DESTRUCT_ROUNDS = 150
 
 
 def gunnerLoop(bot, ct: Controller) -> None:
@@ -185,7 +191,7 @@ def gunnerLoop(bot, ct: Controller) -> None:
         ct.fire(onFacing[0])
         return
 
-    if ct.get_global_resources() < _ROTATE_MIN_TI:
+    if ct.get_global_resources() < GUNNER_ROTATE_MIN_TI:
         return
 
     # can_fire accounts for ammo; can_fire_from explicitly does not. Without
@@ -268,6 +274,13 @@ GUNNER_RANGE_SQ = GameConstants.GUNNER_VISION_RADIUS_SQ
 # keeps firing on whichever one it's placed against.
 _GUN_TARGET_TYPES = (EntityType.HARVESTER, EntityType.GUNNER, EntityType.SENTINEL)
 _GUN_TURRET_TYPES = (EntityType.GUNNER, EntityType.SENTINEL)
+
+# A harvester within this Manhattan range of the enemy core is feeding it directly,
+# so sniping it is top-value supply denial and outranks answering a turret. Past it a
+# harvester is ordinary economic denial and ranks below a live turret threat. Without
+# this tier a turret ring around the enemy core fills the probe cap and the core's own
+# harvesters never get probed. Measured to the 2x2 footprint edge (ph.manhattanToCore).
+_CORE_SNIPE_RADIUS = 5
 
 # Cap on targets probed per turn. The raider runs near the 10ms limit, so the
 # scan is bounded rather than exhaustive — nearest few are the ones in reach.
@@ -399,10 +412,11 @@ def _dropSentinelOn(ct: Controller, target: Position) -> bool:
     return True
 
 
-def placeGunner(bot, ct: Controller) -> bool:
+def placeGunner(bot, ct: Controller, enemyCore: Position | None) -> bool:
     """Opportunistically plant a gunner beside a nearby enemy harvester (deny the
     supply) or enemy turret (answer fire). Surplus-gated like all raider spending,
-    so it never starves the economy to arm the raider.
+    so it never starves the economy to arm the raider. `enemyCore` is passed in (the
+    caller already knows it) rather than imported, to dodge the raid->guns cycle.
 
     Cheap early-exits first (this runs every raider turn, and the raider is
     CPU-tight): must be able to build this turn, must be past the surplus gate,
@@ -413,10 +427,12 @@ def placeGunner(bot, ct: Controller) -> bool:
     `gunnerLoop` aims and fires thereafter. Returns True iff it built one (consuming
     the turn).
 
-    Enemy turrets sort ahead of harvesters, each group nearest-first: a live turret
-    is actively hurting us (runRaidBot answers turret fire before all else), and
-    without the ordering an in-reach turret could be crowded out of the probe cap by
-    nearer harvesters and never answered.
+    Targets rank in three tiers, nearest-first within each: (1) a harvester within
+    _CORE_SNIPE_RADIUS of the enemy core — feeding it directly, so cutting it is the
+    top-value snipe; (2) an enemy gunner/sentinel actively hurting us; (3) a harvester
+    elsewhere. The tiers stop a turret ring around the enemy core from crowding the
+    core's own harvesters off the probe cap, while a live turret still outranks an
+    ordinary far harvester.
     """
     if ct.get_action_cooldown() != 0:
         return False
@@ -437,7 +453,18 @@ def placeGunner(bot, ct: Controller) -> bool:
         targets.append((ct.get_position(eid), etype))
     if not targets:
         return False
-    targets.sort(key=lambda pt: (pt[1] not in _GUN_TURRET_TYPES, manhattan(here, pt[0])))
+
+    def rank(pt: tuple[Position, EntityType]) -> tuple[int, int]:
+        pos, etype = pt
+        if etype in _GUN_TURRET_TYPES:
+            group = 1
+        elif enemyCore is not None and ph.manhattanToCore(pos, enemyCore) <= _CORE_SNIPE_RADIUS:
+            group = 0
+        else:
+            group = 2
+        return group, manhattan(here, pos)
+
+    targets.sort(key=rank)
 
     for target, _etype in targets[:_GUN_TARGET_LIMIT]:
         if _dropGunnerOn(ct, target):

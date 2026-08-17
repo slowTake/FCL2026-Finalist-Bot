@@ -38,6 +38,13 @@ _WAYPOINT_SLACK = 3
 # would find nothing anyway — this just skips its eight engine calls while the
 # raider is still travelling (it runs near the 10ms limit).
 _LOCAL_SENTINEL_RADIUS = 10
+# Rounds from game start before a raider may build any turret (gunner or sentinel).
+# On a small map the opening pair can reach a target and dump the whole bank on
+# turrets in the first few turns, starving the harvesters the economy is built on —
+# this holds their spend so the eco opens first. Launchers are not gated (the first
+# raider still plants the core launcher in main._runBuilder). Measured from round 0,
+# so replenishment raiders spawned long after are always past it.
+_TURRET_BUILD_DELAY_ROUNDS = 10
 
 
 def runRaidBot(bot, ct: Controller) -> None:
@@ -52,15 +59,22 @@ def runRaidBot(bot, ct: Controller) -> None:
     if heal.healNearby(bot, ct, heal.TURRET_HEAL_TYPES):
         return
 
+    # Opening hold: no turret of any kind for the first _TURRET_BUILD_DELAY_ROUNDS
+    # (see the constant). Below this the raider still travels and presses the core —
+    # it just can't spend the opening bank on turrets before the harvesters are down.
+    canBuildTurrets = ct.get_current_round() >= _TURRET_BUILD_DELAY_ROUNDS
+
     # Harvesters get a gunner dropped beside them and nothing else — no
-    # hand-grinding. Surplus-gated and persistent.
-    if guns.placeGunner(bot, ct):
+    # hand-grinding. Surplus-gated and persistent. The enemy core is passed so
+    # placeGunner can rank a core-feeding harvester above answering a turret (the
+    # `and` short-circuits, so it's only computed once we're past the opening hold).
+    if canBuildTurrets and guns.placeGunner(bot, ct, raid.enemyCorePos(bot, ct)):
         return
 
     # Turrets are bought out of surplus only, so the economy is never starved to
     # arm a raider. This gates *spending*, not the role — below it the raider
     # keeps pressing, it just can't build yet.
-    if guns.surplusReady(ct):
+    if canBuildTurrets and guns.surplusReady(ct):
         # Parked in range of the core? Densify the sentinel ring locally instead
         # of walking the whole map back for the next published target.
         if buildLocalSentinel(bot, ct):
