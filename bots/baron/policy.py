@@ -272,7 +272,7 @@ STEAL_ENEMY_HARVESTERS = True
 # different question — enemy harvesters are almost always on their side by
 # construction) — this is "how far will we actually go for this," the same
 # shape as HARASS_LEASH_CHEBYSHEV/DEFEND_HOME_CHEBYSHEV. 12 is a first guess,
-# not a tuned value — worth adjusting after a few multiseed_eval.py passes,
+# not a tuned value — worth adjusting after a few extreme_gauntlet.py passes,
 # since it directly trades economic reach against exposure.
 STEAL_HARVESTER_MAX_CHEBYSHEV = 12
 

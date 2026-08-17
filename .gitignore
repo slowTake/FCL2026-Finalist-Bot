@@ -1,6 +1,7 @@
 .venv/
 .venv/
 __pycache__/
+fcv_gauntlet/oracle/.spend_ledger.json
 *.py[cod]
 *.replay*
 replay.replay*

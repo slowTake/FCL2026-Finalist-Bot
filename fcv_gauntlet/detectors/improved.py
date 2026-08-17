@@ -22,7 +22,26 @@ UNIT_BASE_COSTS = {
 
 
 class ImprovedCrashDetector:
-    """Detects unit removals without lethal damage, classifying CRASH_TLE vs CRASH_EXCEPTION."""
+    """Detects unit removals without lethal damage, classifying CRASH_TLE vs CRASH_EXCEPTION.
+
+    A non-lethal removal alone is not evidence of a crash: `self_destruct()` produces the
+    identical signature (removeEntity, no preceding fatal damage, no timeout) and both count
+    and baron use it deliberately (idle-gunner recycling — see bots/count/guns.py and
+    bots/baron/guns.py). Confirmed on a real count-vs-baron replay where every single flagged
+    "crash" was one of these self-destructs, not an exception — this detector had no false
+    -negative protection against its own heuristic's ambiguity.
+
+    CRASH_EXCEPTION now requires the one signal that actually is unambiguous: a Traceback in
+    the removed unit's own captured stdout. mirror_gauntlet.py already treats this as the sole
+    ground truth for a crash ("the engine catches per-unit exceptions and keeps going... a
+    crash does NOT show up as a nonzero exit or a bad win_condition — only in stdout") — this
+    detector previously ignored that signal entirely and guessed from removal timing instead.
+    A non-lethal removal with neither a nearby traceback nor a nearby TLE is not reported as a
+    crash at all now: self_destruct (or any other benign non-lethal removal) shouldn't be
+    reported as one just because we don't have a maintained list of every legitimate cause.
+    """
+
+    _CRASH_MARKER = "Traceback (most recent call last)"
 
     def __init__(self, config: Any = None):
         self.config = config
@@ -31,13 +50,16 @@ class ImprovedCrashDetector:
     def analyze_replay(self, replay: Any, map_name: str = "", side: str = "") -> list[DiagnosticEvent]:
         events: list[DiagnosticEvent] = []
         recent_slow_exec: dict[int, tuple[int, int]] = {}  # actor_id -> (turn, exec_time_us)
+        recent_traceback: dict[int, int] = {}  # actor_id -> turn a Traceback was captured
 
         for t, before, after in replay.iter_worlds():
-            # Track exec times
+            # Track exec times and captured tracebacks
             for step in replay.substeps(t):
                 if step.actor is not None and step.exec_time_us:
                     if step.exec_time_us >= self.tle_threshold_us or step.tled:
                         recent_slow_exec[step.actor] = (t, step.exec_time_us)
+                if step.actor is not None and step.stdout and self._CRASH_MARKER in step.stdout:
+                    recent_traceback[step.actor] = t
 
                 damaged: dict[int, int] = {}
                 for a in step.actions:
@@ -58,14 +80,21 @@ class ImprovedCrashDetector:
                         base_cost = UNIT_BASE_COSTS.get(role, 30)
                         ti_loss = float(base_cost + 20)  # Replacement cost + task disruption
 
-                        # Classify subtype
+                        # Classify subtype — only from signals that actually distinguish the
+                        # cause, not from "we can't otherwise explain this."
                         slow_info = recent_slow_exec.get(eid)
-                        if slow_info and (t - slow_info[0] <= 1):
+                        tb_turn = recent_traceback.get(eid)
+                        if tb_turn is not None and t - tb_turn <= 1:
+                            subtype = "CRASH_EXCEPTION"
+                            cause = f"Uncaught exception in unit #{eid} ({role})"
+                        elif slow_info and (t - slow_info[0] <= 1):
                             subtype = "CRASH_TLE"
                             cause = f"Unit #{eid} ({role}) exceeded CPU budget ({slow_info[1]} us)"
                         else:
-                            subtype = "CRASH_EXCEPTION"
-                            cause = f"Uncaught exception in unit #{eid} ({role})"
+                            # No traceback, no TLE correlation: e.g. a deliberate
+                            # self_destruct() (idle-gunner recycling). Not a crash — don't
+                            # report it as one just because we don't recognise the cause.
+                            continue
 
                         # Severity: CRITICAL if builder or core early/mid game (turn <= 200)
                         if role in ("builder", "core") and t <= 200:

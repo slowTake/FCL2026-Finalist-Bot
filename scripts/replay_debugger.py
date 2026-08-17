@@ -37,6 +37,8 @@ Run from the teaPot/ directory using the project venv:
 ═══════════════════════════════════════════════════════════════════════════════
 
   replay              Path to .replay26 file (required, positional)
+  -b, --bot           Bot directory under bots/ whose Player.run() to re-execute
+                      (default: count). Only used by run/rebuild-store modes.
   -r, --round         Round number to reconstruct, 0-indexed (required)
   -t, --team          Team perspective: A or B (default: A)
   -u, --unit          Entity ID to debug (required for run/show-output modes)
@@ -176,7 +178,7 @@ def show_output(state: WorldState, unit_id: int):
             print(f"  Units with output this round: {sorted(state.bot_outputs.keys())}")
 
 
-def run_unit(state: WorldState, unit_id: int, team: Team, rebuild_store: bool = False,
+def run_unit(state: WorldState, unit_id: int, team: Team, bot_name: str, rebuild_store: bool = False,
              replay_builder: ReplayStateBuilder | None = None):
     """Run our bot's logic for a specific unit using the MockController."""
     if unit_id not in state.entities:
@@ -195,7 +197,7 @@ def run_unit(state: WorldState, unit_id: int, team: Team, rebuild_store: bool = 
     # Rebuild store state by replaying our bot from round 0
     if rebuild_store and replay_builder:
         print(f"\n  Rebuilding store state by replaying rounds 0..{state.round_number - 1}...")
-        store = _rebuild_store(replay_builder, state.round_number, team)
+        store = _rebuild_store(replay_builder, state.round_number, team, bot_name)
         ct.set_store_values(store)
         print(f"  Store values: {dict(store)}")
 
@@ -209,7 +211,7 @@ def run_unit(state: WorldState, unit_id: int, team: Team, rebuild_store: bool = 
 
     # Import and run the bot
     try:
-        bot_path = Path(__file__).resolve().parent.parent / 'bots' / 'baron'
+        bot_path = Path(__file__).resolve().parent.parent / 'bots' / bot_name
         sys.path.insert(0, str(bot_path))
         from main import Player
 
@@ -232,9 +234,9 @@ def run_unit(state: WorldState, unit_id: int, team: Team, rebuild_store: bool = 
         print(f"\n  No actions taken.")
 
 
-def _rebuild_store(replay_builder: ReplayStateBuilder, target_round: int, team: Team) -> dict[int, int]:
+def _rebuild_store(replay_builder: ReplayStateBuilder, target_round: int, team: Team, bot_name: str) -> dict[int, int]:
     """Rebuild store state by running our bot from round 0 to target_round - 1.
-    
+
     This captures all write_store calls to reconstruct the store state that
     our bot would see at the target round.
     """
@@ -242,7 +244,7 @@ def _rebuild_store(replay_builder: ReplayStateBuilder, target_round: int, team: 
     # Buffer for delayed writes (writes take effect next round)
     pending_writes: dict[int, int] = {}
 
-    bot_path = Path(__file__).resolve().parent.parent / 'bots' / 'baron'
+    bot_path = Path(__file__).resolve().parent.parent / 'bots' / bot_name
     sys.path.insert(0, str(bot_path))
     from main import Player
 
@@ -300,6 +302,11 @@ def main():
         epilog=__doc__
     )
     parser.add_argument('replay', help='Path to .replay26 file')
+    parser.add_argument('--bot', '-b', type=str, default='count',
+                        help='Bot directory name under bots/ whose Player.run() to '
+                             're-execute (default: count). Only matters for -u modes; '
+                             '--dump/--list-entities/--show-output read the replay '
+                             'directly and never import bot code.')
     parser.add_argument('--round', '-r', type=int, required=True,
                         help='Round number (or start round) to reconstruct (0-indexed)')
     parser.add_argument('--end-round', '-e', type=int, default=None,
@@ -347,7 +354,7 @@ def main():
             show_output(state, args.unit)
 
         if args.unit is not None and not args.show_output:
-            run_unit(state, args.unit, team,
+            run_unit(state, args.unit, team, args.bot,
                      rebuild_store=args.rebuild_store,
                      replay_builder=builder)
 

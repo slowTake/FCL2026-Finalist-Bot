@@ -17,6 +17,10 @@ from pathlib import Path
 from fcode.config import find_config
 from fcode.fcode_engine import run_game
 
+SCRIPTS_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(SCRIPTS_DIR))
+from live_map_pool import resolve_maps  # noqa: E402
+
 CONDITION_LABELS = {
     "core_destroyed": "Core destroyed",
     "resigned": "Resigned",
@@ -27,74 +31,6 @@ CONDITION_LABELS = {
     "coinflip": "Coinflip",
     "timeout": "Draw",
 }
-
-
-def live_map_pool(bot_dir: Path) -> list[str] | None:
-    """MAP_ID_TO_NAME's values from the bot's own features.py, if it has one.
-
-    This is the actual map pool the bot fingerprints/recognizes (see
-    hivemind.py's _detect_and_store_map / KNOWN_MAPS) — narrower than every
-    *.map26 file sitting in maps_dir, which accumulates maps the bot has no
-    fingerprint table for and was never tuned against. Testing against those
-    extra maps runs the bot in a materially different mode (no ORE_LOCATIONS/
-    WALL_LOCATIONS, no fingerprinted enemy core) and produces regression
-    signal that doesn't reflect real competitive performance — this script's
-    own docstring used to say "every map in maps/, pass on 15/15," which only
-    ever matched MAP_ID_TO_NAME's count; maps_dir just grew past it over time
-    without this script being updated to filter back down.
-
-    Executed in an isolated namespace (not sys.modules) rather than imported,
-    so gauntlet-ing multiple bots in one process can't cross-contaminate via
-    Python's module cache — every bot's features.py shares the same module
-    name. None if the bot has no features.py or no MAP_ID_TO_NAME, so callers
-    can fall back to a full directory scan.
-    """
-    features_path = bot_dir / "features.py"
-    if not features_path.is_file():
-        return None
-    ns: dict = {"__file__": str(features_path)}
-    try:
-        exec(compile(features_path.read_text(), str(features_path), "exec"), ns)
-    except Exception as exc:
-        print(f"Warning: could not read live map pool from {features_path}: {exc}", file=sys.stderr)
-        return None
-    mapping = ns.get("MAP_ID_TO_NAME")
-    if not isinstance(mapping, dict) or not mapping:
-        return None
-    return sorted(mapping.values())
-
-
-def resolve_maps(
-    maps_dir: Path, override: list[str] | None, bot_dir: Path | None = None
-) -> list[Path]:
-    if override:
-        maps = []
-        for name in override:
-            path = maps_dir / name
-            if not path.suffix:
-                path = path.with_suffix(".map26")
-            if not path.exists():
-                raise FileNotFoundError(f"Map not found: {path}")
-            maps.append(path)
-        return maps
-
-    pool = live_map_pool(bot_dir) if bot_dir is not None else None
-    if pool:
-        maps = []
-        missing = []
-        for name in pool:
-            path = maps_dir / f"{name}.map26"
-            if path.exists():
-                maps.append(path)
-            else:
-                missing.append(name)
-        if missing:
-            print(
-                f"Warning: live map pool names not found in {maps_dir}: {missing}",
-                file=sys.stderr,
-            )
-        return maps
-    return sorted(maps_dir.glob("*.map26"))
 
 
 def write_summary(lines: list[str]) -> None:
