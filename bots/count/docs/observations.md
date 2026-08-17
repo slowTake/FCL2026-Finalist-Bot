@@ -144,6 +144,26 @@ things were the difference between 30x30 maps working and timing out:
 Caches hang off the hivemind or Player instance, never module globals — units
 share a subinterpreter and module state would leak between them.
 
+Two later fixes, both found by profiling raider TLEs on valkyrie (30x30) via a
+replay's `botOutput.execTimeUs`/`tled` — the raider's search cost climbed from
+~2ms to ~9ms/turn as the map filled in, TLEing turn after turn once it reached
+the enemy core:
+
+- **Raider travel replanned every step.** `raidBot.advance` recomputed its
+  ~8-tile staging waypoint each turn, so `walkTo`'s goal key churned and a full
+  A* ran per tile of the whole crossing. Committing the waypoint on
+  `bot._raidWaypoint` until it is reached lets `walkTo` cache one hop and follow
+  it — measured ~74% fewer raider travel replans. `approach` never had the bug
+  because it keys by a stable site.
+- **The A* heuristic was ~10x too weak.** `makeHeuristic` scaled Manhattan by
+  `MIN_STEP_COST` (= `NETWORK` = 1) to stay admissible, but a normal step costs
+  `BASE` (10), so the estimate barely steered the search and the frontier grew
+  ~2*D**2 (Dijkstra-like) — the cost class behind *every* builder's search
+  ballooning on an explored map, eco included. Scaling by `BASE` (weighted A*,
+  deliberately inadmissible — path optimality is not required against a
+  hand-tuned cost table) makes the walk search directed. Relay planning runs
+  without a heuristic, so its optimality is untouched.
+
 ## Known asymmetry
 
 Two separate orientation bugs live here. Keep them apart — they were originally

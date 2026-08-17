@@ -132,6 +132,15 @@ class Player:
         # instead. Empty on any unit that never sieges.
         self._siegeDodgeBlacklist: dict[tuple[int, int], int] = {}
 
+        # Raider travel waypoint (roles/raidBot.advance). A raider crossing to the
+        # enemy core commits to one ~8-tile staging tile and reuses it until reached
+        # so walkTo caches the hop instead of replanning a full A* every step — the
+        # churning-waypoint replan was the raider's dominant search cost on a large
+        # map. Paired with the site it was picked for, so a retarget recomputes.
+        # Both None on any unit that never travels as a raider.
+        self._raidWaypoint: Position | None = None
+        self._raidWaypointSite: tuple[int, int] | None = None
+
         # Instrumentation (telemetry.py) — None unless COUNT_CPU=1.
         self._cpu = CpuMeter() if CPU_TELEMETRY else None
 

@@ -519,12 +519,27 @@ def approach(bot, ct: Controller, site: Position) -> tuple[bool, bool]:
 
 
 def advance(bot, ct: Controller, site: Position) -> bool:
-    """Too far for one search: walk a waypoint at a time instead.
+    """Too far for one search: walk toward a committed waypoint, a chunk at a time.
 
     Returns True iff walkOrRetarget gave up reaching `site` — see approach's
     docstring for what callers do with that.
+
+    The waypoint is committed on `bot._raidWaypoint` and reused until it is
+    reached, the target changes, the raider drifts off it, or it goes impassable,
+    so walkTo caches one ~8-tile hop and follows it rather than replanning a full
+    A* every step. Recomputing it per turn was the raider's dominant search cost on
+    a large map (docs/observations.md, Performance).
     """
-    wp = _waypoint(bot, ct, site)
+    pos = ct.get_position()
+    wp = bot._raidWaypoint
+    if (wp is None
+            or bot._raidWaypointSite != (site.x, site.y)
+            or (pos.x, pos.y) == (wp.x, wp.y)
+            or manhattan(pos, wp) > _CHUNK + _WAYPOINT_SLACK
+            or ph.isImpassable(ct, bot.hivemind, wp)):
+        wp = _waypoint(bot, ct, site)
+        bot._raidWaypoint = wp
+        bot._raidWaypointSite = (site.x, site.y)
     if wp is None:
         return False
 

@@ -20,8 +20,9 @@ _ORTHO = ((0, -1), (1, 0), (0, 1), (-1, 0))
 # barrier is fifteen. Tuned by play, not by feel.
 
 BASE = 10
-NETWORK = 1           # riding our own rails is near-free, but never 0 —
-                      # a 0 would drop MIN_STEP_COST to 0 and force Dijkstra
+NETWORK = 1           # riding our own rails is near-free, but never 0 — a 0-cost
+                      # step (via the MIN_STEP_COST floor in costFn) would stall the
+                      # search: no progress pressure across free tiles.
 CHOKE = 50
 ENEMY_FIRE = 500
 ENEMY_BELT = 50
@@ -39,9 +40,10 @@ UNIT = 30             # a builder in the way *can* move on its own, but at 8 the
                       # around allies, not a wall (walk profile only — a belt can
                       # still be built straight under one).
 
-# Cheapest step any profile can produce. The A* heuristic is scaled by this so
-# it stays admissible; deriving it here means changing a weight above can never
-# silently break the search.
+# Cheapest step any profile can produce: the floor costFn clamps to, so no tile is
+# ever free (a 0-cost step would stall the search). Derived here, not hardcoded, so
+# changing a weight above can never silently drop it below what costFn assumes. The
+# walk heuristic no longer scales by this — see makeHeuristic.
 MIN_STEP_COST = min(NETWORK, BASE)
 
 _ENEMY_BUILD_COST = {
@@ -560,11 +562,21 @@ def makeCostFn(ctx: CostContext):
 
 
 def makeHeuristic(goal: Position | None):
-    """Scaled by MIN_STEP_COST so it stays admissible whatever the weights become."""
+    """Weighted A*: scaled by BASE (the open-ground step cost), not MIN_STEP_COST.
+
+    MIN_STEP_COST (= NETWORK = 1) keeps the estimate admissible but leaves it ~10x
+    below the true per-step cost on open ground, so A* barely prefers the goal
+    direction and its frontier grows ~2*D**2 — the search-cost class behind the
+    builder TLEs on large explored maps (docs/observations.md, Performance). Scaling
+    by BASE trades a guaranteed-optimal path — not a requirement against a
+    hand-tuned cost table — for a directed search that expands far fewer nodes. It
+    overestimates only where a route rides our own rails (NETWORK < BASE), which a
+    cross-map walk rarely does.
+    """
     if goal is None:
         return None
 
     def h(pos: Position) -> int:
-        return (abs(pos.x - goal.x) + abs(pos.y - goal.y)) * MIN_STEP_COST
+        return (abs(pos.x - goal.x) + abs(pos.y - goal.y)) * BASE
 
     return h
