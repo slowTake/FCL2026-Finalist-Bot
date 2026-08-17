@@ -65,6 +65,17 @@ class Player:
         # Economy state (ecoBot.py)
         self.oreTarget: Position | None = None
         self.oreSkip: dict[tuple[int, int], int] = {}
+        # Fling detection (ecoBot._handleFling). Position at the start of this
+        # unit's last eco turn, to spot an external >1-tile displacement (an enemy
+        # launcher throw) turn-over-turn. None until its first eco turn.
+        self._ecoLastPos: Position | None = None
+        # Net-progress backstop (ecoBot._approachStalled). The node currently being
+        # walked to, the closest we have come to it, and how many turns that best
+        # has stood without improving — so a builder reporting walk progress every
+        # turn yet never closing on its node is given up rather than churning.
+        self._ecoStallGoal: tuple[int, int] | None = None
+        self._ecoBestDist: int = 0
+        self._ecoStallTurns: int = 0
 
         # Guardian role (roles/guardianBot.py). Set True in relays.relayDone once
         # this builder has delivered a harvester end-to-end — the eligibility gate

@@ -56,6 +56,28 @@ HIJACK_BONUS = 4
 # core-siege (mirror of raidBot._siege), not a map-wide relay-repair system.
 CORE_DEFENSE_RADIUS = 8
 
+# A builder only ever moves one tile per turn, so a larger jump is an external
+# displacement — a launcher throw. Bounded above by the engine throw range
+# (r**2 <= 26 -> Chebyshev 5) plus one intervening self-move, so a stale
+# last-position (e.g. after a guardian stint) reads as "too far" and is ignored
+# rather than mistaken for a fling. See _handleFling.
+FLING_JUMP_MIN = 2
+FLING_JUMP_MAX = 6
+
+# Net-progress backstop for the approach phase (seekOre). walkTo clears the hold
+# on every successful step, so a builder that keeps being shoved back — a launcher
+# that flings it *toward* the goal short of it, a swap-deadlock that steps it back
+# and forth, any knockback _handleFling's single-jump test misses — reports
+# progress each turn yet never actually closes on its node, and the ordinary
+# blocked-patience give-up in seekOre never fires. So track the closest we have
+# ever been to the current node; if that best doesn't improve for this many turns,
+# concede the node (skip + re-pick) rather than churn on it forever. Generous on
+# purpose: a legitimate detour around a wall can plateau the manhattan distance for
+# a good stretch, and this must never fire on one. Approach-only — a relay
+# legitimately walks *away* from its harvester as it lays belt home, so distance to
+# the source is meaningless there and the tracker never runs mid-relay. Tunable.
+STALL_NO_PROGRESS_TURNS = 30
+
 
 def runEcoBot(bot, ct: Controller) -> None:
     # An eco-builder that has delivered a harvester grabs guardian duty if the
@@ -66,6 +88,12 @@ def runEcoBot(bot, ct: Controller) -> None:
     # as an eco-bot this turn and main routes it to runGuardian from the next.
     import guardianBot
     guardianBot.claimIfOpen(bot, ct)
+
+    # Concede a node the enemy just flung us off, before re-driving the relay:
+    # otherwise we march the harvester end straight back into the launch lane and
+    # get thrown again. Pure state cleanup — it never consumes the turn, so the
+    # ladder below re-picks and walks a fresh node this same turn.
+    _handleFling(bot, ct)
 
     if bot.inRelay and relayToHome(bot, ct):
         return
@@ -111,6 +139,71 @@ def runEcoBot(bot, ct: Controller) -> None:
         return
 
     exploreStep(bot, ct)
+
+
+# ---------------------------------------------------------------------------
+# Fling recovery — concede a node an enemy launcher just threw us off
+# ---------------------------------------------------------------------------
+
+
+def _handleFling(bot, ct: Controller) -> None:
+    """Concede the current node if an enemy launcher just flung us off it.
+
+    A launcher throw is the only way a builder moves more than one tile in a
+    turn. Our own core launcher ferries builders *toward* their ore, so the
+    direction of the jump — closer to the goal (friendly ferry) vs farther
+    (hostile fling) — is what tells the two apart. On a hostile fling we skip
+    the node (bounded by ORE_SKIP_TURNS) and drop any in-progress relay, so
+    seekOre picks a different node instead of walking straight back into the
+    launch lane to be thrown again.
+
+    State cleanup only — it never consumes the turn; the runEcoBot ladder below
+    it re-picks and walks a fresh node the same turn.
+    """
+    cur = ct.get_position()
+    last = bot._ecoLastPos
+    bot._ecoLastPos = cur
+    if last is None:
+        return
+    cheb = max(abs(cur.x - last.x), abs(cur.y - last.y))
+    if not (FLING_JUMP_MIN <= cheb <= FLING_JUMP_MAX):
+        return  # a normal 1-tile move, or a stale last-position — not a fling
+    goal = bot.relayFrom if bot.inRelay else bot.oreTarget
+    if goal is None:
+        return  # displaced with no committed task to strand
+    md_last = abs(last.x - goal.x) + abs(last.y - goal.y)
+    md_cur = abs(cur.x - goal.x) + abs(cur.y - goal.y)
+    if md_cur <= md_last:
+        return  # thrown *toward* the goal — our own ferry launcher, keep going
+
+    # Thrown away from the goal by a hostile launcher: concede the node.
+    _skipOre(bot, goal)
+    if bot.inRelay:
+        _concedeRelay(bot)
+    bot.oreTarget = None
+    clearHold(bot)
+    if debug.ENABLED:
+        debug.log(
+            "fling",
+            f"flung {last}->{cur} off goal {goal}; conceding "
+            f"rnd={ct.get_current_round()}",
+        )
+
+
+def _concedeRelay(bot) -> None:
+    """Abandon a relay the enemy flung us off, without marking a delivery.
+
+    Deliberately not relays.relayDone, which sets _harvesterDelivered (guardian
+    eligibility) — a flung relay did not deliver. The harvester already built is
+    orphaned: accepted, since we cannot finish its belt while the launcher keeps
+    throwing us off the lane, and an oscillating builder delivers nothing anyway.
+    """
+    bot.relayPath = None
+    bot.relayAnchor = None
+    bot.relayFrom = None
+    bot.relayAvoid.clear()
+    bot.relayRebuilds.clear()
+    bot.inRelay = False
 
 
 # ---------------------------------------------------------------------------
@@ -380,6 +473,22 @@ def seekOre(bot, ct: Controller) -> bool:
     if launcher.requestLaunch(bot, ct, ore):
         return True
 
+    # Net-progress backstop: we are reporting walk "progress" every turn but not
+    # actually getting closer to the node (shoved back, oscillating). Give it up
+    # before spending the turn walking, so we re-pick next turn instead of churning.
+    if _approachStalled(bot, ct, ore):
+        _skipOre(bot, ore)
+        bot.oreTarget = None
+        _clearApproach(bot)
+        if debug.ENABLED:
+            debug.log(
+                "fling",
+                f"approach stalled on {ore} (no gain in "
+                f"{STALL_NO_PROGRESS_TURNS} turns); conceding "
+                f"rnd={ct.get_current_round()}",
+            )
+        return False
+
     def beside(p: Position) -> bool:
         return abs(p.x - ore.x) + abs(p.y - ore.y) == 1
 
@@ -391,7 +500,41 @@ def seekOre(bot, ct: Controller) -> bool:
     # enemy harvester for 400 turns.
     _skipOre(bot, ore)
     bot.oreTarget = None
+    _clearApproach(bot)
     return False
+
+
+def _approachStalled(bot, ct: Controller, ore: Position) -> bool:
+    """Tick the net-progress tracker for the walk toward `ore`; True once the
+    closest we have come to it hasn't improved for STALL_NO_PROGRESS_TURNS turns.
+
+    Keyed on the node: a new target restarts the tracker. Resets on every new best
+    (minimum) manhattan distance, which any real approach keeps achieving as it
+    nears the node — so only a builder that genuinely stops closing the gap ages
+    out. See STALL_NO_PROGRESS_TURNS for why this exists and why it is approach-only.
+    """
+    pos = ct.get_position()
+    d = abs(pos.x - ore.x) + abs(pos.y - ore.y)
+    key = (ore.x, ore.y)
+    if bot._ecoStallGoal != key:
+        bot._ecoStallGoal = key
+        bot._ecoBestDist = d
+        bot._ecoStallTurns = 0
+        return False
+    if d < bot._ecoBestDist:
+        bot._ecoBestDist = d
+        bot._ecoStallTurns = 0
+        return False
+    bot._ecoStallTurns += 1
+    return bot._ecoStallTurns >= STALL_NO_PROGRESS_TURNS
+
+
+def _clearApproach(bot) -> None:
+    """Drop the net-progress tracker once we stop approaching a node (conceded it,
+    or it was reached and handed to build/relay). A fresh target re-seeds it."""
+    bot._ecoStallGoal = None
+    bot._ecoBestDist = 0
+    bot._ecoStallTurns = 0
 
 
 def _detourPenalty(ct: Controller, hm, origin: Position, ore: Position) -> int:
