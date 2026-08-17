@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Multi-Opponent Gauntlet Tournament Evaluator for fcode RTS Bots.
 
-Runs a specified target bot (e.g. bots/baron_v2) against older benchmark bots
-(bots/bandit, bots/starter, bots/baron_hybrid) sampling 5 random competitive maps per bot.
+Runs a specified target bot (e.g. bots/grand_knight) against benchmark bots
+(bots/count, bots/baron, bots/starter) sampling 5 random competitive maps per bot.
 
 Example:
-    python3 multi_bot_gauntlet.py --target-bot bots/baron_v2
-    python3 multi_bot_gauntlet.py --target-bot bots/baron_v2 --opponents bots/bandit bots/starter bots/baron_hybrid
+    python3 multi_bot_gauntlet.py --target-bot bots/grand_knight
+    python3 multi_bot_gauntlet.py --target-bot bots/grand_knight --opponents bots/count bots/baron bots/starter
 """
 
 from __future__ import annotations
@@ -37,8 +37,8 @@ logging.basicConfig(
 )
 LOGGER = logging.getLogger("multi_bot_gauntlet")
 
-DEFAULT_TARGET_BOT = "bots/baron_v2"
-DEFAULT_OPPONENTS = ["bots/bandit", "bots/starter", "bots/economy_goes_brr", "bots/baron_hybrid"]
+DEFAULT_TARGET_BOT = "bots/grand_knight"
+DEFAULT_OPPONENTS = ["bots/count", "bots/baron", "bots/starter"]
 DEFAULT_SEEDS = [1, 2]
 DEFAULT_TIMEOUT = 360
 DEFAULT_SAMPLE_SIZE = 5

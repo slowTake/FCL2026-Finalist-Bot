@@ -14,7 +14,7 @@ MAPS = [
 ]
 
 def run_match(map_name, seed):
-    cmd = [".venv/bin/fcode", "run", "bots/knight", "bots/starter", f"maps/{map_name}.map26", "--seed", str(seed)]
+    cmd = [".venv/bin/fcode", "run", "bots/grand_knight", "bots/starter", f"maps/{map_name}.map26", "--seed", str(seed)]
     res = subprocess.run(cmd, capture_output=True, text=True, cwd=os.path.dirname(os.path.abspath(__file__)))
     err = res.stderr
     out = res.stdout

@@ -14,3 +14,4 @@ docs/superpowers/
 .cursor/
 .DS_Store
 .aider*
+artifacts/
