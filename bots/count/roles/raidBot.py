@@ -17,6 +17,7 @@ from __future__ import annotations
 from fcode import Controller, Direction, EntityType, GameConstants, Position
 
 import debug
+import emplace
 import guns
 import heal
 import launcher
@@ -197,7 +198,7 @@ def _safeStandTile(bot, ct: Controller, ringTile: Position, gunners, cache) -> P
             continue
         if (n.x, n.y) in mem:
             continue
-        if guns.tileUnderGunnerFire(ct, n, gunners, cache=cache):
+        if emplace.tileUnderGunnerFire(ct, n, gunners, cache=cache):
             continue
         key = (manhattan(pos, n), n.x, n.y)
         if bestKey is None or key < bestKey:
@@ -227,7 +228,7 @@ def _stepOffFire(bot, ct: Controller, gunners, cache, dodge, objective: Position
                 continue
             if (cand.x, cand.y) in dodge:
                 continue
-            if guns.tileUnderGunnerFire(ct, cand, gunners, cache=cache):
+            if emplace.tileUnderGunnerFire(ct, cand, gunners, cache=cache):
                 continue
             key = (manhattan(cand, objective), manhattan(pos, cand), cand.x, cand.y)
             if bestKey is None or key < bestKey:
@@ -258,10 +259,10 @@ def _siege(bot, ct: Controller, enemyCore: Position) -> bool:
     ringTiles = ph.coreRing(enemyCore)
     canSpend = ct.get_global_resources() >= _SIEGE_MIN_TI
 
-    gunners = guns.enemyGunners(ct)
+    gunners = emplace.enemyGunners(ct)
     fireCache: dict = {}
     dodge = _pruneDodge(bot, ct)
-    exposed = bool(gunners) and guns.tileUnderGunnerFire(ct, pos, gunners, cache=fireCache)
+    exposed = bool(gunners) and emplace.tileUnderGunnerFire(ct, pos, gunners, cache=fireCache)
 
     # Act only from a tile outside every gunner's live line. Standing in one, we
     # skip the cut/wall this turn and reposition below — a supply cut is never
@@ -304,7 +305,7 @@ def _siege(bot, ct: Controller, enemyCore: Position) -> bool:
     if nxt is not None and _safeStandTile(bot, ct, nxt, gunners, fireCache) is not None:
         def safeBeside(p, tgt=nxt):
             return (manhattan(p, tgt) == 1
-                    and not guns.tileUnderGunnerFire(ct, p, gunners, cache=fireCache)
+                    and not emplace.tileUnderGunnerFire(ct, p, gunners, cache=fireCache)
                     and (p.x, p.y) not in bot._siegeDodgeBlacklist)
 
         walkTo(bot, ct, safeBeside, nxt, ("siege", nxt.x, nxt.y))
@@ -359,7 +360,7 @@ def buildSentinel(bot, ct: Controller, site: Position, facing: Direction) -> boo
     # gun already bears at its current facing — a free shot the instant it's built.
     # Take a vetted neighbour if one still reaches the core, else clear the target
     # so the core republishes.
-    if guns.siteInDirectTurretLos(ct, site, guns.enemyTurrets(ct), cache={}):
+    if emplace.siteInDirectTurretLos(ct, site, emplace.enemyTurrets(ct), cache={}):
         if debug.ENABLED:
             debug.log("raidBot", f"veto published site {site} — in enemy turret "
                                  f"line rnd={ct.get_current_round()}")

@@ -35,16 +35,17 @@ BUILDER_RESERVE = 60
 # always a raider (main.py routes them by index via isReplenishmentRaider) — if
 # the bank is this deep the economy is already saturated and the marginal builder
 # is worth more pressing the enemy core than farming.
-REPLENISH_TI = 800
+REPLENISH_TI = 650
 REPLENISH_INTERVAL = 100
 
 # The opening two builders are the raiders — the first out of the gate, so they
 # reach the enemy core soonest, and the first also plants the launcher (see
 # launcher.placeCoreLauncher) that flings the rest of the crew outbound. This is
 # a reassignment, not extra bodies: the economy runs on the later builders once
-# the pair departs (was: eco on all, one raider last). On a map we cannot
-# fingerprint there is no enemy core to aim at, so the designation is skipped and
-# both stay on eco.
+# the pair departs (was: eco on all, one raider last). Even on a map we cannot
+# fingerprint the raiders are still designated — raid.enemyCorePos falls back to a
+# point-mirror of our own core, which the core knows from turn 0, so _raidReady is
+# satisfied at the first spawn and tier 1 corrects the aim once the core is seen.
 #
 # Keyed by *my_index*, not by respawn's pre-spawn count. The newborn's my_index
 # is `built + 2`, not `built + 1`: the spawn's slot-4 write has already landed by
@@ -154,7 +155,7 @@ def _raidReady(bot, ct: Controller) -> bool:
 def isReplenishmentRaider(myIndex: int) -> bool:
     """True for any builder spawned past MAX_BUILDERS.
 
-    The 800-Ti replenishment (_replenishDue) is the only thing that ever spawns
+    The REPLENISH_TI replenishment (_replenishDue) is the only thing that ever spawns
     beyond the cap, and every body it spawns is a raider. Keyed on index alone so
     it survives losing sight of the core, exactly like the opening pair — main.py
     routes on it the same way it routes the two role slots.
@@ -163,7 +164,7 @@ def isReplenishmentRaider(myIndex: int) -> bool:
 
 
 def _replenishDue(bot, ct: Controller) -> bool:
-    """Should the 800-Ti raider replenishment spawn a body this turn.
+    """Should the REPLENISH_TI raider replenishment spawn a body this turn.
 
     True on the first round the bank reaches REPLENISH_TI, then once every
     REPLENISH_INTERVAL rounds while it stays at/above it. Gated on there being an
@@ -187,7 +188,7 @@ def runCoreSpawn(bot, ct: Controller) -> None:
     """Spawn at most one builder, on the tile that best starts its journey.
 
     Up to MAX_BUILDERS on the normal reserve-gated path; past the cap only the
-    800-Ti raider replenishment spawns, and everything it spawns is a raider.
+    REPLENISH_TI raider replenishment spawns, and everything it spawns is a raider.
     """
     if bot.corePos is None or ct.get_action_cooldown() != 0:
         return

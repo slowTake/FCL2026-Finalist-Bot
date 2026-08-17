@@ -19,8 +19,8 @@ from __future__ import annotations
 from fcode import Controller, Direction, EntityType, GameConstants, Position
 
 import debug
+import emplace
 import pathfindingHelpers as ph
-import raid
 import store
 from movement import walkTo
 from patience import BLOCKED_WAIT_TURNS, holdTask
@@ -288,8 +288,8 @@ def _dropGunnerOn(ct: Controller, target: Position) -> bool:
         if not ct.can_fire_from(pad, facing, EntityType.GUNNER, target):
             continue
         if turrets is None:
-            turrets = enemyTurrets(ct)
-        if siteInDirectTurretLos(ct, pad, turrets, cache=losCache):
+            turrets = emplace.enemyTurrets(ct)
+        if emplace.siteInDirectTurretLos(ct, pad, turrets, cache=losCache):
             continue
         if ct.can_build_gunner(pad, facing):
             ct.build_gunner(pad, facing)
@@ -330,42 +330,34 @@ def _dropSentinelOn(ct: Controller, target: Position) -> bool:
     True iff it built one.
 
     The sentinel counterpart to _dropGunnerOn: a sentinel out-ranges and out-
-    trades an enemy sentinel where a gunner just feeds it a kill. Reach geometry
-    comes from raid._reachOffsets (offsets a sentinel hits, per facing), inverted
-    the same way raid._candidates picks emplacements — a sentinel on `pad` facing
-    `d` hits `target` iff (target - pad) is one of `d`'s offsets. can_build_sentinel
-    is the final legality gate, matching raidBot.buildSentinel.
+    trades an enemy sentinel where a gunner just feeds it a kill. The pad scan,
+    the reach inversion and the enemy-turret veto are all
+    `emplace.sentinelPadBearing` — the same call `raid.fallbackEmplacement`
+    makes, differing only in the aim set (one threat tile here, the enemy core's
+    footprint there). Our policy is just the two lines around it: don't stack on
+    a target an ally sentinel already bears on, and build what comes back.
 
-    Pads already in a visible enemy turret's current line of fire are skipped, the
-    same veto raidBot.buildSentinel and raid.fallbackEmplacement apply. Without it
-    this function reliably plants the counter-sentinel *in front of* the enemy
-    sentinel it was called to answer — the whole point here is to bear on that
-    threat, and the pad that bears is often the one it already shoots."""
+    The veto matters more here than anywhere: without it this reliably plants the
+    counter-sentinel *in front of* the enemy sentinel it was called to answer —
+    the whole point is to bear on that threat, and the pad that bears is often
+    the one it already shoots."""
     myTeam = ct.get_team()
     if _coveredByAllySentinel(ct, myTeam, target):
         return False
-    here = ct.get_position()
-    reach = raid._reachOffsets(ct)  # eight engine calls, only on a live threat
-    turrets = enemyTurrets(ct)
-    losCache: dict = {}
-    for pad in ph.orthogonalTiles(here):
-        off = (target.x - pad.x, target.y - pad.y)
-        for d, offsets in reach.items():
-            if off not in offsets:
-                continue
-            if siteInDirectTurretLos(ct, pad, turrets, cache=losCache):
-                break  # exposed pad; the bearing facing is unique, so try the next pad
-            if ct.can_build_sentinel(pad, d):
-                ct.build_sentinel(pad, d)
-                if debug.ENABLED:
-                    debug.log(
-                        "gun",
-                        f"home-defence sentinel at {pad} facing {d} -> {target} "
-                        f"rnd={ct.get_current_round()}",
-                    )
-                return True
-            break  # this facing is the only one that bears; pad is unbuildable
-    return False
+    found = emplace.sentinelPadBearing(
+        ct, ph.orthogonalTiles(ct.get_position()), (target,)
+    )
+    if found is None:
+        return False
+    pad, d = found
+    ct.build_sentinel(pad, d)
+    if debug.ENABLED:
+        debug.log(
+            "gun",
+            f"home-defence sentinel at {pad} facing {d} -> {target} "
+            f"rnd={ct.get_current_round()}",
+        )
+    return True
 
 
 def placeGunner(bot, ct: Controller) -> bool:
@@ -402,143 +394,12 @@ def placeGunner(bot, ct: Controller) -> bool:
     return False
 
 
-# --- Enemy fire (line-of-sight reads) ---------------------------------------
-# Two reads of enemy turret fire, both built on `get_attackable_tiles_from` —
-# the turret's *raw attack pattern*.
-#
-# It must be that call and not `can_fire_from`, which is what this originally
-# used and why the check silently did nothing: per the engine, `can_fire_from`
-# answers "is this a legal target right now", and "for gunners, the target tile
-# must be occupied". Every tile we ask about here is deliberately *empty* — an
-# open pad we want to build a sentinel on, or an open tile we want to step onto
-# — so the answer was always False and both vetoes were no-ops. Sentinels kept
-# getting planted in front of gunners because nothing was actually checking.
-#
-# `get_attackable_tiles_from` instead "ignores ammo, cooldown, occupancy", and
-# "for gunners this includes the full firing line within range" — which is the
-# occupancy-independent question we mean: *would* a unit standing/built here be
-# on this turret's line. Same primitive `pathfindingHelpers._threatTiles` and
-# `_coveredByAllySentinel` already use.
-#
-# Trade-off, deliberate: the raw pattern reaches "even behind walls", so it does
-# not model a blocker shielding the tile — the enemy-belt-as-cover nicety is
-# gone, and a tile shielded by a building now reads as threatened. That is the
-# safe direction (we decline a spot we might have gotten away with) and there is
-# no occupancy-independent API that respects cover; deriving one means a manual
-# ray-walk, which this module's docstring rules out.
-#
-# Both reads see only this unit's own vision: a raider can see short-range
-# gunners but not the sentinels/launchers that out-range builder vision, which
-# is why the siege body-check below is gunner-only while the placement check
-# takes whatever turrets are actually visible.
+# The enemy-fire line-of-sight reads (`enemyGunners`, `tileUnderGunnerFire`,
+# `enemyTurrets`, `siteInDirectTurretLos`) live in emplace.py now, together with
+# the long note on why they must use `get_attackable_tiles_from` and not
+# `can_fire_from`. They are mechanism shared with raid.py, which previously had
+# to reach them through a function-level `import guns` to dodge a cycle.
 
-# Cap on turrets folded into one coverage set — the raider runs near the 10ms
-# limit and each turret costs an engine call. Mirrors _MAX_THREAT_TURRETS.
-_MAX_LOS_TURRETS = 8
-
-
-def _coverage(ct: Controller, turrets, cache: dict | None, key: str) -> set[tuple[int, int]]:
-    """Union of the raw attack patterns of `turrets`, memoised in `cache`.
-
-    One build per cache dict, so a siege turn that probes a dozen candidate tiles
-    pays the engine calls once rather than per tile."""
-    if cache is not None:
-        hit = cache.get(key)
-        if hit is not None:
-            return hit
-    out: set[tuple[int, int]] = set()
-    for i, (tpos, facing, etype) in enumerate(turrets):
-        if i >= _MAX_LOS_TURRETS:
-            break
-        try:
-            for tile in ct.get_attackable_tiles_from(tpos, facing, etype):
-                out.add((tile.x, tile.y))
-        except Exception:
-            continue
-    if cache is not None:
-        cache[key] = out
-    return out
-
-
-def enemyGunners(ct: Controller) -> list[tuple[Position, Direction]]:
-    """Visible enemy gunners as (position, current facing). Engine order, so a
-    caller that iterates this to a move/build decision stays deterministic."""
-    myTeam = ct.get_team()
-    out: list[tuple[Position, Direction]] = []
-    for bid in ct.get_nearby_buildings():
-        if ct.get_team(bid) == myTeam:
-            continue
-        if ct.get_entity_type(bid) != EntityType.GUNNER:
-            continue
-        out.append((ct.get_position(bid), ct.get_direction(bid)))
-    return out
-
-
-def tileUnderGunnerFire(
-    ct: Controller,
-    tile: Position,
-    gunners: list[tuple[Position, Direction]],
-    *,
-    cache: dict | None = None,
-) -> bool:
-    """True if `tile` is on any of `gunners`' firing line at its *current* facing —
-    the tile it could shoot without turning, whether or not anything stands there
-    yet (see the section note: occupancy-independent, which `can_fire_from` is not).
-
-    Current facing only, deliberately. Treating every tile a gunner could rotate
-    onto as unsafe would blacklist its whole range disc, leaving the nearest safe
-    tiles outside gunner range and driving the raider away from the ring — when
-    the wanted behaviour is to dance just off the live line and keep sieging (the
-    dodge memory in raidBot handles the gunner rotating to track).
-
-    `cache` (optional) memoises the coverage set across the many candidate-tile
-    checks one siege turn makes."""
-    if not gunners:
-        return False
-    covered = cache.get("_gunnerCov") if cache is not None else None
-    if covered is None:
-        covered = _coverage(
-            ct, [(p, f, EntityType.GUNNER) for p, f in gunners], cache, "_gunnerCov"
-        )
-    return (tile.x, tile.y) in covered
-
-
-def enemyTurrets(ct: Controller) -> list[tuple[Position, Direction, EntityType]]:
-    """Visible enemy turrets (gunner/sentinel/launcher) as (pos, facing, type),
-    in engine order. For vetting a sentinel emplacement against a free shot."""
-    myTeam = ct.get_team()
-    out: list[tuple[Position, Direction, EntityType]] = []
-    for bid in ct.get_nearby_buildings():
-        if ct.get_team(bid) == myTeam:
-            continue
-        etype = ct.get_entity_type(bid)
-        if etype not in ph.TURRET_TYPES:
-            continue
-        out.append((ct.get_position(bid), ct.get_direction(bid), etype))
-    return out
-
-
-def siteInDirectTurretLos(
-    ct: Controller,
-    site: Position,
-    turrets: list[tuple[Position, Direction, EntityType]],
-    *,
-    cache: dict | None = None,
-) -> bool:
-    """True if `site` lies on any visible enemy turret's firing line at its
-    *current* facing — a sentinel built here would be on that line the instant it
-    appears, no rotation needed. Occupancy-independent, which is the whole point:
-    the pad is empty when we ask (see the section note).
-
-    Current facing only, by design: a stationary sentinel accepts that a nearby
-    gun can rotate onto it later, or simply sits in the vicinity; what we refuse
-    is handing it a free shot on the build."""
-    if not turrets:
-        return False
-    covered = cache.get("_turretCov") if cache is not None else None
-    if covered is None:
-        covered = _coverage(ct, turrets, cache, "_turretCov")
-    return (site.x, site.y) in covered
 
 
 # --- Home defence -----------------------------------------------------------

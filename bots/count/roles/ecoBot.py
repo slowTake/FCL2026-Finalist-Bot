@@ -83,7 +83,11 @@ def runEcoBot(bot, ct: Controller) -> None:
     # Home defence before repair or new ore: shoot an attacker closing on the core
     # rather than only patch the belt it cut. Function-level import — a module-level
     # `import guns` cycles ecoBot -> guns -> respawn -> ecoBot (respawn imports
-    # chooseOre from here). The neutral-module fix is the guardian plan's follow-up.
+    # chooseOre from here). Note emplace.py does NOT fix this one: it broke the
+    # guns<->raid edges by moving *emplacement mechanism* out, but this edge is
+    # `guns -> respawn` for MAX_BUILDERS in topUpAmmo, which is unrelated. Closing
+    # it means moving that constant somewhere neutral, or the ore.py split that
+    # takes chooseOre out of a role file (roadmap.md, 2026-08-15 item 3).
     import guns
     if guns.defendCore(bot, ct):
         return
@@ -130,6 +134,34 @@ def _hasFeeder(bot, ct: Controller, tile: Position, network_side: Position) -> b
         ):
             return True
     return False
+
+
+def _grindBarrier(bot, ct: Controller, tile: Position, waitReason: str, fireReason: str):
+    """One turn of grinding an enemy barrier down (2 Ti / 2 dmg a shot).
+
+    Returns `(fired, keepTask)`:
+
+    * `fired` — the shot actually went off this turn. Only then may a caller
+      commit state off the back of it (`repairCoreBelts` latches `_repairTile`
+      here, and must not do that on a turn we merely held).
+    * `keepTask` — what the caller should return: True to stay on the task
+      (we fired, or we're still inside the patience budget), False once patience
+      is spent and the caller may give up. This is `holdTask`'s own contract,
+      passed straight through.
+
+    The three barrier-grinding sites — start a repair, continue a committed
+    repair, clear a barrier squatting on claimed ore — were each running this
+    same cooldown/can_fire/fire/hold ladder. `buildHarvester`'s copy had no
+    cooldown branch because it already returns early on a busy cooldown; keeping
+    the branch here is harmless there and stops the next caller inheriting a
+    ladder that only works from one specific place.
+    """
+    if ct.get_action_cooldown() != 0:
+        return False, holdTask(bot, waitReason, BLOCKED_WAIT_TURNS)
+    if not ct.can_fire(tile):
+        return False, holdTask(bot, fireReason, BLOCKED_WAIT_TURNS)
+    ct.fire(tile)
+    return True, True
 
 
 def _nearestBarrier(bot, ct: Controller, ctx):
@@ -201,12 +233,10 @@ def repairCoreBelts(bot, ct: Controller) -> bool:
             return True
         return holdTask(bot, "repairApproach", BLOCKED_WAIT_TURNS)
 
-    if ct.get_action_cooldown() != 0:
-        return holdTask(bot, "repairWait", BLOCKED_WAIT_TURNS)
-    if not ct.can_fire(tile):
-        return holdTask(bot, "repairFire", BLOCKED_WAIT_TURNS)
+    fired, keepTask = _grindBarrier(bot, ct, tile, "repairWait", "repairFire")
+    if not fired:
+        return keepTask
 
-    ct.fire(tile)
     bot._repairTile = tile          # commit: grind it down, then re-lay the belt
     bot._repairFace = network_side
     if debug.ENABLED:
@@ -236,12 +266,7 @@ def _finishRepair(bot, ct: Controller) -> bool:
     t = ph.readTile(ct, bot.hivemind, tile)
 
     if t.etype == EntityType.BARRIER and t.enemy:
-        if ct.get_action_cooldown() != 0:
-            return holdTask(bot, "repairWait", BLOCKED_WAIT_TURNS)
-        if ct.can_fire(tile):
-            ct.fire(tile)
-            return True
-        return holdTask(bot, "repairFire", BLOCKED_WAIT_TURNS)
+        return _grindBarrier(bot, ct, tile, "repairWait", "repairFire")[1]
 
     if t.etype is None and not t.wall and not t.ore:
         facing = ph.beltFacing(tile, network_side)
@@ -288,14 +313,14 @@ def buildHarvester(bot, ct: Controller) -> bool:
         bot.oreTarget = None
         return hijackRelay(bot, ct, ore)
     if t.etype == EntityType.BARRIER and t.enemy:
-        # Grind it down (2 Ti / 2 dmg a turn). Keep the claim: once it falls, the
-        # tile reads clear next pass and we build as normal.
-        if ct.can_fire(ore):
-            ct.fire(ore)
-            if debug.ENABLED:
-                debug.log("ore", f"clear barrier on ore {ore} rnd={ct.get_current_round()}")
-            return True
-        return holdTask(bot, "clearOreBarrier", BLOCKED_WAIT_TURNS)
+        # Grind it down. Keep the claim: once it falls, the tile reads clear next
+        # pass and we build as normal.
+        fired, keepTask = _grindBarrier(
+            bot, ct, ore, "clearOreBarrier", "clearOreBarrier"
+        )
+        if fired and debug.ENABLED:
+            debug.log("ore", f"clear barrier on ore {ore} rnd={ct.get_current_round()}")
+        return keepTask
 
     if waitTi(bot, ct, ct.get_harvester_cost()):
         return True

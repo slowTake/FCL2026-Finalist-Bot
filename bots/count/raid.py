@@ -22,16 +22,15 @@ from __future__ import annotations
 
 from fcode import Controller, Direction, EntityType, Position
 
-import debug
+import emplace
 import pathfindingHelpers as ph
 import store
 from hivemind import CoreState, unpack_cores
 
-# Packing order matters only in that pack and unpack agree.
-_DIRS = (
-    Direction.NORTH, Direction.NORTHEAST, Direction.EAST, Direction.SOUTHEAST,
-    Direction.SOUTH, Direction.SOUTHWEST, Direction.WEST, Direction.NORTHWEST,
-)
+# Packing order matters only in that pack and unpack agree — and they do by
+# construction now, both indexing the one canonical facing order. See the
+# wire-format warning on emplace.DIRS before touching it.
+_DIRS = emplace.DIRS
 _DIR_INDEX = {d: i for i, d in enumerate(_DIRS)}
 
 
@@ -99,9 +98,20 @@ def enemyCorePos(bot, ct: Controller) -> Position | None:
     """
     seen = getattr(bot, "_seenEnemyCore", None)
     if seen is None:
-        seen = _seenEnemyCore(bot, ct)
-        if seen is not None:
-            bot._seenEnemyCore = seen
+        # At most one sighting scan per unit per round. The positive result is
+        # cached forever (the core never moves), but the *negative* one has to be
+        # re-derived as vision grows — and the scan walks the whole of local_map,
+        # which only ever gets bigger. Uncapped, every unit that never sees the
+        # enemy core (every eco builder, all match) paid that walk on each call,
+        # and a raider calls this several times a turn via pressCore /
+        # buildLocalSentinel / fallbackEmplacement. Builders sit at p90 9.4ms
+        # against a 10ms limit, so this is not a hypothetical cost.
+        rnd = ct.get_current_round()
+        if getattr(bot, "_seenEnemyCoreRound", -1) != rnd:
+            bot._seenEnemyCoreRound = rnd
+            seen = _seenEnemyCore(bot, ct)
+            if seen is not None:
+                bot._seenEnemyCore = seen
     if seen is not None:
         return seen
 
@@ -113,9 +123,26 @@ def enemyCorePos(bot, ct: Controller) -> Position | None:
     if enemy[0] != CoreState.UNKNOWN:
         return Position(enemy[1], enemy[2])
 
+    # Mirror fallback needs our own core. Prefer the packed-cores slot (every unit
+    # reads it), but fall back to bot.corePos when that slot is still UNKNOWN. This
+    # matters on exactly one turn that matters a lot: the core's own turn 0, when
+    # it spawns the first raider. The core's PACKED_CORES write is buffered a round
+    # (write_store), so the slot reads UNKNOWN on turn 0 — yet _runCore has already
+    # set bot.corePos from ct.get_position() this same turn. Without this fallback
+    # enemyCorePos returns None at that spawn, _raidReady is False, ROLE_RAIDER is
+    # never assigned, and on an *unfingerprinted* map (tier 2 absent) the first
+    # raider — and therefore the launcher it plants — is silently never created.
+    # A fingerprinted map is unaffected: tier 2 returns above before we get here.
+    ax = ay = None
     if ally[0] != CoreState.UNKNOWN:
+        ax, ay = ally[1], ally[2]
+    else:
+        core = getattr(bot, "corePos", None)
+        if core is not None:
+            ax, ay = core.x, core.y
+    if ax is not None:
         w, h = ct.get_map_width(), ct.get_map_height()
-        return Position(w - 2 - ally[1], h - 2 - ally[2])
+        return Position(w - 2 - ax, h - 2 - ay)
     return None
 
 
@@ -141,28 +168,6 @@ def _buildable(ct: Controller, hm, pos: Position, enemyFootprint) -> bool:
     return False
 
 
-def _reachOffsets(ct: Controller):
-    """Offsets from a sentinel to every tile it can hit, per facing.
-
-    Read out of the engine rather than derived. r**2 <= 32 works out to 5 tiles
-    orthogonally and 4 diagonally, and hand-deriving that is exactly the mistake
-    this function exists to stop: ranking candidates by standoff without knowing
-    the real reach puts the out-of-range ones first.
-
-    Sampled from mid-map because `get_attackable_tiles_from` returns only in-bounds
-    tiles, so a reference near an edge comes back clipped.
-    """
-    ref = Position(ct.get_map_width() // 2, ct.get_map_height() // 2)
-    out = {}
-    for d in _DIRS:
-        try:
-            tiles = ct.get_attackable_tiles_from(ref, d, EntityType.SENTINEL)
-        except Exception:
-            continue
-        out[d] = [(t.x - ref.x, t.y - ref.y) for t in tiles]
-    return out
-
-
 def _candidates(ct: Controller, hm, enemyCore: Position):
     """Every tile that could hold a sentinel aimed at the enemy core, best first.
 
@@ -174,7 +179,7 @@ def _candidates(ct: Controller, hm, enemyCore: Position):
     footprint = ph.coreFootprint(enemyCore)
     enemySet = {(p.x, p.y) for p in footprint}
 
-    reach = _reachOffsets(ct)  # eight engine calls, hoisted out of the loops
+    reach = emplace.reachOffsets(ct)  # eight engine calls, hoisted out of the loops
     out = []
     seen = set()
     for aim in footprint:
@@ -238,39 +243,19 @@ def fallbackEmplacement(bot, ct: Controller, primarySite: Position | None = None
     hm = bot.hivemind
     footprint = ph.coreFootprint(enemyCore)
     enemySet = {(p.x, p.y) for p in footprint}
-    reach = {d: set(offsets) for d, offsets in _reachOffsets(ct).items()}
-    pos = ct.get_position()
 
-    # Local import: guns imports raid, so a module-level import here would cycle
-    # (same break as roles/ecoBot).
-    import guns
-    turrets = guns.enemyTurrets(ct)
-    losCache: dict = {}
-
-    for pad in ph.orthogonalTiles(pos):
-        if primarySite is not None and (pad.x, pad.y) == (primarySite.x, primarySite.y):
-            continue
-        if not _buildable(ct, hm, pad, enemySet):
-            continue
-        # Never emplace where a visible enemy gun already bears — a stationary
-        # sentinel eats that shot with no rotation needed (esp. an enemy sentinel,
-        # whose line ignores belt cover).
-        if guns.siteInDirectTurretLos(ct, pad, turrets, cache=losCache):
-            if debug.ENABLED:
-                debug.log("raid", f"veto pad {pad} — in enemy turret line "
-                                  f"rnd={ct.get_current_round()}")
-            continue
-        for d, hits in reach.items():
-            if not any((aim.x - pad.x, aim.y - pad.y) in hits for aim in footprint):
-                continue
-            # Probe the facing we would actually build, not a stand-in. Build
-            # legality is probably facing-independent, but "probably" is the
-            # word that earns a silently dead raider: an unchecked facing that
-            # the engine refuses raises inside build_sentinel, Player.run
-            # swallows it, and the unit burns the rest of the match.
-            if ct.can_build_sentinel(pad, d):
-                return pad, d
-    return None
+    # Policy — which pads are even eligible — is ours; the bearing/LoS/buildable
+    # scan over them is emplace's. Never emplace where a visible enemy gun already
+    # bears (that veto lives in sentinelPadBearing): a stationary sentinel eats
+    # that shot with no rotation needed, and an enemy sentinel's line ignores the
+    # belt cover a gunner's respects.
+    pads = [
+        pad for pad in ph.orthogonalTiles(ct.get_position())
+        if not (primarySite is not None
+                and (pad.x, pad.y) == (primarySite.x, primarySite.y))
+        and _buildable(ct, hm, pad, enemySet)
+    ]
+    return emplace.sentinelPadBearing(ct, pads, footprint)
 
 
 def publishTarget(bot, ct: Controller) -> None:

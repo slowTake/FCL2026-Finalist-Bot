@@ -69,6 +69,12 @@ class Player:
         # (raid.enemyCorePos). Ground truth that overrides a wrong/absent
         # fingerprint; cached because the core never moves.
         self._seenEnemyCore: Position | None = None
+        # Last round the (full-local_map) sighting scan ran. The hit above caches
+        # only on success, which is the *rare* case — every unit that never sees
+        # the enemy core would otherwise rescan a monotonically growing local_map
+        # on every enemyCorePos call, several times a turn on a raider. This bounds
+        # it to one scan per unit per round. -1 so round 0 still scans.
+        self._seenEnemyCoreRound: int = -1
 
         # Core-line repair (ecoBot.repairCoreBelts). The enemy barrier this builder
         # committed to clearing and the connected tile to re-lay the belt toward —
