@@ -25,7 +25,7 @@ ORE_SPREAD = 4
 # expensive to run per node inside the 10ms budget); it only has to rank walled-off
 # nodes below clear ones, not price them exactly. Tuned on mirror_gauntlet; 0 restores
 # the old pure-Manhattan behaviour.
-DETOUR_PER_WALL = 2
+DETOUR_PER_WALL = 3
 
 # A remembered ore sighting older than this is worth walking back to verify. The
 # harvester we think is on it may be long dead: nothing refreshes a tile once a
