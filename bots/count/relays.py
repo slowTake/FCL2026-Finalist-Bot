@@ -407,5 +407,9 @@ def relayDone(bot, ct: Controller) -> bool:
     bot.relayAvoid.clear()
     bot.relayRebuilds.clear()
     bot.inRelay = False
+    # This builder has now delivered a harvester end-to-end (income flowing), so
+    # it is eligible to take guardian duty. relayDone fires exactly once per
+    # completed line — see roles/guardianBot.claimIfOpen, which reads this flag.
+    bot._harvesterDelivered = True
     clearHold(bot)
     return False

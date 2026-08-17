@@ -58,6 +58,15 @@ CORE_DEFENSE_RADIUS = 8
 
 
 def runEcoBot(bot, ct: Controller) -> None:
+    # An eco-builder that has delivered a harvester grabs guardian duty if the
+    # role is open or its holder has died. A no-op otherwise. Function-level
+    # import so ecoBot keeps no module-level dependency on guardianBot (which
+    # imports back into ecoBot for its quiet-economy step). Runs even mid-relay:
+    # claiming only writes the store slot; this builder finishes its current work
+    # as an eco-bot this turn and main routes it to runGuardian from the next.
+    import guardianBot
+    guardianBot.claimIfOpen(bot, ct)
+
     if bot.inRelay and relayToHome(bot, ct):
         return
 

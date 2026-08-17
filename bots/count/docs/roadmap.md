@@ -143,3 +143,38 @@ sentinel-only by decision, not by omission. A gunner second wave placed from
    published emplacements produced 1 sentinel across 445 raider turns. Not
    investigated — it may be correct behaviour for a single raider crossing the
    map, or it may be a stall. Worth a look before leaning harder on raiding.
+
+---
+
+## 2026-08-17 — guardian role v1 landed
+
+The 2026-08-14 priority #2 ("Guardian/home-defence role — biggest capability
+gap") is now in: `roles/guardianBot.py`, an ADR (`docs/adr/0001-guardian-role.md`),
+and a runtime-claimed role held by a store heartbeat. See the ADR for the design.
+
+What it deliberately left for next increments, roughly ordered:
+
+1. **Combat depth.** Re-derive baron's `blockGunLine` (a ~3-Ti barrier in a
+   gunner's line to the core — cheaper than fielding a turret, so it runs ahead
+   of the turret responses) and `defSentinel` (answer an out-of-leash sentinel
+   from inside the leash). The v1 ladder is defendCore + patrol only.
+2. **Point 2 of the originating request — gunner spam on passing builders.**
+   `defendCore._CORE_THREAT_TYPES` still includes `BUILDER_BOT`, so an eco-builder
+   drops a gunner on an enemy builder merely walking past the core (1–2 shots,
+   dead investment). With a guardian now standing, move that gate off the eco
+   path: stop placing over a *passing* builder (baron did exactly this), and gate
+   the guardian's builder-response on the builder being *occupied* —
+   `get_action_cooldown(enemyId) != 0` (it built/fired this turn) AND adjacent to
+   one of our structures. Validate the cooldown proxy empirically first; the
+   engine exposes no enemy action/target getter.
+3. **Leash-bounded ore-seeking for the quiet guardian.** v1 keeps it home doing
+   belt repair + heal only; letting it build harvesters on ore *inside* the leash
+   would make it more useful without pulling it into a long relay — but needs the
+   relay-abort-on-threat handling the guardian doesn't yet carry.
+4. **Scale to N guardians.** One slot for now; the mechanism generalises by
+   adding role fields (the heartbeat scheme is per-role-agnostic).
+
+Note the heartbeat also demonstrates the ledger-liveness pattern deferred item #1
+(raider death) wants — a dead guardian's claim ages out and is re-claimed. The
+raider path could adopt the same `stamp/read + TTL` shape rather than waiting on
+full death-respawn.

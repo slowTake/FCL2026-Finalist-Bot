@@ -32,6 +32,7 @@ import launcher  # noqa: E402
 import raid  # noqa: E402
 import store  # noqa: E402
 from ecoBot import runEcoBot  # noqa: E402
+from guardianBot import runGuardian  # noqa: E402
 from hivemind import CoreState, HiveMind, unpack_cores  # noqa: E402
 from raidBot import runRaidBot  # noqa: E402
 from respawn import isReplenishmentRaider, runCoreSpawn  # noqa: E402
@@ -64,6 +65,13 @@ class Player:
         # Economy state (ecoBot.py)
         self.oreTarget: Position | None = None
         self.oreSkip: dict[tuple[int, int], int] = {}
+
+        # Guardian role (roles/guardianBot.py). Set True in relays.relayDone once
+        # this builder has delivered a harvester end-to-end — the eligibility gate
+        # for claiming guardian duty. The patrol cursor is this guardian's place
+        # in its leash-waypoint ring. Both are only ever read on builders.
+        self._harvesterDelivered = False
+        self._guardianPatrolIdx = 0
 
         # Enemy core, once this unit (via the shared ledger) has actually seen it
         # (raid.enemyCorePos). Ground truth that overrides a wrong/absent
@@ -202,6 +210,16 @@ class Player:
 
         if index and (index in (raider1, raider2) or isReplenishmentRaider(index)):
             runRaidBot(self, ct)
+            return
+
+        # Guardian is claimed at runtime (not named at spawn like raiders): the
+        # first eco-builder to deliver a harvester writes its index here via
+        # guardianBot.claimIfOpen. The index is unique and never reused, so only
+        # the actual guardian matches — a dead guardian's stale slot matches
+        # nobody and is reclaimed by the next eligible builder.
+        guardian, _hb = store.readGuardian(ct)
+        if index and index == guardian:
+            runGuardian(self, ct)
             return
 
         runEcoBot(self, ct)
