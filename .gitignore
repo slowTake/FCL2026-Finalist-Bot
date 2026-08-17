@@ -7,5 +7,6 @@ fcv_gauntlet/oracle/.spend_ledger.json
 local_bots/
 docs/superpowers/
 *.zip
+*.log
 .cursor/
 .DS_Store
