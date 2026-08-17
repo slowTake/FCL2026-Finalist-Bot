@@ -220,17 +220,12 @@ def sentinelPadBearing(
     engine will actually build it. None if nothing bears.
 
     Built by inverting the attack pattern: a sentinel on `pad` facing `d` hits
-    `aim` iff `(aim - pad)` is one of `d`'s offsets. Both callers want the same
-    three gates in the same order, and each had its own copy:
+    `aim` iff `(aim - pad)` is one of `d`'s offsets. The same three gates in the
+    same order serve both aim shapes — a 2x2 core footprint (four aim tiles) and a
+    single threat tile — since `aims` is any iterable of Positions.
 
-    * `raid.fallbackEmplacement` — pads are the raider's own neighbours (already
-      filtered by its `_buildable`, and minus the site it just failed on), aims
-      are the enemy core's four footprint tiles.
-    * `guns._dropSentinelOn` — pads are the calling unit's neighbours, aims are
-      the single threat tile being answered.
-
-    Policy stays outside: filter `pads` before calling. `aims` is any iterable of
-    Positions, so one target and a 2x2 footprint are the same call.
+    Policy stays outside: filter `pads` before calling (to a unit's own buildable
+    neighbours, minus any site already ruled out).
 
     The LoS veto is evaluated lazily — only once a facing actually bears from
     that pad — so a pad that could never have worked costs no engine calls. An

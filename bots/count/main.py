@@ -88,8 +88,8 @@ class Player:
         self._placedLauncher = False
 
         # Raider replenishment clock (respawn.runCoreSpawn). Round the core last
-        # spawned an 800-Ti replenishment raider, so the next waits out the
-        # interval. None until the first one; only ever set on the core.
+        # spawned a replenishment raider (see respawn.REPLENISH_TI), so the next
+        # waits out the interval. None until the first one; only ever set on the core.
         self._lastReplenishRound: int | None = None
 
         # Gunner idle timer (guns.gunnerLoop). Round this gunner last had a

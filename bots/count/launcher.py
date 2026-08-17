@@ -308,6 +308,14 @@ def runLauncher(bot, ct: Controller) -> None:
         return
     requester, target = req
 
+    # Consume the request on read, before deciding whether to serve it. A builder
+    # genuinely waiting re-posts every turn it holds, so clearing here never strands
+    # it; but a request whose author has since died, been shoved, or walked off when
+    # its patience expired would otherwise persist in the slot and fling whoever
+    # next wanders onto that tile toward a now-stale target. Consuming it bounds any
+    # request to the single launcher turn after it was posted.
+    store.put(ct, store.LAUNCH_REQUEST, 0)
+
     # The requester must still be a friendly builder sitting where it said it
     # was — it holds for exactly this, but it may have died or been shoved.
     t = ph.readTile(ct, bot.hivemind, requester)
@@ -326,6 +334,3 @@ def runLauncher(bot, ct: Controller) -> None:
                 f"threw {requester} -> {best} (goal {target}) "
                 f"rnd={ct.get_current_round()}",
             )
-        # Consume the request so a stale one can't re-fling whoever wanders onto
-        # the requester tile next.
-        store.put(ct, store.LAUNCH_REQUEST, 0)

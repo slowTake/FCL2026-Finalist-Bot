@@ -142,19 +142,16 @@ def _grindBarrier(bot, ct: Controller, tile: Position, waitReason: str, fireReas
     Returns `(fired, keepTask)`:
 
     * `fired` — the shot actually went off this turn. Only then may a caller
-      commit state off the back of it (`repairCoreBelts` latches `_repairTile`
-      here, and must not do that on a turn we merely held).
+      commit state off the back of it (e.g. latch a multi-turn grind target); a
+      turn we merely held must not.
     * `keepTask` — what the caller should return: True to stay on the task
       (we fired, or we're still inside the patience budget), False once patience
       is spent and the caller may give up. This is `holdTask`'s own contract,
       passed straight through.
 
-    The three barrier-grinding sites — start a repair, continue a committed
-    repair, clear a barrier squatting on claimed ore — were each running this
-    same cooldown/can_fire/fire/hold ladder. `buildHarvester`'s copy had no
-    cooldown branch because it already returns early on a busy cooldown; keeping
-    the branch here is harmless there and stops the next caller inheriting a
-    ladder that only works from one specific place.
+    Includes the cooldown branch even where a call site already returns early on a
+    busy cooldown: harmless there, and it stops the fire/hold ladder from only
+    working from one specific place.
     """
     if ct.get_action_cooldown() != 0:
         return False, holdTask(bot, waitReason, BLOCKED_WAIT_TURNS)

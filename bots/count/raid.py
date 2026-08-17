@@ -218,13 +218,11 @@ def chooseEmplacement(bot, ct: Controller, enemyCore: Position):
 
 def fallbackEmplacement(bot, ct: Controller, primarySite: Position | None = None):
     """A buildable sentinel emplacement among the raider's own orthogonal
-    neighbours — one whose sentinel reaches the enemy core. Two callers:
-
-    * `buildSentinel` passes the `primarySite` it just failed on, to skip it —
-      typically the core's ledger hasn't yet learned that site was claimed.
-    * `buildLocalSentinel` passes nothing, to lay another sentinel right where
-      the raider already stands, densifying the ring around the core instead of
-      walking back for the next published target.
+    neighbours — one whose sentinel reaches the enemy core. `primarySite`, when
+    given, is a pad to skip: a just-failed published site the core's ledger has
+    not yet learned was claimed. With none, any bearing neighbour qualifies — used
+    to densify the ring right where the raider stands rather than walk back for the
+    next published target.
 
     Only the raider's own neighbours either way: a fresh board search is the
     core's job, not a stuck builder's. Standoff is not preferred here — closer is

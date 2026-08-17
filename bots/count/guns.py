@@ -318,15 +318,14 @@ def _dropGunnerOn(ct: Controller, target: Position) -> bool:
     """Build a gunner on the first orthogonal pad of the calling unit that bears on
     `target`, unless an ally gunner already covers it. True iff it built one.
 
-    The shared pad-scan behind both placeGunner (harvester denial) and defendCore
-    (home defence); the callers differ only in which targets they pass and which
-    economy gate they clear first.
+    A pure pad-scan: the target set and the economy gate are the caller's to
+    decide, so the same scan serves both harvester denial and home defence.
 
     A pad already covered by a visible enemy turret's current facing is skipped:
     bearing on the target is not enough if the turret we're answering (or one
     beside it) shoots the pad the moment the gunner appears. `turrets` is fetched
-    lazily — this runs every raider turn via placeGunner, and most turns no pad
-    bears at all, so the scan shouldn't be paid before it's needed."""
+    lazily — most turns no pad bears at all, so the scan shouldn't be paid before
+    it's needed."""
     myTeam = ct.get_team()
     if _coveredByAllyGunner(ct, myTeam, target):
         return False
