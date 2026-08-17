@@ -480,25 +480,49 @@ def placeGunner(bot, ct: Controller, enemyCore: Position | None) -> bool:
 
 
 # --- Home defence -----------------------------------------------------------
-# First-cut guardian: an eco-bot near our own core drops a gunner on an enemy
-# closing on it. Reactive and vision-limited — only a bot that can already see the
-# threat responds, and it never abandons a relay/build to march home (it sits below
-# those in runEcoBot). What it buys is the mechanic: a rush at the core draws fire
-# instead of nothing. gunnerLoop aims and fires the gunner after; the idle
-# self-destruct recycles it once the threat clears.
+# First-cut guardian mechanic, now shared by the standing guardian and the eco
+# path: drop a gunner on an enemy closing on our core. Reactive and vision-limited
+# — only a bot that can see the threat responds. On the eco path it also never
+# abandons a relay/build to march home (it sits below those in runEcoBot); the
+# guardian has no competing work, so it is always home to run it. gunnerLoop aims
+# and fires the placed gunner after; the idle self-destruct recycles it once the
+# threat clears.
 
 # Mirrors ecoBot.CORE_DEFENSE_RADIUS by value, kept local so guns does not depend on
 # a role module (raidBot depends on guns, not the other way).
 CORE_THREAT_RADIUS = 8
 
-# Enemy types that actually threaten the core — mobile attackers and turrets. A
-# harvester or the enemy core never comes to kill ours, so neither counts.
+# Enemy types that always threaten the core — turrets that shell it, and the
+# launcher that flings bodies at it. A harvester or the enemy core never comes to
+# kill ours, so neither counts. BUILDER_BOT is deliberately absent here and handled
+# separately: a builder is a threat only when it is actually grinding our
+# structures, not merely passing within radius (_builderThreateningStructure gates
+# it). Placing a gunner on a builder running by wasted the gun on 1-2 shots before
+# it left range — the case this split exists to stop.
 _CORE_THREAT_TYPES = (
-    EntityType.BUILDER_BOT,
     EntityType.GUNNER,
     EntityType.SENTINEL,
     EntityType.LAUNCHER,
 )
+
+
+def _builderThreateningStructure(bot, ct: Controller, epos: Position) -> bool:
+    """Is the enemy builder at `epos` in position to grind one of our buildings?
+
+    True iff one of ours sits orthogonally adjacent. Build and fire are
+    adjacent-only, so a builder attacking (or walling off, or repairing over) our
+    belt / harvester / core / turret must be standing next to it. That adjacency
+    is our stand-in for "is it occupied attacking vs just passing by": the engine
+    exposes no enemy action state — get_action_cooldown/get_move_cooldown take no
+    entity id, and there is no target/order getter — so we read position, not
+    intent. A builder merely crossing open ground near the core has nothing of
+    ours beside it and is correctly ignored; it would leave a freshly-placed
+    gunner's range in a shot or two, exactly the wasted investment this prevents."""
+    for n in ph.orthogonalTiles(epos):
+        t = ph.readTile(ct, bot.hivemind, n)
+        if t.etype is not None and not t.enemy:
+            return True
+    return False
 
 
 def _nearestCoreThreat(bot, ct: Controller):
@@ -506,7 +530,13 @@ def _nearestCoreThreat(bot, ct: Controller):
     (Position, EntityType), or None. Distance is to the core — the thing we protect
     — so the threat closest to home is engaged first. The type rides along so
     defendCore can answer a sentinel with a sentinel and everything else with a
-    gunner."""
+    gunner.
+
+    An enemy builder counts only when `_builderThreateningStructure` reads it as
+    grinding one of our buildings; a builder merely passing the core is never a
+    target (that gun got 1-2 shots and left). The gate is unconditional rather
+    than a caller's opt-in, so an attacking builder is answered by whoever can see
+    it — including before any guardian exists — and a passing one by nobody."""
     core = bot.corePos
     if core is None:
         return None
@@ -518,11 +548,16 @@ def _nearestCoreThreat(bot, ct: Controller):
         if ct.get_team(eid) == myTeam:
             continue
         etype = ct.get_entity_type(eid)
-        if etype not in _CORE_THREAT_TYPES:
+        isTurret = etype in _CORE_THREAT_TYPES
+        isBuilder = etype == EntityType.BUILDER_BOT
+        if not (isTurret or isBuilder):
             continue
         p = ct.get_position(eid)
         d = ph.manhattanToCore(p, core)
         if d > CORE_THREAT_RADIUS:
+            continue
+        # Adjacency scan only for an in-radius builder — cheaper checks first.
+        if isBuilder and not _builderThreateningStructure(bot, ct, p):
             continue
         if bestD is None or d < bestD:
             best, bestType, bestD = p, etype, d
@@ -561,16 +596,18 @@ def defendCore(bot, ct: Controller) -> bool:
     range so a pad bears on it. True if it acted this turn. An enemy gunner or
     sentinel is answered with whichever of our own turrets bears this turn — a
     sentinel preferred against a sentinel, a gunner against a gunner, the other as a
-    fallback when the preferred one has no bearing pad this turn. Everything else
-    (builder/launcher) draws a gunner.
+    fallback when the preferred one has no bearing pad this turn. A launcher, or an
+    enemy builder grinding one of our buildings, draws a gunner — a builder merely
+    passing the core does not (see _nearestCoreThreat / _builderThreateningStructure).
 
     Gated on affordability only — defence deliberately bypasses the offensive surplus
     gate, because a core under attack is worth spending the bank down for. But if we
     can't afford any answer, or we're at the unit cap, we bail rather than idle
     beside the threat: neither changes by walking closer, so better to go earn.
 
-    Reactive v1: fires only for a threat this builder can see, and never leaves a
-    relay/build to run home (it sits below those in runEcoBot)."""
+    Reactive: fires only for a threat the calling unit can already see, and it
+    claims no priority of its own — where this sits relative to a caller's other
+    work is that caller's ladder to order."""
     if bot.corePos is None:
         return False
     found = _nearestCoreThreat(bot, ct)

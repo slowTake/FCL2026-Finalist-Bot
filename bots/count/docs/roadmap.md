@@ -158,15 +158,17 @@ What it deliberately left for next increments, roughly ordered:
    gunner's line to the core — cheaper than fielding a turret, so it runs ahead
    of the turret responses) and `defSentinel` (answer an out-of-leash sentinel
    from inside the leash). The v1 ladder is defendCore + patrol only.
-2. **Point 2 of the originating request — gunner spam on passing builders.**
-   `defendCore._CORE_THREAT_TYPES` still includes `BUILDER_BOT`, so an eco-builder
-   drops a gunner on an enemy builder merely walking past the core (1–2 shots,
-   dead investment). With a guardian now standing, move that gate off the eco
-   path: stop placing over a *passing* builder (baron did exactly this), and gate
-   the guardian's builder-response on the builder being *occupied* —
-   `get_action_cooldown(enemyId) != 0` (it built/fired this turn) AND adjacent to
-   one of our structures. Validate the cooldown proxy empirically first; the
-   engine exposes no enemy action/target getter.
+2. ~~Point 2 — gunner spam on passing builders.~~ **Done (2026-08-17).**
+   `BUILDER_BOT` removed from `guns._CORE_THREAT_TYPES` and gated instead through
+   `_builderThreateningStructure` — a builder draws a gunner only when one of ours
+   is orthogonally adjacent (it is grinding it), never when merely passing. The
+   gate is universal (guardian *and* eco fallback), so an attacking builder is
+   answered even before the guardian is claimed. Note the sketch's
+   `get_action_cooldown(enemyId)` trigger was a dead end — that getter takes no
+   entity id and no enemy action/target getter exists, so adjacency (build/fire
+   are adjacent-only) is the usable proxy. A future refinement could add
+   cross-turn stationarity tracking for builders that threaten from a tile with no
+   ally building beside it yet, but adjacency covers the attacking case cleanly.
 3. **Leash-bounded ore-seeking for the quiet guardian.** v1 keeps it home doing
    belt repair + heal only; letting it build harvesters on ore *inside* the leash
    would make it more useful without pulling it into a long relay — but needs the
@@ -178,3 +180,55 @@ Note the heartbeat also demonstrates the ledger-liveness pattern deferred item #
 (raider death) wants — a dead guardian's claim ages out and is re-claimed. The
 raider path could adopt the same `stamp/read + TTL` shape rather than waiting on
 full death-respawn.
+
+---
+
+## 2026-08-17 — guardian review (Fable), fixed and deferred
+
+A read-only review over the guardian role and the builder-threat gate. Four bugs
+found and fixed the same day: patrol stalling forever on an unreachable waypoint
+(no bounds/passability filter, and the ring index never advanced on a failed
+walk — a permanent stall costing an A* *plus* its BFS fallback every quiet turn);
+`claimIfOpen` able to fire mid-relay on a re-claim, orphaning a paid-for
+harvester nothing re-relays; the heal rung pulling the guardian outside its leash
+and oscillating against the leash step above it; and the heartbeat proving only
+"run() was entered" rather than "the guardian works", so a repeating post-stamp
+fault would have held the role forever while defence did nothing.
+
+Verified sound and left alone: the claim/heartbeat machinery itself (same-round
+races converge on the engine's next-turn write visibility; wraparound is
+unreachable at 1000 rounds vs a 4096 field; an unencodable index is dropped, not
+truncated, so a stale slot can never match a live builder).
+
+**Deferred, in rough priority order:**
+
+1. **The ring-walling siege is invisible to the builder gate.** Our own
+   `raidBot._siege` two-phases the enemy core ring: sever the belts (a builder
+   adjacent to a belt — the gate catches this), then *wall the open gaps with
+   barriers*, standing wherever is nearest, often adjacent to nothing of ours
+   (its own fresh barriers read as enemy). In a mirror the opponent's walling
+   phase therefore draws no response, and pure gap-walling — which pens in our
+   spawn ring — is answered by nothing at all (`repairCoreBelts` only fires on a
+   barrier severing a *fed* line). Candidate fix: treat any enemy builder within
+   2-3 of the core as unconditionally threatening (nothing innocently passes
+   through the core ring) and keep the adjacency gate for the 3..8 band.
+2. **Claim timing is economically aggressive.** Eco labour is 3 bodies and the
+   claim fires at the *first* completed relay — the earliest possible moment —
+   cutting farming ~33% for the rest of the match. Defensible on rush-prone
+   maps, expensive on placid ones. A stronger gate is one read away
+   (`store.HARVESTERS >= 2`), or defer until an enemy has been seen near home.
+   Measure on mirror_gauntlet before changing.
+3. **`get_hp(id)` as a stronger threat signal.** See the note in
+   `docs/adr/0001-guardian-role.md`: "adjacent ally building is *damaged*"
+   separates a builder actually grinding from one standing beside our belt, at
+   one turn of reaction delay. Cheaper than the cross-turn stationarity tracking
+   floated earlier.
+4. **Guardian never heals its own turrets.** `heal.TURRET_HEAL_TYPES` exists and
+   the ladder does not use it, while the home gunners it stands beside are
+   exactly what takes fire. Add once the leash-bounded heal filter proves out.
+5. **A broke/capped guardian drifts to patrol instead of holding station**
+   beside a live threat it cannot yet afford to answer (`defendCore` returns
+   False in that case — correct for the eco caller, which leaves to earn).
+6. **If all three eco builders die the role goes permanently unfilled** — the
+   same class as the deferred raider-death item, and fixed by the same
+   living-count work.

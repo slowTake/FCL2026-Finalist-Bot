@@ -52,8 +52,29 @@ A dedicated **guardian** role (`roles/guardianBot.py`), one per team for now.
   (out-of-leash sentinel answer); leash-bounded ore-seeking for the quiet
   guardian; scaling to N guardians (add role fields). The v1 ladder ships
   without them.
-- **Related follow-up (point 2 of the originating request):** now that a
-  guardian exists, `defendCore` can stop placing gunners on enemy *builders*
-  merely passing the core (1–2 wasted shots), moving that gate — with a smarter
-  "is the builder actually attacking/repairing" trigger off
-  `get_action_cooldown(enemyId)` — onto the guardian. Not in this change.
+- **Point 2 of the originating request (shipped in the same change):** a gunner is
+  no longer placed on an enemy builder merely passing the core (1–2 wasted shots).
+  `defendCore` now answers a builder **only when it is grinding one of our
+  buildings** — `_builderThreateningStructure`: one of ours orthogonally adjacent.
+  The gate is universal, not guardian-only: both the guardian and the eco-path
+  fallback apply it, so an *attacking* builder is still answered before the
+  guardian is even claimed (early belt-cuts are devastating), while a *passing* one
+  never is. `BUILDER_BOT` was removed from `guns._CORE_THREAT_TYPES` (the
+  "always a threat" set) and handled through the adjacency gate instead.
+
+  The trigger sketched here originally was `get_action_cooldown(enemyId) != 0` —
+  that does not exist: the engine's `get_action_cooldown`/`get_move_cooldown` take
+  **no** entity id (verified in `fcode/_types.py`), and there is no target/order
+  getter, so an enemy's *action* state is unreadable. Adjacency is the stand-in —
+  build and fire are adjacent-only, so a builder attacking our structure must be
+  next to it, while one crossing open ground is not. (A lesson in the repo's own
+  rule: trust the code over a docs claim.)
+
+  Adjacency is not, however, the *only* available signal, as an earlier draft of
+  this ADR claimed: `get_hp(id)`/`get_max_hp(id)` do take an id (`heal.py` already
+  uses them), so "the adjacent ally building is **damaged**" is a strictly
+  stronger read — it distinguishes a builder that has actually started grinding
+  from one merely standing beside our belt. It costs one turn of reaction delay
+  (the first hit lands before HP drops) against a ~15-turn grind, and would cut
+  the residual false positives near belt corridors. Worth measuring as a
+  refinement; the current gate ships without it.

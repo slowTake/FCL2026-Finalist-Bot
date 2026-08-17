@@ -26,13 +26,19 @@ ECO_HEAL_TYPES = (EntityType.CORE, EntityType.HARVESTER) + ph.BELT_TYPES
 TURRET_HEAL_TYPES = (EntityType.GUNNER, EntityType.SENTINEL)
 
 
-def nearestDamagedAlly(ct: Controller, types) -> Position | None:
+def nearestDamagedAlly(ct: Controller, types, accept=None) -> Position | None:
     """Nearest ally of one of `types`, within vision, that's actually damaged.
     None if nothing qualifies.
 
     "Nearby" is exactly "in vision" — the same engine-defined radius
     guns.visibleHostiles already trusts for the equivalent enemy-side scan,
     rather than an invented threshold.
+
+    `accept(pos)`, when given, further narrows which tiles qualify. That exists
+    for a caller that is itself bounded to a region: vision is measured from the
+    healer, so an unfiltered target can sit outside a leash the caller must stay
+    inside, and walking out to it only to be recalled is an oscillation rather
+    than a heal. Callers with no such bound omit it and are unaffected.
     """
     myTeam = ct.get_team()
     here = ct.get_position()
@@ -61,6 +67,8 @@ def nearestDamagedAlly(ct: Controller, types) -> Position | None:
             cand = pos
         if cand.x == here.x and cand.y == here.y:
             continue  # can't heal our own tile — can_heal requires adjacency
+        if accept is not None and not accept(cand):
+            continue
         d = manhattan(here, cand)
         if bestDist is None or d < bestDist:
             best, bestDist = cand, d
@@ -68,11 +76,12 @@ def nearestDamagedAlly(ct: Controller, types) -> Position | None:
     return best
 
 
-def healNearby(bot, ct: Controller, types) -> bool:
+def healNearby(bot, ct: Controller, types, accept=None) -> bool:
     """Heal the nearest damaged ally of one of `types` within vision, if any.
     True if the turn was used — either actually healing, or walking toward
-    one that isn't adjacent yet."""
-    target = nearestDamagedAlly(ct, types)
+    one that isn't adjacent yet. `accept` narrows the candidates — see
+    nearestDamagedAlly."""
+    target = nearestDamagedAlly(ct, types, accept)
     if debug.ENABLED:
         debug.log(
             "heal",

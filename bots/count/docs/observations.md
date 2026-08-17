@@ -117,6 +117,14 @@ and would be expensive to relearn.
   drakkarfjord. A single run is therefore a real measurement, not a sample — do not
   dismiss an unwelcome result as seed noise, and do not average runs expecting the
   spread to mean anything.
+- **`bot_gauntlet` (vs starter) is the exception, and fjordgate is its coin flip.**
+  The starter bot calls an unseeded Python RNG, so vs-starter results are not
+  reproducible run to run. fjordgate is the map where that matters: its two cores
+  sit close together, so the match genuinely swings on its own. Measured across
+  repeated runs it flipped W/L on unchanged code, on both sides of a change, and
+  still flipped with TLE disabled (`--tle 1000`) — so it is map geometry, not a
+  timeout. A 14/15 whose only loss is fjordgate is a pass. If some *other* map
+  flips, sample it ~8x against stashed baseline code before believing it.
 - **The distance metric is Manhattan, everywhere.** Builders move cardinal-only and
   belts chain cardinally, so both travel time and belt cost are 4-connected — the
   metric has to match the connectivity or the threshold built on it is anisotropic.

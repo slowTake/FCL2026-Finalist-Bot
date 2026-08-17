@@ -72,6 +72,11 @@ class Player:
         # in its leash-waypoint ring. Both are only ever read on builders.
         self._harvesterDelivered = False
         self._guardianPatrolIdx = 0
+        # Did the guardian ladder run to completion last turn. Gates the liveness
+        # heartbeat, so a guardian that faults or TLEs in the same place every turn
+        # stops stamping and is replaced instead of holding the role while doing
+        # nothing (guardianBot.runGuardian). True initially so the first turn stamps.
+        self._guardianTurnOk = True
 
         # Enemy core, once this unit (via the shared ledger) has actually seen it
         # (raid.enemyCorePos). Ground truth that overrides a wrong/absent
