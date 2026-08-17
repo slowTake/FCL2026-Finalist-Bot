@@ -357,6 +357,40 @@ def _dropGunnerOn(ct: Controller, target: Position) -> bool:
     return False
 
 
+def buildSiegeGunner(ct: Controller, pad: Position, enemyCore: Position) -> bool:
+    """Build a gunner on `pad` (a core edge-ring gap) facing into the enemy core,
+    if it bears and the pad isn't already under an enemy turret's live line. True
+    iff it built one.
+
+    The raider plants these in place of a barrier when the core ring shows no belt
+    to sever and no enemy builder to lock out (`raidBot._coreClear`): a gunner
+    occupies the tile and seals the gap exactly as a wall would, and grinds the
+    core besides. Unlike `_dropGunnerOn` there is no ally-coverage de-dup — each
+    ring gap gets its own gunner, so a sentinel already on the core mustn't veto
+    the ring — and the pad is given, not scanned: the caller has the gap tile."""
+    target = next((f for f in ph.coreFootprint(enemyCore)
+                   if manhattan(pad, f) == 1), None)  # the footprint tile pad abuts
+    if target is None:
+        return False
+    facing = _gunFacing(pad, target)
+    if facing is None:
+        return False
+    if not ct.can_fire_from(pad, facing, EntityType.GUNNER, target):
+        return False
+    if emplace.siteInDirectTurretLos(ct, pad, emplace.enemyTurrets(ct)):
+        return False
+    if not ct.can_build_gunner(pad, facing):
+        return False
+    ct.build_gunner(pad, facing)
+    if debug.ENABLED:
+        debug.log(
+            "gun",
+            f"siege-gunner at {pad} facing {facing} -> core "
+            f"rnd={ct.get_current_round()}",
+        )
+    return True
+
+
 def _coveredByAllySentinel(ct: Controller, myTeam, target: Position) -> bool:
     """Is an ally sentinel already firing on `target` — don't stack a second.
 

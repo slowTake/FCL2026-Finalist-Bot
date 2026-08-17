@@ -174,6 +174,28 @@ def _siegeTileNeedsWork(bot, ct: Controller, tile: Position) -> bool:
     return False
 
 
+def _coreClear(bot, ct: Controller, enemyCore: Position) -> bool:
+    """True if, in the raider's *current* vision, no enemy supply belt and no enemy
+    builder sits on the core ring — meaning a wall would seal nothing, so the raider
+    plants gunners on the gaps instead (they seal the tile too, and grind the core).
+
+    Only tiles in vision this turn count: a belt or builder remembered from the
+    ledger but not seen right now does not veto the switch, matching 'current
+    vision'. An unseen tile is treated as clear. The full 12-tile ring is scanned,
+    not just the edges — a builder can stand on a diagonal corner too."""
+    for t in ph.coreRing(enemyCore):
+        if not ph.inBounds(ct, t):
+            continue
+        if not ct.is_in_vision(t):
+            continue
+        tile = ph.readTile(ct, bot.hivemind, t)
+        if tile.enemy and tile.etype in ph.BELT_TYPES:
+            return False
+        if tile.builder and tile.builderEnemy:
+            return False
+    return True
+
+
 def _nextSiegeTile(bot, ct: Controller, ringTiles, gunners, cache) -> Position | None:
     """Nearest core-ring tile that still needs cutting or walling, or None once
     the ring is fully severed and sealed.
@@ -320,15 +342,29 @@ def _siege(bot, ct: Controller, enemyCore: Position) -> bool:
         # cheap cut/wall grind. A no-op once one is already planted.
         if buildApronLauncher(bot, ct, enemyCore):
             return True
-        # 2) Wall an adjacent open ring tile (also seals a belt tile we just cleared).
+        # 2) Seal an adjacent open ring tile (also seals a belt tile we just
+        #    cleared). Normally a barrier — it cuts supply and locks out repairing
+        #    builders. But when the core shows no belt to sever and no enemy builder
+        #    to lock out in current vision (_coreClear), a wall seals nothing; plant
+        #    a gunner instead: it occupies the gap exactly as a barrier would AND
+        #    grinds the core. _coreClear is read lazily — only once a real gap is
+        #    found — to keep this CPU-tight hot loop cheap.
+        coreClear = None
         for t in ringTiles:
             if manhattan(pos, t) != 1:
                 continue
-            if ct.can_build_barrier(t):
-                ct.build_barrier(t)
-                if debug.ENABLED:
-                    debug.log("raidBot", f"siege-wall {pos}->{t} rnd={ct.get_current_round()}")
+            if not ct.can_build_barrier(t):
+                continue
+            if coreClear is None:
+                coreClear = _coreClear(bot, ct, enemyCore)
+            if (coreClear
+                    and ct.get_global_resources() >= ct.get_gunner_cost()
+                    and guns.buildSiegeGunner(ct, t, enemyCore)):
                 return True
+            ct.build_barrier(t)
+            if debug.ENABLED:
+                debug.log("raidBot", f"siege-wall {pos}->{t} rnd={ct.get_current_round()}")
+            return True
 
     # No adjacent work (done, broke, on cooldown, or this spot is exposed): move
     # toward the next ring tile that needs work.
