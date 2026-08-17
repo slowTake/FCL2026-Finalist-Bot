@@ -315,6 +315,11 @@ def _siege(bot, ct: Controller, enemyCore: Position) -> bool:
                 if debug.ENABLED:
                     debug.log("raidBot", f"siege-cut {pos}->{t} rnd={ct.get_current_round()}")
                 return True
+        # 1.5) Embed the one apron launcher in the ring, in place of a barrier on
+        # the enemy-homeward edge tile — surplus-gated, so it never displaces the
+        # cheap cut/wall grind. A no-op once one is already planted.
+        if buildApronLauncher(bot, ct, enemyCore):
+            return True
         # 2) Wall an adjacent open ring tile (also seals a belt tile we just cleared).
         for t in ringTiles:
             if manhattan(pos, t) != 1:
@@ -521,6 +526,68 @@ def buildLocalSentinel(bot, ct: Controller) -> bool:
         debug.log(
             "raidBot",
             f"localSentinel at {site} facing {facing} "
+            f"idx={bot.hivemind.my_index} rnd={ct.get_current_round()}",
+        )
+    return True
+
+
+def buildApronLauncher(bot, ct: Controller, enemyCore: Position) -> bool:
+    """Plant one launcher embedded in the enemy core's edge ring, on the
+    enemy-homeward side their repair/relay builders approach from — in place of a
+    barrier we'd otherwise wall that tile with. Once up, runLauncher grabs those
+    builders and flings them *away* from the core for free (no ammo), turning the
+    open-corner repair gap (see the siege header) into a trap, and sealing that
+    ring tile as a blocker besides.
+
+    Called from `_siege`'s action block, so the raider is already at the ring,
+    off cooldown and out of gunner fire. Opportunistic and non-starving: it only
+    builds when the bank can afford the launcher *and still* clear _SIEGE_MIN_TI
+    afterwards, so the cheap belt-cut/wall grind is never starved to plant it. (Not
+    gated on guns.surplusReady — that fires the sentinel step, which returns before
+    _siege ever runs, so _siege only sees sub-surplus turns.) One per siege: the
+    ring scan suppresses a second and rebuilds if this one is destroyed, so no
+    scarce store slot is spent tracking it.
+    """
+    if ct.get_global_resources() < ct.get_launcher_cost() + _SIEGE_MIN_TI:
+        return False
+    if ct.get_unit_count() >= GameConstants.MAX_TEAM_UNITS:
+        return False
+
+    pos = ct.get_position()
+
+    # One per siege. Scan the full 12-tile ring (edges + corners) for a launcher we
+    # already planted; self-healing, since a destroyed one leaves the scan empty and
+    # the next raider rebuilds.
+    for tile in ph.coreRing(enemyCore):
+        t = ph.readTile(ct, bot.hivemind, tile)
+        if t.etype == EntityType.LAUNCHER and not t.enemy:
+            return False
+
+    # Build on the edge-ring tile we can reach this turn that sits farthest from our
+    # own core — the enemy-homeward side their builders come from, where the launcher
+    # grabs them as they arrive. beltFacing is the orthogonal-adjacency test (must be
+    # adjacent to build); can_build_launcher is the real legality gate. If none
+    # qualifies now, keep sieging — a later turn parks the raider beside a usable one.
+    best = None
+    bestD = -1
+    for tile in ph.coreEdgeRing(enemyCore):
+        if ph.beltFacing(pos, tile) is None:
+            continue
+        if not ct.can_build_launcher(tile):
+            continue
+        d = ph.manhattanToCore(tile, bot.corePos) if bot.corePos is not None else 0
+        if d > bestD:
+            bestD = d
+            best = tile
+    if best is None:
+        return False
+
+    ct.build_launcher(best)
+    ph.invalidateTile(bot.hivemind, best)
+    if debug.ENABLED:
+        debug.log(
+            "raidBot",
+            f"apron launcher placed at {best} enemyCore={enemyCore} "
             f"idx={bot.hivemind.my_index} rnd={ct.get_current_round()}",
         )
     return True

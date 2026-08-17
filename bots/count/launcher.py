@@ -56,6 +56,14 @@ PLACE_WAIT_TURNS = 6
 # apron — so this is slack, not a tight fit; past it, skip placement entirely.
 APRON_RADIUS = 4
 
+# A launcher sitting this close to the *enemy* core is an offensive apron launcher
+# (planted by a sieging raider, roles/raidBot.buildApronLauncher), not the core
+# launcher beside our own base. It flips runLauncher into the offensive mode:
+# fling enemy repair/relay builders *away* from their core instead of ferrying
+# our own. Distinct from APRON_RADIUS above, which is the spawn apron around *our*
+# core — a launcher there is far outside this radius and keeps the defensive path.
+ENEMY_APRON_RADIUS = 3
+
 
 # ---------------------------------------------------------------------------
 # Request packing:  valid(1) | rx(7) | ry(7) | tx(7) | ty(7)  = 29 bits
@@ -216,19 +224,15 @@ def requestLaunch(bot, ct: Controller, target: Position | None) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _repelHostile(bot, ct: Controller) -> bool:
-    """Fling the nearest grabbable enemy builder back toward the enemy core.
+def _grabbableHostiles(bot, ct: Controller) -> list[Position]:
+    """Nearby enemy builder bots, nearest to this launcher first.
 
     Nearest first because that is both the most urgent threat and the one most
-    likely to be inside pickup range; `can_launch` is the real gate on whether it
-    can actually be picked up, so out-of-reach candidates simply fail and the
-    loop moves on. The throw goal is the enemy core, so `_bestThrow` sends the
-    body toward its own side — away from our launcher and economy.
+    likely to be inside pickup range; `can_launch` on the caller's side is the
+    real gate on whether a body can actually be picked up, so out-of-reach
+    candidates simply fail there and the caller's loop moves on. Shared by the
+    defensive (throw toward enemy core) and offensive (throw away from it) repels.
     """
-    enemyCore = raid.enemyCorePos(bot, ct)
-    if enemyCore is None:
-        return False
-
     me = ct.get_team()
     launcherPos = ct.get_position()
     hostiles = [
@@ -238,8 +242,21 @@ def _repelHostile(bot, ct: Controller) -> bool:
         and ct.get_entity_type(eid) == EntityType.BUILDER_BOT
     ]
     hostiles.sort(key=lambda p: manhattan(launcherPos, p))
+    return hostiles
 
-    for hp in hostiles:
+
+def _repelHostile(bot, ct: Controller) -> bool:
+    """Fling the nearest grabbable enemy builder back toward the enemy core.
+
+    The throw goal is the enemy core, so `_bestThrow` sends the body toward its
+    own side — away from our launcher and economy. This is the *defensive* repel,
+    for the launcher beside our own core.
+    """
+    enemyCore = raid.enemyCorePos(bot, ct)
+    if enemyCore is None:
+        return False
+
+    for hp in _grabbableHostiles(bot, ct):
         target = _bestThrow(bot, ct, hp, enemyCore)
         if target is None:
             continue
@@ -249,6 +266,31 @@ def _repelHostile(bot, ct: Controller) -> bool:
                 debug.log(
                     "launcher",
                     f"repelled {hp} -> {target} (enemyCore {enemyCore}) "
+                    f"rnd={ct.get_current_round()}",
+                )
+            return True
+    return False
+
+
+def _repelAwayFromCore(bot, ct: Controller, enemyCore: Position) -> bool:
+    """Offensive apron repel: fling the nearest grabbable enemy builder *away* from
+    its own core, so a repair/relay body lands several tiles out and has to walk
+    all the way back before it can touch the core again.
+
+    Mirror of `_repelHostile` but with the throw inverted — `_flingAwayThrow`
+    maximises distance from the enemy core instead of minimising it. Used only by
+    an apron launcher (within ENEMY_APRON_RADIUS of the enemy core).
+    """
+    for hp in _grabbableHostiles(bot, ct):
+        target = _flingAwayThrow(bot, ct, hp, enemyCore)
+        if target is None:
+            continue
+        if ct.can_launch(hp, target):
+            ct.launch(hp, target)
+            if debug.ENABLED:
+                debug.log(
+                    "launcher",
+                    f"repelled {hp} -> {target} away from core {enemyCore} "
                     f"rnd={ct.get_current_round()}",
                 )
             return True
@@ -289,6 +331,37 @@ def _bestThrow(bot, ct: Controller, requester: Position, target: Position):
     return best
 
 
+def _flingAwayThrow(bot, ct: Controller, requester: Position, enemyCore: Position):
+    """The in-range tile that lands the builder *farthest* from the enemy core.
+
+    The inverse of `_bestThrow`: only tiles strictly farther from the core than the
+    requester currently is are considered, so a fling never drops the body closer to
+    the thing we're denying it. can_launch is the real legality check; this only
+    ranks candidates. Distance is the point-to-2x2 clamp `manhattanToCore`, so a
+    landing tile is scored against the whole core body, not one anchor corner.
+    """
+    try:
+        tiles = ct.get_attackable_tiles()
+    except Exception:
+        return None
+
+    best = None
+    bestD = ph.manhattanToCore(requester, enemyCore)
+    for tile in tiles:
+        if not ph.inBounds(ct, tile):
+            continue
+        if ph.isImpassable(ct, bot.hivemind, tile):
+            continue
+        t = ph.readTile(ct, bot.hivemind, tile)
+        if t.etype is not None or t.builder or t.ore:
+            continue  # must be a clear passable tile to land on
+        d = ph.manhattanToCore(tile, enemyCore)
+        if d > bestD:
+            bestD = d
+            best = tile
+    return best
+
+
 def runLauncher(bot, ct: Controller) -> None:
     """One action per turn: defend first, then serve a posted launch request.
 
@@ -298,6 +371,20 @@ def runLauncher(bot, ct: Controller) -> None:
     guessing where an adjacent builder wants to go.
     """
     if ct.get_action_cooldown() != 0:
+        return
+
+    # An apron launcher (planted at the enemy core by a sieging raider) is a pure
+    # denial turret: it only ever flings enemy repair/relay builders *away* from
+    # their core, and never ferries our own — no raider requests a throw this deep
+    # in enemy ground. Told apart from the core launcher by geometry alone (it sits
+    # within ENEMY_APRON_RADIUS of the enemy core; the core launcher is far outside
+    # it), so no per-unit state or store slot is needed.
+    enemyCore = raid.enemyCorePos(bot, ct)
+    if (
+        enemyCore is not None
+        and ph.manhattanToCore(ct.get_position(), enemyCore) <= ENEMY_APRON_RADIUS
+    ):
+        _repelAwayFromCore(bot, ct, enemyCore)
         return
 
     if _repelHostile(bot, ct):
