@@ -30,6 +30,10 @@ class HiveMind:
         self.global_turn = 0
         self.my_index = 0
         self.birth_round: int | None = None
+        # Slot 4 as read on this unit's first tick. Named for what it actually
+        # holds: the builder count INCLUDING this unit (the spawn write is already
+        # visible by then), not the count before it. my_index = this + 1.
+        self._birth_builder_count: int | None = None
         self.map_id = 0
         self.map_name = "UNKNOWN"
         self.enemy_core_pos = None  # set on fingerprint from KNOWN_MAPS
@@ -312,14 +316,44 @@ class HiveMind:
         # 1. Sync global turn natively from the engine
         self.global_turn = ct.get_current_round()
 
-        # 2. Assign builder index once the spawn write to slot 4 is visible.
+        # 2. Assign builder index from the slot-4 count read at birth.
+        #
+        # THE READ INCLUDES THIS UNIT. By the newborn's first tick the core's
+        # spawn increment (write_store(4, total + 1), in spawn_builder) is
+        # already visible, so slot 4 reads "builders including me", not
+        # "builders before me". Verified empirically on every map with
+        # COUNT_DEBUG: the first builder reads 1 and takes my_index 2, the
+        # second reads 2 and takes 3. **The produced indices are therefore
+        # 2..N+1 — index 1 is never assigned to anybody.**
+        #
+        # This comment used to assert the opposite ("the spawn that just
+        # created this very unit has not landed yet"), reasoning from
+        # write_store being buffered one round. That premise is wrong here,
+        # because a newborn does not act on its spawn round — a full round
+        # boundary passes before its first tick. The false premise is what
+        # hid a real bug: the ledger metronome in step 5 cycled 1..N to
+        # match, so it wasted every `current == 1` round on nobody and never
+        # reached the newest builder at all. Anything keying off this value
+        # must use the real 2..N+1 range — see respawn._MYINDEX_OFFSET (= 2)
+        # and the metronome below, which must stay in agreement with it.
+        #
+        # Still captured on the FIRST tick (birth_round) rather than
+        # re-read later, and that reasoning is unchanged: a later read gets
+        # whatever is THEN current, which is no longer this unit's own count
+        # if a second builder spawned in the intervening round — both
+        # newborns' reads land on the same advanced value and both claim the
+        # same index (observed directly, two live units with the same
+        # my_index one round apart, count-vs-baron on valkyrie). Publication
+        # still waits until birth_round + 1, so my_index == 0 remains the
+        # "not yet assigned" signal for exactly one round — some callers
+        # (e.g. baron's guardianRankAlive) treat that timing as an invariant.
         if ct.get_entity_type() == EntityType.BUILDER_BOT and self.my_index == 0:
             if self.birth_round is None:
                 self.birth_round = self.global_turn
+                self._birth_builder_count = ct.read_store(4)
             elif self.global_turn == self.birth_round + 1:
-                idx = ct.read_store(4)
-                if idx > 0:
-                    self.my_index = idx
+                if self._birth_builder_count is not None:
+                    self.my_index = self._birth_builder_count + 1
 
         # 3. Process Map Detection (Core Only)
         if is_core and self.global_turn == 0:
@@ -363,13 +397,23 @@ class HiveMind:
             if is_core:
                 total_builders = ct.read_store(4)
                 if total_builders > 0:
+                    # Cycle over 2..total_builders+1, NOT 1..total_builders.
+                    # Builders self-assign my_index = _birth_builder_count + 1
+                    # (step 2), and that count already includes the unit itself, so
+                    # the produced indices are 2..total_builders+1 — index 1 is
+                    # never assigned and the newest builder is total_builders+1.
+                    # A 1-based cycle therefore wasted every `current == 1` round
+                    # on nobody AND never reached the newest builder (it stopped
+                    # at total_builders), so ~1/N of broadcasts were dropped and
+                    # the last builder was permanently mute. Match the real index
+                    # range exactly. (Shared by count/baron/bandit via symlink.)
                     current = ct.read_store(13)
-                    if current == 0:
-                        current = 1
+                    if current < 2:
+                        current = 2
                     else:
                         current += 1
-                        if current > total_builders:
-                            current = 1
+                        if current > total_builders + 1:
+                            current = 2
                     ct.write_store(13, current)
                     # Clear slots
                     for i in range(8):

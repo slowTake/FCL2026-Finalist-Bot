@@ -7,13 +7,19 @@ Starts at the bot's main.py and follows local imports, so only modules the bot
 actually loads go in. Docs, replays, __pycache__ and unreachable modules are
 left out. Files land at the zip root (main.py must be the entry point). An
 existing zip for the same bot is replaced.
+
+The finished zip is smoke tested by loading it the way the league runner does —
+see smokeTest below for why that is not just an import.
 """
 
 from __future__ import annotations
 
 import argparse
 import ast
+import os
+import subprocess
 import sys
+import tempfile
 import zipfile
 from pathlib import Path
 
@@ -21,8 +27,30 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 BOTS_DIR = REPO_ROOT / "bots"
 
 
-def localImports(path: Path, botDir: Path) -> set[str]:
-    """Module names imported by `path` that resolve to a .py file in botDir."""
+def moduleIndex(botDir: Path) -> dict[str, Path]:
+    """Map module name -> .py file, searching subdirectories too.
+
+    Bots may group modules into folders (count/ uses hivemind/, roles/) while
+    still importing them by bare name, because main.py puts those folders on
+    sys.path and this zip is flat. A name defined twice is ambiguous once
+    flattened, so that's an error rather than a silent pick.
+    """
+    index: dict[str, Path] = {}
+    for path in sorted(botDir.rglob("*.py")):
+        if "__pycache__" in path.parts:
+            continue
+        if path.stem in index:
+            sys.exit(
+                f"error: two modules named {path.stem}.py "
+                f"({index[path.stem].relative_to(botDir)} and "
+                f"{path.relative_to(botDir)}) — the zip is flat, so names must be unique"
+            )
+        index[path.stem] = path
+    return index
+
+
+def localImports(path: Path, index: dict[str, Path]) -> set[str]:
+    """Module names imported by `path` that resolve to a .py file in the bot."""
     tree = ast.parse(path.read_text(), filename=str(path))
     names: set[str] = set()
     for node in ast.walk(tree):
@@ -30,23 +58,70 @@ def localImports(path: Path, botDir: Path) -> set[str]:
             names.update(alias.name.split(".")[0] for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
             names.add(node.module.split(".")[0])
-    return {n for n in names if (botDir / f"{n}.py").is_file()}
+    return {n for n in names if n in index}
 
 
 def reachableModules(botDir: Path) -> list[Path]:
     """main.py plus every local module reachable from it, breadth-first."""
-    entry = botDir / "main.py"
-    if not entry.is_file():
-        sys.exit(f"error: {entry} not found — a bot needs a main.py")
+    index = moduleIndex(botDir)
+    if "main" not in index or index["main"].parent != botDir:
+        sys.exit(f"error: {botDir / 'main.py'} not found — a bot needs a main.py")
 
     seen = {"main"}
     queue = ["main"]
     while queue:
-        for name in sorted(localImports(botDir / f"{queue.pop()}.py", botDir)):
+        for name in sorted(localImports(index[queue.pop()], index)):
             if name not in seen:
                 seen.add(name)
                 queue.append(name)
-    return sorted(botDir / f"{n}.py" for n in seen)
+    return sorted(index[n] for n in seen)
+
+
+# Run inside the extracted zip, by a fresh interpreter, with cwd as the only
+# import root. `exec` of the source rather than `import main` is the whole
+# point: the runner does it that way, so main.py has no __file__ and no
+# enclosing package. A plain import defines both and hides exactly the bugs
+# this is here to catch (count shipped a __file__ crash that imported fine).
+SMOKE_DRIVER = """
+import sys
+source = open("main.py").read()
+namespace = {"__name__": "__main__"}
+exec(compile(source, "main.py", "exec"), namespace)
+if "Player" not in namespace:
+    sys.exit("main.py defines no Player class")
+"""
+
+
+def smokeTest(zipPath: Path) -> None:
+    """Load the built zip the way the league runner loads it.
+
+    Skipped with a warning when this interpreter has no fcode: that means the
+    script is being run outside the venv, and a failure would say nothing about
+    the zip. Anything else is a real defect and exits non-zero.
+    """
+    try:
+        import fcode  # noqa: F401
+    except ImportError:
+        print("warning: no fcode in this interpreter — skipping smoke test (run from .venv to enable)")
+        return
+
+    with tempfile.TemporaryDirectory() as tmp:
+        with zipfile.ZipFile(zipPath) as zf:
+            zf.extractall(tmp)
+        env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+        result = subprocess.run(
+            [sys.executable, "-c", SMOKE_DRIVER],
+            cwd=tmp,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+
+    if result.returncode:
+        print(f"\nsmoke test FAILED — {zipPath.name} would not load in a game:\n", file=sys.stderr)
+        sys.stderr.write(result.stderr or result.stdout)
+        sys.exit(1)
+    print("smoke test passed: loads with no __file__ and no package context")
 
 
 def main() -> None:
@@ -56,6 +131,7 @@ def main() -> None:
     parser.add_argument("--all", action="store_true", help="include every .py in the bot dir, not just imported ones")
     parser.add_argument("--include", action="append", default=[], metavar="NAME", help="extra file to add, relative to the bot dir (repeatable)")
     parser.add_argument("-n", "--dry-run", action="store_true", help="list what would be zipped and stop")
+    parser.add_argument("--no-smoke", action="store_true", help="skip the post-build load check")
     args = parser.parse_args()
 
     botDir = BOTS_DIR / args.bot
@@ -64,7 +140,7 @@ def main() -> None:
         sys.exit(f"error: no bot directory {botDir}\navailable: {available}")
 
     if args.all:
-        files = sorted(p for p in botDir.glob("*.py") if p.is_file())
+        files = sorted(moduleIndex(botDir).values())
     else:
         files = reachableModules(botDir)
 
@@ -76,7 +152,7 @@ def main() -> None:
             files.append(path)
 
     if not args.all:
-        skipped = sorted(p.name for p in botDir.glob("*.py") if p not in files)
+        skipped = sorted(p.name for p in moduleIndex(botDir).values() if p not in files)
         if skipped:
             print(f"skipping unimported: {', '.join(skipped)}")
 
@@ -98,6 +174,9 @@ def main() -> None:
             zf.write(path, arcname=path.name)
     tmpPath.replace(zipPath)
     print(f"wrote {zipPath}")
+
+    if not args.no_smoke:
+        smokeTest(zipPath)
 
 
 if __name__ == "__main__":

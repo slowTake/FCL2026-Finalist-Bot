@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
-"""Run a bot against starter on every map, 5 times each."""
+"""Run a bot against starter on its live map pool, 5 times each."""
 
 from __future__ import annotations
 
 import argparse
 import os
 import sys
+from collections import defaultdict
 from pathlib import Path
 
 from fcode.config import find_config
 from fcode.fcode_engine import run_game
+
+SCRIPTS_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(SCRIPTS_DIR))
+from live_map_pool import resolve_maps  # noqa: E402
 
 RUNS_PER_MAP = 5
 
@@ -23,20 +28,6 @@ CONDITION_LABELS = {
     "coinflip": "Coinflip",
     "timeout": "Draw",
 }
-
-
-def resolve_maps(maps_dir: Path, override: list[str] | None) -> list[Path]:
-    if override:
-        maps = []
-        for name in override:
-            path = maps_dir / name
-            if not path.suffix:
-                path = path.with_suffix(".map26")
-            if not path.exists():
-                raise FileNotFoundError(f"Map not found: {path}")
-            maps.append(path)
-        return maps
-    return sorted(maps_dir.glob("*.map26"))
 
 
 def write_summary(lines: list[str]) -> None:
@@ -85,7 +76,7 @@ def run_extreme_gauntlet(bot_name: str, map_names: list[str] | None) -> int:
         print(f"Error: starter bot not found at {starter}", file=sys.stderr)
         return 1
 
-    maps = resolve_maps(maps_dir, map_names)
+    maps = resolve_maps(maps_dir, map_names, bots_dir / bot_name)
     if not maps:
         print(f"Error: no maps found in {maps_dir}", file=sys.stderr)
         return 1
@@ -105,6 +96,7 @@ def run_extreme_gauntlet(bot_name: str, map_names: list[str] | None) -> int:
 
     wins = 0
     rows: list[tuple[str, str, str, int, int, int]] = []
+    per_map: dict[str, list[str]] = defaultdict(list)
 
     for map_path in maps:
         for run in range(1, RUNS_PER_MAP + 1):
@@ -135,6 +127,7 @@ def run_extreme_gauntlet(bot_name: str, map_names: list[str] | None) -> int:
             label = "WIN" if won else "LOSS"
             map_label = map_path.stem if RUNS_PER_MAP == 1 else f"{map_path.stem}-{run}"
             rows.append((map_label, label, condition, ally_ti, enemy_ti, result["turns"]))
+            per_map[map_path.stem].append("W" if won else "L")
             print(
                 f"{map_label:<12} {label:<8} {condition:<24} {ally_ti:>8} "
                 f"{enemy_ti:>9} {result['turns']:>6}"
@@ -145,6 +138,11 @@ def run_extreme_gauntlet(bot_name: str, map_names: list[str] | None) -> int:
     print()
     print(f"Total: {wins}/{total_matches}")
     print(f"Win rate: {winrate:.1f}%")
+    print()
+    print(f"=== Per map (one letter per run, seeds {seed}..{seed + RUNS_PER_MAP - 1}) ===")
+    for map_path in maps:
+        letters = "".join(per_map[map_path.stem])
+        print(f"  {map_path.stem:<12} {letters}")
 
     summary_lines = [
         f"## Extreme gauntlet: `{bot_name}` vs `starter`",
@@ -168,7 +166,7 @@ def run_extreme_gauntlet(bot_name: str, map_names: list[str] | None) -> int:
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Run a bot against starter on every map, 5 times each. "
+            "Run a bot against starter on its live map pool, 5 times each. "
             "Pass only if all matches are won."
         )
     )
@@ -180,7 +178,11 @@ def main() -> None:
     parser.add_argument(
         "--maps",
         nargs="+",
-        help="Optional map names to run (default: all *.map26 in maps/)",
+        help=(
+            "Optional map names to run (default: the bot's own features.py "
+            "MAP_ID_TO_NAME pool, falling back to every *.map26 in maps/ if "
+            "the bot has none)"
+        ),
     )
     args = parser.parse_args()
     raise SystemExit(run_extreme_gauntlet(args.bot, args.maps))

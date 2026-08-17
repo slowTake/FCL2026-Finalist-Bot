@@ -6,11 +6,13 @@ import glob
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 import csv
+import time
 
-sys.path.append("/home/nraatika/projects/florent/teaPot/scripts")
+sys.path.append(str(Path(__file__).parent.resolve()))
 import florent_replay_pb2
 
 TEAM_ID = "12fdece5-48c9-4913-9533-6d95b73e22ab"
+REPLAY_DIR = "/tmp/claude-1000/-home-peter-projects-teaPot/9a202f49-565e-4ea8-980f-ddc880acefa6/scratchpad/replays"
 
 def load_token():
     creds_file = Path.home() / ".fcode" / "credentials.json"
@@ -102,8 +104,8 @@ if not matches_data or 'matches' not in matches_data:
     print("Failed to fetch matches")
     sys.exit(1)
 
-now = datetime.now(timezone.utc)
-six_hours_ago = now - timedelta(hours=6)
+# Count went live 2026-08-16 23:02 Helsinki (EEST, UTC+3) -> 2026-08-16 20:02 UTC
+cutoff = datetime(2026, 8, 16, 20, 2, tzinfo=timezone.utc)
 
 target_matches = []
 for m in matches_data['matches']:
@@ -111,37 +113,47 @@ for m in matches_data['matches']:
     if created_at:
         try:
             dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-            if dt > six_hours_ago:
+            if dt > cutoff:
                 target_matches.append(m)
         except ValueError:
             pass
 
-print(f"Found {len(target_matches)} matches in the last 6 hours.")
+print(f"Found {len(target_matches)} matches since 23:02 Helsinki last night.")
 
 all_rows = []
 
 for m in target_matches:
     match_id = m['id']
-    detail = fetch_json(f"https://game.code.florent.vc/api/matches/{match_id}", token)
-    if not detail: continue
+    detail = None
+    for attempt in range(4):
+        detail = fetch_json(f"https://game.code.florent.vc/api/matches/{match_id}", token)
+        if detail:
+            break
+        time.sleep(1.5 * (attempt + 1))
+    if not detail:
+        print(f"  Giving up on {match_id} after retries")
+        continue
+    time.sleep(0.3)
     
-    team_a = detail.get('teamA', {})
-    team_b = detail.get('teamB', {})
-    
-    if team_a.get('id') == TEAM_ID:
+    match_info = detail.get('match', {})
+
+    if match_info.get('teamAId') == TEAM_ID:
         our_team_enum = florent_replay_pb2.TEAM_A
-        opponent = team_b.get('name', 'Unknown')
-    else:
+        opponent = match_info.get('teamBName', 'Unknown')
+    elif match_info.get('teamBId') == TEAM_ID:
         our_team_enum = florent_replay_pb2.TEAM_B
-        opponent = team_a.get('name', 'Unknown')
+        opponent = match_info.get('teamAName', 'Unknown')
+    else:
+        print(f"  Skipping {match_id}: neither side is us")
+        continue
         
     print(f"Downloading match {match_id} (vs {opponent})...")
-    subprocess.run(["fcode", "match", "replay", match_id], cwd="/tmp", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    
+    subprocess.run(["fcode", "match", "replay", match_id], cwd=REPLAY_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
     for game in detail.get('games', []):
         map_name = game.get('mapName', 'unknown')
         game_num = game.get('gameNumber')
-        replay_path = f"/tmp/{match_id}_game_{game_num}.replay26"
+        replay_path = f"{REPLAY_DIR}/{match_id}_game_{game_num}.replay26"
         if Path(replay_path).exists():
             rows = parse_replay(replay_path, match_id, map_name, opponent, our_team_enum)
             all_rows.extend(rows)

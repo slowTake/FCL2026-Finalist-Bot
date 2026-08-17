@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(time python scripts/mirror_gauntlet.py --bot count --maps antler saga drakkarfjord)",
+      "Bash(tee /tmp/claude-6403/-home-pnurmi-Documents-Projects-teaPot/a5a716c8-4ac1-4002-a778-8cb033b392b9/scratchpad/baseline.txt)",
+      "Bash(time .venv/bin/python scripts/mirror_gauntlet.py --bot count --maps antler saga drakkarfjord)",
+      "Bash(../../.venv/bin/python -)",
+      "Bash(.venv/bin/python scripts/mirror_gauntlet.py --bot count --maps antler saga drakkarfjord)",
+      "Bash(.venv/bin/python /tmp/claude-6403/-home-pnurmi-Documents-Projects-teaPot/a5a716c8-4ac1-4002-a778-8cb033b392b9/scratchpad/multiseed_mirror.py --bot count --maps antler saga drakkarfjord --seeds 5 --tag after)",
+      "Bash(find / -iname \"*.replay26\")",
+      "Bash(find / -iname \"*florent*\" -maxdepth 4)",
+      "Bash(python3 -m py_compile fcv_gauntlet/oracle/oracle.py fcv_gauntlet/oracle/__init__.py)",
+      "Bash(python3 -m fcv_gauntlet.oracle.oracle --status)",
+      "Bash(python3 -m fcv_gauntlet.oracle.oracle)",
+      "Bash(python3 -m py_compile fcv_gauntlet/runner.py fcv_gauntlet/reporting.py scripts/fcv_bot_gauntlet.py)",
+      "Bash(python3 scripts/fcv_bot_gauntlet.py --from-json /tmp/nonexistent.json --oracle)",
+      "Bash(python3 -c ' *)",
+      "Bash(.venv/bin/python *)",
+      "Bash(git fetch *)",
+      "Bash(find / -maxdepth 6 -iname \"fcv\" -type d)",
+      "Bash(.venv/bin/pip list *)",
+      "Bash(xargs -I{} sh -c 'echo {}; cat {}/METADATA 2>/dev/null | grep -i \"Requires-Dist\\\\|fcv\"')"
+    ]
+  }
+}
