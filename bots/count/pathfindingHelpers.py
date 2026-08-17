@@ -301,6 +301,16 @@ def coreRing(corePos: Position) -> list[Position]:
     return ring
 
 
+def coreEdgeRing(corePos: Position) -> list[Position]:
+    """The 8 orthogonally-adjacent ring tiles — coreRing without the 4 diagonal
+    corners. An edge tile sits Manhattan 1 from the 2x2 footprint, a corner
+    Manhattan 2, so the split is a pure arithmetic filter (no engine call).
+
+    Filters coreRing rather than rebuilding, so the edge tiles keep coreRing's
+    order — a caller that relies on that order for tie-breaks sees no shift."""
+    return [t for t in coreRing(corePos) if manhattanToCore(t, corePos) == 1]
+
+
 def beltFacing(a: Position, b: Position) -> Direction | None:
     """Cardinal direction from a to b. None if they aren't orthogonally adjacent."""
     dx, dy = b.x - a.x, b.y - a.y

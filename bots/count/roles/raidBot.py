@@ -124,6 +124,14 @@ def runRaidBot(bot, ct: Controller) -> None:
 # reach the core to repair it or rebuild the line — leaving the sentinels at
 # standoff to grind it down uncontested. Harvesters are not touched here; they
 # get a gunner (guns.placeGunner) and nothing else.
+#
+# Only the 8 orthogonal edge tiles are walled — the 4 diagonal corners are left
+# open (_siege uses coreEdgeRing, not coreRing). A barrier on a corner blocks a
+# diagonal line into the core, which is exactly the line our own turrets fire on
+# (gunner facing allows perfect diagonals; a sentinel's reach covers them), so
+# walling the corners was sealing off our own guns. The tradeoff is 4 gaps a
+# repairing enemy builder can slip through — accepted: supply is still cut,
+# because every feeding belt sits on an edge tile, which we still wall.
 
 # Manhattan-to-core within which the raider switches from travelling to siege
 # work. The 12 core-ring tiles sit at Manhattan 1-2 from the footprint and the
@@ -270,7 +278,13 @@ def _siege(bot, ct: Controller, enemyCore: Position) -> bool:
     if ph.manhattanToCore(pos, enemyCore) > _SIEGE_RADIUS:
         return False
 
-    ringTiles = ph.coreRing(enemyCore)
+    # Edge ring, not the full 12: the 4 diagonal corners are left open on purpose
+    # (see the siege comment block above). This one set feeds the cut loop, the
+    # wall loop and _nextSiegeTile alike, so dropping the corners here keeps the
+    # raider off them entirely — it never walls one and never routes to one — with
+    # no per-tile branch in the hot loops. No belt cut is lost: belts feed the core
+    # cardinally, so a feeding belt is always on an edge, never a diagonal corner.
+    ringTiles = ph.coreEdgeRing(enemyCore)
     canSpend = ct.get_global_resources() >= _SIEGE_MIN_TI
 
     gunners = emplace.enemyGunners(ct)
