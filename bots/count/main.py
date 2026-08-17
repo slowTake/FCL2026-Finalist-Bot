@@ -154,6 +154,13 @@ class Player:
         self._raidWaypoint: Position | None = None
         self._raidWaypointSite: tuple[int, int] | None = None
 
+        # Raider press-core back-off (roles/raidBot.pressCore). Round until which a
+        # raider whose route to the enemy core just failed stops re-running the
+        # ~9ms A*+BFS. Without it, a raider flung outside the enemy core-ring wall
+        # (its committed waypoint now walled off) re-grinds the same dead search
+        # every turn and TLEs. 0 = not backed off. Only ever set on a raider.
+        self._pressCoreBackoffUntil = 0
+
         # Instrumentation (telemetry.py) — None unless COUNT_CPU=1.
         self._cpu = CpuMeter() if CPU_TELEMETRY else None
 

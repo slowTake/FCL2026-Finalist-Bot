@@ -143,6 +143,15 @@ _SIEGE_RADIUS = 3
 # the raider's whole job below that gate.
 _SIEGE_MIN_TI = 15
 
+# How long pressCore holds off re-running the travel search after it found no route
+# to the enemy core. The failed A*+BFS is ~9ms and, left ungated, reruns every turn
+# while the core is unreachable — e.g. after a hostile launcher flings the raider
+# outside the core-ring wall its committed waypoint sits behind. The no-route state
+# won't change on its own, and _siege/requestLaunch still run every turn to catch it
+# clearing, so holding the re-search off this many rounds costs nothing and stops the
+# TLE. On expiry it re-probes once in case the ground opened.
+_PRESS_CORE_BACKOFF_ROUNDS = 25
+
 # How long a tile the raider fled from gunner fire stays barred (kept in
 # bot._siegeDodgeBlacklist). Long enough that a gunner rotating to track can't
 # lure it straight back onto the tile it just left and take the hit on arrival.
@@ -359,17 +368,27 @@ def pressCore(bot, ct: Controller) -> None:
         return  # designated raiders always know the core; nothing to press
 
     if _siege(bot, ct, enemyCore):
+        bot._pressCoreBackoffUntil = 0  # in siege range: the travel problem is solved
         return
     if launcher.requestLaunch(bot, ct, enemyCore):
         return
-    # The enemy core is already the terminal target — there's nothing further
-    # to fall back to, so `stuck` is dropped on the floor here. walkOrRetarget
-    # still did its job internally (clean walkPath/walkGoal/walkAvoid), which
-    # is what keeps this from grinding the same dead search every turn.
-    handled, _stuck = approach(bot, ct, enemyCore)
-    if handled:
+
+    # Back-off. The enemy core is the terminal target — there is nothing to
+    # retarget to — so a raider that currently has no route to it (e.g. flung
+    # outside the core-ring wall) would otherwise re-run the ~9ms A*+BFS every turn
+    # and TLE. The no-route state won't change on its own, and _siege/requestLaunch
+    # above still run every turn to catch it clearing, so once a search comes up
+    # empty we hold off re-searching for a spell. Re-probes when the window expires.
+    if ct.get_current_round() < bot._pressCoreBackoffUntil:
         return
-    advance(bot, ct, enemyCore)
+
+    handled, stuck = approach(bot, ct, enemyCore)
+    if not handled:
+        stuck = advance(bot, ct, enemyCore)
+    # `stuck` is the patience-spent signal; holdReason=="noRoute" catches the earlier
+    # turns too, so the back-off trips on the first failed search, not the fourth.
+    if stuck or bot.holdReason == "noRoute":
+        bot._pressCoreBackoffUntil = ct.get_current_round() + _PRESS_CORE_BACKOFF_ROUNDS
 
 
 def buildSentinel(bot, ct: Controller, site: Position, facing: Direction) -> bool:
@@ -560,7 +579,16 @@ def advance(bot, ct: Controller, site: Position) -> bool:
     def atWaypoint(p: Position) -> bool:
         return p.x == wp.x and p.y == wp.y
 
-    return walkOrRetarget(bot, ct, atWaypoint, wp, ("waypoint", wp.x, wp.y))
+    stuck = walkOrRetarget(bot, ct, atWaypoint, wp, ("waypoint", wp.x, wp.y))
+    if stuck or bot.holdReason == "noRoute":
+        # No route to the committed waypoint from here — it can sit walled off after
+        # a launcher fling drops us outside a wall it's behind, and neither the drift
+        # nor the ledger-based impassable check catches that. Drop it so the next
+        # attempt picks a fresh staging tile instead of re-grinding the same dead
+        # search at the same unreachable tile. (`stuck` = patience spent, which
+        # already cleared the hold; holdReason=="noRoute" catches it mid-patience.)
+        bot._raidWaypoint = None
+    return stuck
 
 
 def _towardTarget(pos: Position, target: Position, budget: int) -> Position:

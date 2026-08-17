@@ -268,12 +268,15 @@ def sentinelLoop(bot, ct: Controller) -> None:
 GUNNER_RANGE_SQ = GameConstants.GUNNER_VISION_RADIUS_SQ
 
 # What a raider drops a gunner on: enemy harvesters (deny the supply) and enemy
-# gunners/sentinels (answer a turret that's shooting us and our investments). Belts
+# gunners/sentinels/launchers (answer a turret that's shooting us and our
+# investments, or a launcher flinging our raiders back off the enemy core). Belts
 # are the raider's job to cut and barrier (roles/raidBot.siege), not to gun, so
-# they're deliberately absent. All three are GUNNER_PRIORITY targets, so gunnerLoop
-# keeps firing on whichever one it's placed against.
-_GUN_TARGET_TYPES = (EntityType.HARVESTER, EntityType.GUNNER, EntityType.SENTINEL)
-_GUN_TURRET_TYPES = (EntityType.GUNNER, EntityType.SENTINEL)
+# they're deliberately absent. All are GUNNER_PRIORITY targets, so gunnerLoop keeps
+# firing on whichever one it's placed against.
+_GUN_TARGET_TYPES = (
+    EntityType.HARVESTER, EntityType.GUNNER, EntityType.SENTINEL, EntityType.LAUNCHER,
+)
+_GUN_TURRET_TYPES = (EntityType.GUNNER, EntityType.SENTINEL, EntityType.LAUNCHER)
 
 # A harvester within this Manhattan range of the enemy core is feeding it directly,
 # so sniping it is top-value supply denial and outranks answering a turret. Past it a

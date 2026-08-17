@@ -434,7 +434,16 @@ def costContext(bot, ct: Controller, profile: str) -> CostContext:
 
 
 def _threatTiles(ct: Controller, hm) -> set[tuple[int, int]]:
-    """Tiles covered by a visible enemy turret. Capped — a builder has 10ms."""
+    """Tiles a visible enemy turret makes dangerous to stand on: a gunner's or
+    sentinel's firing line, or a launcher's grab ring. Capped — a builder has 10ms.
+
+    A launcher is handled separately from the firing turrets. It has no firing line
+    — it picks up an *adjacent* builder and flings it — so what a raider must avoid
+    is its 8 neighbours, added here directly. `get_attackable_tiles_from` for a
+    launcher returns the throw-*landing* disc, which is harmless to stand in and not
+    the thing that grabs us, and it can also reject the stand-in facing and drop the
+    launcher from the set entirely; the explicit grab ring avoids both.
+    """
     out: set[tuple[int, int]] = set()
     myTeam = ct.get_team()
     seen = 0
@@ -448,9 +457,13 @@ def _threatTiles(ct: Controller, hm) -> set[tuple[int, int]]:
             continue
         try:
             tpos = ct.get_position(bid)
-            facing = ct.get_direction(bid) if etype != EntityType.LAUNCHER else Direction.NORTH
-            for tile in ct.get_attackable_tiles_from(tpos, facing, etype):
-                out.add((tile.x, tile.y))
+            if etype == EntityType.LAUNCHER:
+                for n in adjacentTiles(tpos):
+                    out.add((n.x, n.y))
+            else:
+                facing = ct.get_direction(bid)
+                for tile in ct.get_attackable_tiles_from(tpos, facing, etype):
+                    out.add((tile.x, tile.y))
         except Exception:
             continue
         seen += 1
