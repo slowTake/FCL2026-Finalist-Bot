@@ -102,16 +102,40 @@ def visibleHostiles(ct: Controller, priority: dict[EntityType, int]) -> list[tup
     expansion, and the ally/hostile split live — callers bring their own
     reachability test (can_fire for now, can_fire_from for a hypothetical
     facing or pad) and their own tie-break, instead of each reimplementing
-    this scan."""
+    this scan.
+
+    A tile with an enemy building on it is excluded if one of OUR OWN builder
+    bots is standing on that same tile. A builder bot can stack on a building of
+    either team — ours included, e.g. grinding down an enemy belt tile as part
+    of a supply cut (roles/raidBot._siege) — and can_fire/can_fire_from have no
+    team semantics at all: they only ask "is this tile occupied", so the engine
+    resolves a shot at that tile against the unit standing on it, not the
+    building underneath. Without this, a gunner correctly targeting a real
+    hostile tile kills our own builder the moment it parks there to grind that
+    exact building. Confirmed on a live replay: a gunner ground an enemy belt
+    tile our raider had walked onto to sever it, killing the raider in six
+    shots, then — once the raider moved off — resumed hitting the belt itself.
+    Rare (needs a builder parked on a hostile tile inside an own gunner's arc)
+    but fatal every time it happens, so worth the one extra pass over builders."""
     myTeam = ct.get_team()
-    out: list[tuple[Position, EntityType]] = []
+    allyBuilderTiles: set[tuple[int, int]] = set()
+    raw: list[tuple[Position, EntityType]] = []
     for eid in ct.get_nearby_entities():
-        if ct.get_team(eid) == myTeam:
-            continue
         etype = ct.get_entity_type(eid)
+        if ct.get_team(eid) == myTeam:
+            if etype == EntityType.BUILDER_BOT:
+                pos = ct.get_position(eid)
+                allyBuilderTiles.add((pos.x, pos.y))
+            continue
         if etype not in priority:
             continue
-        for tile in hostileTiles(etype, ct.get_position(eid)):
+        raw.append((ct.get_position(eid), etype))
+
+    out: list[tuple[Position, EntityType]] = []
+    for epos, etype in raw:
+        for tile in hostileTiles(etype, epos):
+            if (tile.x, tile.y) in allyBuilderTiles:
+                continue  # our own builder is standing here — it eats the shot
             out.append((tile, etype))
     return out
 
