@@ -137,6 +137,18 @@ def _bestCandidate(here, candidates, priority, reachable):
 # get_current_round().
 IDLE_SELF_DESTRUCT_ROUNDS = 50
 
+# The sentinel counterpart, on a longer clock. A sentinel is the long-range core-
+# siege investment (30 Ti vs a gunner's 20) and legitimately sits with an empty arc
+# for long stretches between waves, so it ages out later than a gunner. Same
+# rationale otherwise: a permanent turret holds a MAX_TEAM_UNITS slot and draws
+# ammo top-up whether or not it ever fires, so a sentinel on a genuinely dead
+# position (its target destroyed, or aimed at ground nothing crosses) is recycled.
+# Keyed on a target on its *fixed arc*, not merely in vision: a sentinel cannot
+# rotate, so a hostile it can never bear on must not keep it alive (this is the one
+# deliberate difference from gunnerLoop, whose visible-keyed clock is correct only
+# because a gunner rotates onto any visible target).
+SENTINEL_IDLE_SELF_DESTRUCT_ROUNDS = 120
+
 
 def gunnerLoop(bot, ct: Controller) -> None:
     """Fire before rotating — turning costs Ti and a tick, so the free option
@@ -206,10 +218,35 @@ def gunnerLoop(bot, ct: Controller) -> None:
 
 def sentinelLoop(bot, ct: Controller) -> None:
     """No rotation — a sentinel's facing is permanent once built."""
+    round_ = ct.get_current_round()
+    here = ct.get_position()
+    hostiles = visibleHostiles(ct, SENTINEL_PRIORITY)
+
+    # Idle recycle, mirroring gunnerLoop on the longer SENTINEL_IDLE_SELF_DESTRUCT_
+    # ROUNDS clock. "Active" is a target on the sentinel's fixed arc — an ammo- and
+    # cooldown-independent can_fire_from against its current facing — NOT a target
+    # merely in vision: a sentinel can't rotate, so an off-arc hostile is one it can
+    # never engage and must not reset the clock. Keying on presence (not shots)
+    # means an ammo-starved sentinel still bearing on a live target is not recycled,
+    # so an empty ammo pool can't wave-destruct the whole ring (see gunnerLoop).
+    # Seeded at birth so a never-targeted sentinel still ages out; checked ahead of
+    # the cooldown gate because self_destruct needs no action and no cooldown.
+    facing = ct.get_direction()
+    onArc = _bestCandidate(
+        here, hostiles, SENTINEL_PRIORITY,
+        lambda p: ct.can_fire_from(here, facing, EntityType.SENTINEL, p),
+    )
+    if bot._sentinelLastActive is None or onArc is not None:
+        bot._sentinelLastActive = round_
+    elif round_ - bot._sentinelLastActive >= SENTINEL_IDLE_SELF_DESTRUCT_ROUNDS:
+        if debug.ENABLED:
+            debug.log("gun", f"sentinel idle self-destruct at {here} "
+                             f"round={round_} lastActive={bot._sentinelLastActive}")
+        ct.self_destruct()
+        return
+
     if ct.get_action_cooldown() != 0:
         return
-    hostiles = visibleHostiles(ct, SENTINEL_PRIORITY)
-    here = ct.get_position()
     target = _bestCandidate(here, hostiles, SENTINEL_PRIORITY, ct.can_fire)
     if target is not None:
         ct.fire(target[0])
@@ -224,11 +261,13 @@ def sentinelLoop(bot, ct: Controller) -> None:
 
 GUNNER_RANGE_SQ = GameConstants.GUNNER_VISION_RADIUS_SQ
 
-# What a gunner is placed to suppress: enemy harvesters — the source of the
-# supply. Belts are the raider's job to cut and barrier (roles/raidBot.siege),
-# not to gun, so they're deliberately absent here. HARVESTER is a GUNNER_PRIORITY
-# target, so gunnerLoop keeps firing on it.
-_GUN_TARGET_TYPES = (EntityType.HARVESTER,)
+# What a raider drops a gunner on: enemy harvesters (deny the supply) and enemy
+# gunners/sentinels (answer a turret that's shooting us and our investments). Belts
+# are the raider's job to cut and barrier (roles/raidBot.siege), not to gun, so
+# they're deliberately absent. All three are GUNNER_PRIORITY targets, so gunnerLoop
+# keeps firing on whichever one it's placed against.
+_GUN_TARGET_TYPES = (EntityType.HARVESTER, EntityType.GUNNER, EntityType.SENTINEL)
+_GUN_TURRET_TYPES = (EntityType.GUNNER, EntityType.SENTINEL)
 
 # Cap on targets probed per turn. The raider runs near the 10ms limit, so the
 # scan is bounded rather than exhaustive — nearest few are the ones in reach.
@@ -361,13 +400,23 @@ def _dropSentinelOn(ct: Controller, target: Position) -> bool:
 
 
 def placeGunner(bot, ct: Controller) -> bool:
-    """Opportunistically plant a gunner to suppress a nearby enemy harvester.
+    """Opportunistically plant a gunner beside a nearby enemy harvester (deny the
+    supply) or enemy turret (answer fire). Surplus-gated like all raider spending,
+    so it never starves the economy to arm the raider.
 
     Cheap early-exits first (this runs every raider turn, and the raider is
     CPU-tight): must be able to build this turn, must be past the surplus gate,
     must afford it. Only then does it scan. Builds on the first adjacent pad from
-    which a gunner bears on an uncovered target; `gunnerLoop` does the aiming and
-    firing thereafter. Returns True iff it built one (consuming the turn).
+    which a gunner bears on an uncovered target — `_dropGunnerOn` skips a target an
+    ally gunner already covers (no stacking a second) and a pad an enemy turret
+    already bears on (no free kill on the newborn), which together are the anti-spam.
+    `gunnerLoop` aims and fires thereafter. Returns True iff it built one (consuming
+    the turn).
+
+    Enemy turrets sort ahead of harvesters, each group nearest-first: a live turret
+    is actively hurting us (runRaidBot answers turret fire before all else), and
+    without the ordering an in-reach turret could be crowded out of the probe cap by
+    nearer harvesters and never answered.
     """
     if ct.get_action_cooldown() != 0:
         return False
@@ -378,17 +427,19 @@ def placeGunner(bot, ct: Controller) -> bool:
 
     myTeam = ct.get_team()
     here = ct.get_position()
-    targets = [
-        ct.get_position(eid)
-        for eid in ct.get_nearby_entities()
-        if ct.get_team(eid) != myTeam
-        and ct.get_entity_type(eid) in _GUN_TARGET_TYPES
-    ]
+    targets: list[tuple[Position, EntityType]] = []
+    for eid in ct.get_nearby_entities():
+        if ct.get_team(eid) == myTeam:
+            continue
+        etype = ct.get_entity_type(eid)
+        if etype not in _GUN_TARGET_TYPES:
+            continue
+        targets.append((ct.get_position(eid), etype))
     if not targets:
         return False
-    targets.sort(key=lambda p: manhattan(here, p))
+    targets.sort(key=lambda pt: (pt[1] not in _GUN_TURRET_TYPES, manhattan(here, pt[0])))
 
-    for target in targets[:_GUN_TARGET_LIMIT]:
+    for target, _etype in targets[:_GUN_TARGET_LIMIT]:
         if _dropGunnerOn(ct, target):
             return True
     return False
@@ -454,16 +505,43 @@ def _nearestCoreThreat(bot, ct: Controller):
     return best, bestType
 
 
+def _defenceAnswers(ttype):
+    """Turret answers to try for a core threat of type `ttype`, best first.
+
+    Each is a `(cost_of, place)` pair: `cost_of(ct)` is what the turret costs now,
+    `place(ct, threat)` builds it on a pad bearing the threat this turn (returning
+    False when nothing bears — its own pad scan decides that).
+
+    A sentinel out-ranges and out-trades an enemy turret, so it leads against a
+    gunner or sentinel; a gunner is cheaper and can retrack a moving target, so it
+    leads against everything mobile. Whichever leads, the other rides as a fallback
+    for one case only: the preferred turret has no pad bearing the threat this turn
+    but the other one does. Answering "faster" means "gets a shot off now", so the
+    fallback fires exactly when the lead's pad scan comes up empty.
+
+    Only gunner/sentinel threats get the sentinel option; a builder or launcher rush
+    is a gunner job (a permanent single-arc sentinel is wasted on a mobile body)."""
+    gunner = (lambda ct: ct.get_gunner_cost(), _dropGunnerOn)
+    sentinel = (lambda ct: ct.get_sentinel_cost(), _dropSentinelOn)
+    if ttype == EntityType.SENTINEL:
+        return (sentinel, gunner)
+    if ttype == EntityType.GUNNER:
+        return (gunner, sentinel)
+    return (gunner,)
+
+
 def defendCore(bot, ct: Controller) -> bool:
     """Home defence: drop a turret on an enemy closing on our core, or move into
-    range so a pad bears on it. True if it acted this turn. A sentinel threat draws
-    our own sentinel (it out-ranges and out-trades a gunner); everything else draws
-    a gunner.
+    range so a pad bears on it. True if it acted this turn. An enemy gunner or
+    sentinel is answered with whichever of our own turrets bears this turn — a
+    sentinel preferred against a sentinel, a gunner against a gunner, the other as a
+    fallback when the preferred one has no bearing pad this turn. Everything else
+    (builder/launcher) draws a gunner.
 
     Gated on affordability only — defence deliberately bypasses the offensive surplus
     gate, because a core under attack is worth spending the bank down for. But if we
-    can't afford the turret at all we bail rather than idle beside the threat: better
-    to go earn than sit there useless.
+    can't afford any answer, or we're at the unit cap, we bail rather than idle
+    beside the threat: neither changes by walking closer, so better to go earn.
 
     Reactive v1: fires only for a threat this builder can see, and never leaves a
     relay/build to run home (it sits below those in runEcoBot)."""
@@ -474,27 +552,28 @@ def defendCore(bot, ct: Controller) -> bool:
         return False
     threat, ttype = found
 
-    # A sentinel out-ranges and out-trades a gunner, so answer an enemy sentinel
-    # with our own; every other threat still draws a gunner. Only the cost gate and
-    # the placement call differ — the walk-and-hold tail below is shared.
-    if ttype == EntityType.SENTINEL:
-        if ct.get_global_resources() < ct.get_sentinel_cost():
-            return False
-        if ct.get_unit_count() >= GameConstants.MAX_TEAM_UNITS:
-            return False
-        if ct.get_action_cooldown() == 0 and _dropSentinelOn(ct, threat):
-            return True
-    else:
-        if ct.get_global_resources() < ct.get_gunner_cost():
-            return False
-        if ct.get_action_cooldown() == 0 and _dropGunnerOn(ct, threat):
-            if debug.ENABLED:
-                debug.log("gun", f"home-defence gunner vs {threat} "
-                                 f"rnd={ct.get_current_round()}")
-            return True
-    # Affordable but not placed (cooldown, or no pad bears yet). Close in and hold
-    # station rather than fall through to seekOre and wander off the threat. walkTo
-    # tracks a moving goal, so a shifting raider stays covered.
+    answers = _defenceAnswers(ttype)
+
+    # Broke for every answer, or at the unit cap: neither is fixed by closing in, so
+    # leave (fall through to seekOre) rather than march home to idle beside a threat
+    # we can't shoot. The cap check now covers both turret kinds — the gunner path
+    # used to lean on can_build failing at the cap while the sentinel path bailed.
+    if ct.get_unit_count() >= GameConstants.MAX_TEAM_UNITS:
+        return False
+    bank = ct.get_global_resources()
+    if all(bank < cost_of(ct) for cost_of, _ in answers):
+        return False
+
+    if ct.get_action_cooldown() == 0:
+        for cost_of, place in answers:
+            if bank >= cost_of(ct) and place(ct, threat):
+                return True
+
+    # Affordable, under the cap, but nothing bore this turn (cooldown, or no pad
+    # bears yet). Close in and hold station rather than fall through to seekOre and
+    # wander off the threat. walkTo tracks a moving goal, so a shifting raider stays
+    # covered. Gunner range is the conservative reach to close to — a sentinel out-
+    # ranges it, so a pad still bears once we're this near.
     def inRange(p: Position) -> bool:
         return p.distance_squared(threat) <= GUNNER_RANGE_SQ
 

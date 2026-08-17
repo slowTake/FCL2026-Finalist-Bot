@@ -101,6 +101,14 @@ class Player:
         # a never-targeted gunner still ages out. Stays None on non-gunner units.
         self._gunnerLastActive: int | None = None
 
+        # Sentinel idle timer (guns.sentinelLoop). Round this sentinel last had a
+        # target on its fixed arc — a sentinel can't rotate, so this is keyed on an
+        # on-arc target (can_fire_from), not merely a visible one. It self-destructs
+        # after guns.SENTINEL_IDLE_SELF_DESTRUCT_ROUNDS with a dead arc. None until
+        # its first loop, which seeds the clock at birth so a never-targeted sentinel
+        # still ages out. Stays None on non-sentinel units.
+        self._sentinelLastActive: int | None = None
+
         # Patience (patience.py)
         self.holdReason: str | None = None
         self.holdTurns = 0
