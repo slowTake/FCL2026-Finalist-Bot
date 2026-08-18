@@ -200,3 +200,113 @@ self.\_builder_turn(ct)
 - run() executes per-unit, every round, for every living unit on the team — branch on ct.get_entity_type() at the top, as in the example above.
 - Each unit gets its own 10ms turn budget; avoid unbounded loops or expensive recomputation over the whole map every round if it can be cached via the communication store or kept cheap.
 - Stay consistent with the API and idioms above rather than inventing methods that don't exist in this reference.
+
+# Standards for building and maintaining a bot
+
+Distilled from baron's 10,400-line collapse and count's rebuild on top of it
+(`bots/baron/docs`, `bots/count/docs/mistakes.md`, `bots/count/docs/roadmap.md`).
+These apply to every bot in `bots/`, not just one.
+
+- **Read order before editing a bot**: this file, then that bot's own
+  `AGENT.md`/`AGENTS.md` (module map + conventions), then its `mistakes.md` /
+  `observations.md` / `CONTEXT.md` if it has them. Per-bot docs record *why*;
+  don't re-derive it from scratch or, worse, contradict it silently.
+- **`hivemind.py` / `vision_v2.py` / `features.py`** (or count's `hivemind/`,
+  which symlinks the same files) **are shared across bots via symlinks into
+  `components/`.** Editing one silently changes every bot that shares it.
+  Raise it first; treat them as frozen unless the user asks otherwise.
+- **One orchestrator per role/phase, calling single-purpose helpers.** Don't
+  grow a role function into a god-function — baron's `logistics.py` +
+  `logistics_helpers.py` reached 2,889 lines this way, with five chained
+  functions to answer one question. Factor a new helper instead.
+- **All "should I give up yet?" logic goes through one shared stall/patience
+  helper** (e.g. count's `patience.py`), not a new ad-hoc counter per call
+  site — baron grew six near-duplicates (`relayStuck`, `motionless`,
+  `ORE_DEADLOCK_TURNS`, ...), and count independently re-invented the same bug
+  twice in one afternoon before consolidating (roadmap.md, 2026-08-18 §5).
+- **Communication-store slots go through one dedicated module that owns the
+  layout** (e.g. `store.py`) — no bare `read_store(n)`/`write_store(n, ...)`
+  integer literals at call sites. Baron's slot layout was documented in three
+  places, in three different and equally wrong ways; the code is truth, and
+  now there's exactly one file that has to agree with it.
+- **A docstring may state its own contract; it may never state who calls
+  it.** Caller claims rot silently as code changes around them.
+- **`except Exception: return` inside `Player.run` is required**, not
+  optional — an escaping exception permanently destroys that unit for the
+  rest of the match, so the handler must never let one through. But it also
+  makes a silent logic bug look identical to a clean run (a bot can mine zero
+  titanium with a gauntlet crash-scan reporting zero crashes). When
+  diagnosing a "nothing happens" bug, temporarily print the traceback to
+  stderr inside the handler, then remove it before committing.
+- **Trust the engine's actual behavior over its docstrings when they
+  disagree.** `is_tile_passable` claims the allied core is standable; it
+  isn't. Instrument and check rather than assume the doc is right.
+- **Memoize only knowledge-derived facts once the knowledge is complete.**
+  Caching a wall-derived answer for an unexplored neighbour bakes in
+  "unknown reads as false" permanently — A* expands frontier tiles precisely
+  when their neighbours are unknown.
+- **Engine constants live in `GameConstants`** (star-exported from `fcode`)
+  — import them rather than hardcoding or, worse, commenting that no
+  constant exists for something that does.
+
+## Testing and regression workflow
+
+- `scripts/bot_gauntlet.py --bot <bot>` — vs `starter`, once per live-pool
+  map; passes only on 15/15 wins, same bar CI runs on changed bots.
+- `scripts/extreme_gauntlet.py --bot <bot>` — vs `starter`, 5 seeds/map;
+  passes only if every match is won.
+- `scripts/mirror_gauntlet.py --bot <bot>` — bot vs itself; no win/loss
+  grading, just a crash scan and side-imbalance report. **This is the only
+  valid determinism/regression diff.** All other gauntlet output, including
+  `bot_gauntlet`/`extreme_gauntlet` results against `starter`, is engine RNG
+  noise: two runs of identical code (even `starter` vs itself) differ in Ti,
+  turn count, and win condition. A single run tells you pass/fail, crashes,
+  and TLE — never attribute an economy change to a diff on the strength of
+  one run's numbers.
+- All three gauntlet scripts default to the bot's **live map pool** (that
+  bot's `features.py` `MAP_ID_TO_NAME`), not everything under `maps/` — pass
+  `--maps` to override.
+- `scripts/zip_bot.py <bot>` packages for league submission from `main.py`'s
+  actual import graph; it also flags unimported `.py` files in the bot
+  dir — a hint you wrote a module and forgot to wire it in.
+- Run `bot_gauntlet.py` locally before pushing; CI runs it automatically on
+  changed bots and only passes at 15/15.
+
+## Live ladder analysis (real overnight games)
+
+Everything above is local gauntlet vs `starter` or self. Separately, the
+league runs our submitted bot against real opponents on the live ladder
+overnight — those matches need their own analysis pass, distinct from
+gauntlet regression, to see how the bot actually does by map and by
+opponent. That tooling lives in `scripts/` alongside the gauntlet scripts:
+
+- `scripts/get_stats.py` — hits the league API (`/api/ladder`,
+  `/api/matches`, `/api/submissions`) for our rank/rating and full match
+  history, and writes a `<active-bot>_performance.md` report to the repo
+  root: win rate and average turns per map, per bot version, and a recent
+  match log with opponent/score/ELO delta. Auth reads the `fcode` CLI's
+  token from `~/.fcode/credentials.json` (same login as `fcode login`) — no
+  separate credentials needed, but map-stat sections are skipped if you
+  aren't logged in.
+- `scripts/create_db.py` — downloads the replays (`fcode match replay
+  <match_id>`) for every match since a cutoff timestamp, decodes them with
+  `florent_replay_pb2`, and samples our build state every 50 turns per game
+  (builder/harvester/conveyor/splitter/gunner/sentinel/barrier/launcher
+  counts, Ti collected/stored) into `scripts/match_observations.csv` — one
+  row per sample, tagged by match, map, and opponent name. This is the raw
+  material for comparing build order and economy pacing across maps and
+  opponents, not just win/loss. **The cutoff timestamp and `REPLAY_DIR` are
+  hardcoded at the top of the script for a specific run** — update both
+  before reusing it (`REPLAY_DIR` in particular points at a session-scoped
+  scratchpad path that won't exist in a new session).
+- `scripts/analyze_replay.py` — quick single-replay logistics-health check
+  (harvester/conveyor/splitter/gunner counts, first-gunner turn, Ti
+  collected, winner) for a one-off replay instead of a full DB pull;
+  currently assumes our team is Team A.
+- `scripts/analyze_maps.py` — parses every `maps/*.map26` for size/wall/ore
+  counts, independent of any match data.
+
+None of this touches CI or the gauntlet pass bar — it's for spotting map- or
+opponent-specific weaknesses in real ladder play (e.g. "we lose on strait
+against gunner-rush opponents but not on antler") that a gauntlet-vs-starter
+run can't surface, since `starter` is one fixed, weak opponent.
