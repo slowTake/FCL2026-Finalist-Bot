@@ -18,6 +18,17 @@ from relays import hijackRelay, relayAbort, relayToHome
 # Not a claim — see observations.md.
 ORE_SPREAD = 4
 
+# The spread only fans across nodes that are near-*equidistant* — this is how much
+# farther than the nearest a node may be and still count as a peer to spread onto,
+# in the detour-aware step units `distTo` returns. A blind `index % ORE_SPREAD`
+# ignored distance and walked a builder 20-30 tiles past a free node because its
+# index landed on a farther rank — and once early builders became the guardian or
+# raiders, the surviving indices stopped covering the nearest ranks at all, so easy
+# close nodes went unworked. Bounding the fan-out to a distance band takes the
+# nearest node whenever the next one is meaningfully farther, while still splitting a
+# genuine spawn cluster. Small: a cluster is tight; anything past it is a real trek.
+SPREAD_BAND = 5
+
 # Manhattan is blind to walls: a node behind one reads as near as an open node at
 # the same beeline distance, but the walk around the wall is longer. Add an estimate
 # of that detour back — each wall tile on the straight line to a node costs a builder
@@ -842,20 +853,37 @@ def rankOre(bot, ct: Controller, distTo) -> tuple[list[Position], list[Position]
     return [ore for _d, ore in ranked], stale
 
 
-def chooseOre(bot, ct: Controller, distTo, index: int) -> Position | None:
-    """Pick out of `rankOre` by `index`, fanning consecutive builders across nodes.
+def _spreadPick(nodes: list[Position], distTo, index: int) -> Position:
+    """Fan `index` across the leading band of near-equidistant `nodes` (nearest
+    first), never skipping a node meaningfully closer than the band.
 
-    The spread is `index % min(len, ORE_SPREAD)` and not a claim — see observations.md
-    under Known gaps. For the pre-spawn guess, `index` is the one the builder about to
-    be spawned will be given (`built + _MYINDEX_OFFSET`, empirically +2 — see
-    observations.md); the guess only predicts where it will head and never reaches the
-    builder.
+    `nodes` is sorted by `distTo`, so the band is a prefix: grow it while the next
+    node is within SPREAD_BAND of the nearest and we are still under ORE_SPREAD. A
+    lone nearest node (everything else a real trek) collapses the band to one, and
+    everyone takes it — a brief race that self-resolves, since the first to build it
+    turns the tile into an own-harvester rankOre then skips."""
+    d0 = distTo(nodes[0])
+    band = 1
+    limit = min(len(nodes), ORE_SPREAD)
+    while band < limit and distTo(nodes[band]) - d0 <= SPREAD_BAND:
+        band += 1
+    return nodes[index % band]
+
+
+def chooseOre(bot, ct: Controller, distTo, index: int) -> Position | None:
+    """Pick out of `rankOre` by `index`, fanning consecutive builders across the
+    near-equidistant leading nodes (see `_spreadPick`) — not a claim, see
+    observations.md under Known gaps.
+
+    For the pre-spawn guess, `index` is the one the builder about to be spawned will
+    be given (`built + _MYINDEX_OFFSET`, empirically +2 — see observations.md); the
+    guess only predicts where it will head and never reaches the builder.
     """
     ranked, stale = rankOre(bot, ct, distTo)
     if ranked:
-        return ranked[index % min(len(ranked), ORE_SPREAD)]
+        return _spreadPick(ranked, distTo, index)
     if stale:
-        return stale[index % min(len(stale), ORE_SPREAD)]
+        return _spreadPick(stale, distTo, index)
     return None
 
 
