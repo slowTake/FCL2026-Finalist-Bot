@@ -12,6 +12,8 @@ it is often the core, which a builder cannot stand on.
 
 from __future__ import annotations
 
+from enum import Enum, auto
+
 from fcode import Controller, EntityType, Position
 
 import pathfindingHelpers as ph
@@ -26,6 +28,17 @@ from patience import (
 from pathing import astarFromSeeds, bfsFromSeeds
 
 _RELAY_MAX_ITERS = 450
+
+
+class _Plan(Enum):
+    """The outcome of planRelay, three-way. A single bool conflated two of these —
+    'already feeding the network' (a real delivery) with the failures — so a failed
+    plan could be mistaken for a completed line and forge a delivery. Kept distinct
+    so a delivery is credited only when the harvester genuinely reaches the network.
+    """
+    ROUTED = auto()     # a path was produced into bot.relayPath; keep laying it
+    CONNECTED = auto()  # harvester already feeds the network; delivered, nothing to lay
+    FAILED = auto()     # no route this turn (no seed / no path / no anchor); NOT delivered
 
 # How many times this relay will re-lay one tile before conceding it. A belt we
 # place and someone else immediately replaces is contention, not progress —
@@ -46,8 +59,17 @@ def relayToHome(bot, ct: Controller) -> bool:
     tile, so the terminal case (anchor = the 2x2 core) needs no special handling
     and a displaced builder self-corrects.
     """
-    if bot.relayPath is None and not planRelay(bot, ct):
-        return relayDone(bot, ct)
+    if bot.relayPath is None:
+        plan = planRelay(bot, ct)
+        if plan is _Plan.CONNECTED:
+            return relayDone(bot, ct)   # harvester feeds the network — a real delivery
+        if plan is _Plan.FAILED:
+            # A plan that failed this turn, NOT a completed line. Marking it delivered
+            # would orphan the harvester and forge guardian eligibility (see
+            # relayAbort). Tear down without the flag and fall through to other work
+            # this turn, exactly as relayDone does on a genuine completion.
+            return relayAbort(bot)
+        # _Plan.ROUTED: bot.relayPath is now set — fall through and lay it.
 
     belts, anchor = bot.relayPath, bot.relayAnchor
     idx = _nextUncovered(bot, ct, belts, anchor)
@@ -123,9 +145,9 @@ def _chainVisiblyIntact(ctx, ct: Controller, hm, belt: Position) -> bool:
     return True
 
 
-def planRelay(bot, ct: Controller) -> bool:
+def planRelay(bot, ct: Controller) -> _Plan:
     if bot.corePos is None:
-        return False
+        return _Plan.FAILED
 
     ctx = ph.costContext(bot, ct, "relay")
     ctx.avoid |= bot.relayAvoid
@@ -136,7 +158,7 @@ def planRelay(bot, ct: Controller) -> bool:
     # leaves the harvester with nothing beside it.
     source = bot.relayFrom
     if source is None:
-        return False
+        return _Plan.FAILED
 
     # Merge onto a proven-network tile, or a bare ally belt we can't see to be cut.
     # buildNetwork only recognises a belt whose whole chain to the core this unit
@@ -152,6 +174,12 @@ def planRelay(bot, ct: Controller) -> bool:
     def mergeable(p: Position) -> bool:
         if ctx.isNetworkMember(p):
             return True
+        if bot._strictRelay:
+            # Reconnection: the harvester's own abandoned partial line reads intact
+            # from a distance (_chainVisiblyIntact trusts an out-of-vision chain), so
+            # a strict relay merges only onto a proven network member and re-lays a
+            # real route home instead of trusting the dead end.
+            return False
         if not ph.isAllyBelt(ct, bot.hivemind, p):
             return False
         key = (p.x, p.y)
@@ -161,14 +189,14 @@ def planRelay(bot, ct: Controller) -> bool:
         return hit
 
     if any(mergeable(n) for n in ph.orthogonalTiles(source)):
-        return False  # already feeding a belt; nothing to lay
+        return _Plan.CONNECTED  # already feeding a belt; nothing to lay, but delivered
 
     seeds = [
         n for n in ph.orthogonalTiles(source)
         if ph.beltPassable(ct, bot.hivemind, n) and (n.x, n.y) not in ctx.avoid
     ]
     if not seeds:
-        return False
+        return _Plan.FAILED
 
     # Goal is a tile *beside* a merge target, not on it: you can't build on an
     # occupied belt, and the target is frequently the core, which no builder can
@@ -204,18 +232,18 @@ def planRelay(bot, ct: Controller) -> bool:
 
     if not path:
         bot.relayPath = None
-        return False
+        return _Plan.FAILED
 
     anchor = next(
         (n for n in ph.orthogonalTiles(path[-1]) if mergeable(n)), None
     )
     if anchor is None:
         bot.relayPath = None
-        return False
+        return _Plan.FAILED
 
     bot.relayPath = path
     bot.relayAnchor = anchor
-    return True
+    return _Plan.ROUTED
 
 
 def _replanAvoiding(bot, ct: Controller, tile: Position) -> bool:
@@ -229,7 +257,7 @@ def _replanAvoiding(bot, ct: Controller, tile: Position) -> bool:
         return False  # never blacklist the thing we are trying to reach
     bot.relayAvoid.add((tile.x, tile.y))
     bot.relayPath = None
-    if not planRelay(bot, ct):
+    if planRelay(bot, ct) is not _Plan.ROUTED:
         return False
     clearHold(bot)  # new route, fresh patience — otherwise the spent counter
     return True     # would abandon it again immediately
@@ -276,8 +304,10 @@ def layBelt(bot, ct: Controller, tile: Position, nextTile: Position) -> bool:
         if _contested(bot, tile):
             # We have already rebuilt this tile more than anyone should need to.
             # Someone else wants it facing another way; taking it again just
-            # restarts the loop. Concede the tile and go around.
-            return _replanAvoiding(bot, ct, tile) or relayDone(bot, ct)
+            # restarts the loop. Concede the tile and go around; if we can't route
+            # around it the line is unfinished — abort WITHOUT claiming a delivery
+            # (relayAbort, not relayDone: a conceded relay never reached the core).
+            return _replanAvoiding(bot, ct, tile) or relayAbort(bot)
         # ours, pointing the wrong way. destroy is free and costs no cooldown,
         # so the replacement goes down in the same turn.
         if not ct.can_destroy(tile):
@@ -400,12 +430,43 @@ def clearRelayObstruction(bot, ct: Controller, target: Position, *, hostile: boo
     return holdTask(bot, "blocked", BLOCKED_WAIT_TURNS)
 
 
-def relayDone(bot, ct: Controller) -> bool:
+def _teardownRelay(bot) -> None:
+    """Drop all per-relay state. Shared by relayDone (a delivery) and relayAbort
+    (not a delivery) so the field list lives in one place."""
     bot.relayPath = None
     bot.relayAnchor = None
     bot.relayFrom = None
     bot.relayAvoid.clear()
     bot.relayRebuilds.clear()
     bot.inRelay = False
+    bot._strictRelay = False
+
+
+def relayAbort(bot) -> bool:
+    """End a relay that did NOT deliver — the delivery-free sibling of relayDone.
+
+    Same teardown and hold reset, but never sets `_harvesterDelivered`: for a relay
+    that ended without the harvester reaching the network (a plan that failed, a
+    contested tile conceded with no route around, a builder flung off its lane).
+    Marking such a relay delivered would orphan the harvester — nothing re-relays it
+    (rankOre skips own-harvester tiles, repairCoreBelts is barrier-only) — and forge
+    the builder's guardian eligibility, which keys on that flag.
+
+    Returns False, as relayDone does, so the builder falls through to its next task
+    this turn rather than idling.
+    """
+    _teardownRelay(bot)
+    clearHold(bot)
+    return False
+
+
+def relayDone(bot, ct: Controller) -> bool:
+    _teardownRelay(bot)
+    # This builder has now delivered a harvester end-to-end (income flowing), so it
+    # is eligible to take guardian duty. Reached only on a genuine completion: every
+    # belt placed (relayToHome's idx-is-None exit) or the harvester already feeding
+    # the network (planRelay -> CONNECTED). A failed plan goes to relayAbort instead,
+    # which leaves this flag untouched. See roles/guardianBot, which reads the flag.
+    bot._harvesterDelivered = True
     clearHold(bot)
     return False

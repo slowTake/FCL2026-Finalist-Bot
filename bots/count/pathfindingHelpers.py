@@ -20,8 +20,9 @@ _ORTHO = ((0, -1), (1, 0), (0, 1), (-1, 0))
 # barrier is fifteen. Tuned by play, not by feel.
 
 BASE = 10
-NETWORK = 1           # riding our own rails is near-free, but never 0 —
-                      # a 0 would drop MIN_STEP_COST to 0 and force Dijkstra
+NETWORK = 1           # riding our own rails is near-free, but never 0 — a 0-cost
+                      # step (via the MIN_STEP_COST floor in costFn) would stall the
+                      # search: no progress pressure across free tiles.
 CHOKE = 50
 ENEMY_FIRE = 500
 ENEMY_BELT = 50
@@ -39,9 +40,10 @@ UNIT = 30             # a builder in the way *can* move on its own, but at 8 the
                       # around allies, not a wall (walk profile only — a belt can
                       # still be built straight under one).
 
-# Cheapest step any profile can produce. The A* heuristic is scaled by this so
-# it stays admissible; deriving it here means changing a weight above can never
-# silently break the search.
+# Cheapest step any profile can produce: the floor costFn clamps to, so no tile is
+# ever free (a 0-cost step would stall the search). Derived here, not hardcoded, so
+# changing a weight above can never silently drop it below what costFn assumes. The
+# walk heuristic no longer scales by this — see makeHeuristic.
 MIN_STEP_COST = min(NETWORK, BASE)
 
 _ENEMY_BUILD_COST = {
@@ -299,6 +301,16 @@ def coreRing(corePos: Position) -> list[Position]:
     return ring
 
 
+def coreEdgeRing(corePos: Position) -> list[Position]:
+    """The 8 orthogonally-adjacent ring tiles — coreRing without the 4 diagonal
+    corners. An edge tile sits Manhattan 1 from the 2x2 footprint, a corner
+    Manhattan 2, so the split is a pure arithmetic filter (no engine call).
+
+    Filters coreRing rather than rebuilding, so the edge tiles keep coreRing's
+    order — a caller that relies on that order for tie-breaks sees no shift."""
+    return [t for t in coreRing(corePos) if manhattanToCore(t, corePos) == 1]
+
+
 def beltFacing(a: Position, b: Position) -> Direction | None:
     """Cardinal direction from a to b. None if they aren't orthogonally adjacent."""
     dx, dy = b.x - a.x, b.y - a.y
@@ -422,7 +434,16 @@ def costContext(bot, ct: Controller, profile: str) -> CostContext:
 
 
 def _threatTiles(ct: Controller, hm) -> set[tuple[int, int]]:
-    """Tiles covered by a visible enemy turret. Capped — a builder has 10ms."""
+    """Tiles a visible enemy turret makes dangerous to stand on: a gunner's or
+    sentinel's firing line, or a launcher's grab ring. Capped — a builder has 10ms.
+
+    A launcher is handled separately from the firing turrets. It has no firing line
+    — it picks up an *adjacent* builder and flings it — so what a raider must avoid
+    is its 8 neighbours, added here directly. `get_attackable_tiles_from` for a
+    launcher returns the throw-*landing* disc, which is harmless to stand in and not
+    the thing that grabs us, and it can also reject the stand-in facing and drop the
+    launcher from the set entirely; the explicit grab ring avoids both.
+    """
     out: set[tuple[int, int]] = set()
     myTeam = ct.get_team()
     seen = 0
@@ -436,9 +457,13 @@ def _threatTiles(ct: Controller, hm) -> set[tuple[int, int]]:
             continue
         try:
             tpos = ct.get_position(bid)
-            facing = ct.get_direction(bid) if etype != EntityType.LAUNCHER else Direction.NORTH
-            for tile in ct.get_attackable_tiles_from(tpos, facing, etype):
-                out.add((tile.x, tile.y))
+            if etype == EntityType.LAUNCHER:
+                for n in adjacentTiles(tpos):
+                    out.add((n.x, n.y))
+            else:
+                facing = ct.get_direction(bid)
+                for tile in ct.get_attackable_tiles_from(tpos, facing, etype):
+                    out.add((tile.x, tile.y))
         except Exception:
             continue
         seen += 1
@@ -560,11 +585,21 @@ def makeCostFn(ctx: CostContext):
 
 
 def makeHeuristic(goal: Position | None):
-    """Scaled by MIN_STEP_COST so it stays admissible whatever the weights become."""
+    """Weighted A*: scaled by BASE (the open-ground step cost), not MIN_STEP_COST.
+
+    MIN_STEP_COST (= NETWORK = 1) keeps the estimate admissible but leaves it ~10x
+    below the true per-step cost on open ground, so A* barely prefers the goal
+    direction and its frontier grows ~2*D**2 — the search-cost class behind the
+    builder TLEs on large explored maps (docs/observations.md, Performance). Scaling
+    by BASE trades a guaranteed-optimal path — not a requirement against a
+    hand-tuned cost table — for a directed search that expands far fewer nodes. It
+    overestimates only where a route rides our own rails (NETWORK < BASE), which a
+    cross-map walk rarely does.
+    """
     if goal is None:
         return None
 
     def h(pos: Position) -> int:
-        return (abs(pos.x - goal.x) + abs(pos.y - goal.y)) * MIN_STEP_COST
+        return (abs(pos.x - goal.x) + abs(pos.y - goal.y)) * BASE
 
     return h

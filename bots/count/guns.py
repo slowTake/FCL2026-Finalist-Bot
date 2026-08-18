@@ -23,7 +23,6 @@ import emplace
 import pathfindingHelpers as ph
 import store
 from movement import walkTo
-from patience import BLOCKED_WAIT_TURNS, holdTask
 from pathing import manhattan
 from respawn import MAX_BUILDERS
 
@@ -73,9 +72,15 @@ SENTINEL_PRIORITY: dict[EntityType, int] = {
     EntityType.BARRIER: 5,
 }
 
-# rotate()'s own Ti cost — skip the 8-direction scan outright if we can't
-# afford to act on whatever it finds.
-_ROTATE_MIN_TI = GameConstants.GUNNER_ROTATE_COST
+# Surplus floor for rotating a gunner, NOT the raw cost. Turning costs
+# GUNNER_ROTATE_COST (10 Ti) and a tick every time, so a gunner allowed to re-aim
+# whenever it can merely *afford* the cost churns the bank tracking targets it may
+# never get a shot at. Require a real buffer above the cost before spending a
+# rotation. Ported from baron (its GUNNER_ROTATE_MIN_TI = 50, tuned in a top-20
+# bot) as a starting point — not yet re-tuned against count's own economy. Also
+# gates the 8-direction scan: below this we skip it outright, since we could not act
+# on whatever it found.
+GUNNER_ROTATE_MIN_TI = 50
 
 
 # --- Targeting ----------------------------------------------------------
@@ -97,16 +102,40 @@ def visibleHostiles(ct: Controller, priority: dict[EntityType, int]) -> list[tup
     expansion, and the ally/hostile split live — callers bring their own
     reachability test (can_fire for now, can_fire_from for a hypothetical
     facing or pad) and their own tie-break, instead of each reimplementing
-    this scan."""
+    this scan.
+
+    A tile with an enemy building on it is excluded if one of OUR OWN builder
+    bots is standing on that same tile. A builder bot can stack on a building of
+    either team — ours included, e.g. grinding down an enemy belt tile as part
+    of a supply cut (roles/raidBot._siege) — and can_fire/can_fire_from have no
+    team semantics at all: they only ask "is this tile occupied", so the engine
+    resolves a shot at that tile against the unit standing on it, not the
+    building underneath. Without this, a gunner correctly targeting a real
+    hostile tile kills our own builder the moment it parks there to grind that
+    exact building. Confirmed on a live replay: a gunner ground an enemy belt
+    tile our raider had walked onto to sever it, killing the raider in six
+    shots, then — once the raider moved off — resumed hitting the belt itself.
+    Rare (needs a builder parked on a hostile tile inside an own gunner's arc)
+    but fatal every time it happens, so worth the one extra pass over builders."""
     myTeam = ct.get_team()
-    out: list[tuple[Position, EntityType]] = []
+    allyBuilderTiles: set[tuple[int, int]] = set()
+    raw: list[tuple[Position, EntityType]] = []
     for eid in ct.get_nearby_entities():
-        if ct.get_team(eid) == myTeam:
-            continue
         etype = ct.get_entity_type(eid)
+        if ct.get_team(eid) == myTeam:
+            if etype == EntityType.BUILDER_BOT:
+                pos = ct.get_position(eid)
+                allyBuilderTiles.add((pos.x, pos.y))
+            continue
         if etype not in priority:
             continue
-        for tile in hostileTiles(etype, ct.get_position(eid)):
+        raw.append((ct.get_position(eid), etype))
+
+    out: list[tuple[Position, EntityType]] = []
+    for epos, etype in raw:
+        for tile in hostileTiles(etype, epos):
+            if (tile.x, tile.y) in allyBuilderTiles:
+                continue  # our own builder is standing here — it eats the shot
             out.append((tile, etype))
     return out
 
@@ -136,6 +165,18 @@ def _bestCandidate(here, candidates, priority, reachable):
 # a live target is NOT recycled (see gunnerLoop). Measured in engine rounds via
 # get_current_round().
 IDLE_SELF_DESTRUCT_ROUNDS = 50
+
+# The sentinel counterpart, on a longer clock. A sentinel is the long-range core-
+# siege investment (30 Ti vs a gunner's 20) and legitimately sits with an empty arc
+# for long stretches between waves, so it ages out later than a gunner. Same
+# rationale otherwise: a permanent turret holds a MAX_TEAM_UNITS slot and draws
+# ammo top-up whether or not it ever fires, so a sentinel on a genuinely dead
+# position (its target destroyed, or aimed at ground nothing crosses) is recycled.
+# Keyed on a target on its *fixed arc*, not merely in vision: a sentinel cannot
+# rotate, so a hostile it can never bear on must not keep it alive (this is the one
+# deliberate difference from gunnerLoop, whose visible-keyed clock is correct only
+# because a gunner rotates onto any visible target).
+SENTINEL_IDLE_SELF_DESTRUCT_ROUNDS = 150
 
 
 def gunnerLoop(bot, ct: Controller) -> None:
@@ -173,7 +214,7 @@ def gunnerLoop(bot, ct: Controller) -> None:
         ct.fire(onFacing[0])
         return
 
-    if ct.get_global_resources() < _ROTATE_MIN_TI:
+    if ct.get_global_resources() < GUNNER_ROTATE_MIN_TI:
         return
 
     # can_fire accounts for ammo; can_fire_from explicitly does not. Without
@@ -206,10 +247,35 @@ def gunnerLoop(bot, ct: Controller) -> None:
 
 def sentinelLoop(bot, ct: Controller) -> None:
     """No rotation — a sentinel's facing is permanent once built."""
+    round_ = ct.get_current_round()
+    here = ct.get_position()
+    hostiles = visibleHostiles(ct, SENTINEL_PRIORITY)
+
+    # Idle recycle, mirroring gunnerLoop on the longer SENTINEL_IDLE_SELF_DESTRUCT_
+    # ROUNDS clock. "Active" is a target on the sentinel's fixed arc — an ammo- and
+    # cooldown-independent can_fire_from against its current facing — NOT a target
+    # merely in vision: a sentinel can't rotate, so an off-arc hostile is one it can
+    # never engage and must not reset the clock. Keying on presence (not shots)
+    # means an ammo-starved sentinel still bearing on a live target is not recycled,
+    # so an empty ammo pool can't wave-destruct the whole ring (see gunnerLoop).
+    # Seeded at birth so a never-targeted sentinel still ages out; checked ahead of
+    # the cooldown gate because self_destruct needs no action and no cooldown.
+    facing = ct.get_direction()
+    onArc = _bestCandidate(
+        here, hostiles, SENTINEL_PRIORITY,
+        lambda p: ct.can_fire_from(here, facing, EntityType.SENTINEL, p),
+    )
+    if bot._sentinelLastActive is None or onArc is not None:
+        bot._sentinelLastActive = round_
+    elif round_ - bot._sentinelLastActive >= SENTINEL_IDLE_SELF_DESTRUCT_ROUNDS:
+        if debug.ENABLED:
+            debug.log("gun", f"sentinel idle self-destruct at {here} "
+                             f"round={round_} lastActive={bot._sentinelLastActive}")
+        ct.self_destruct()
+        return
+
     if ct.get_action_cooldown() != 0:
         return
-    hostiles = visibleHostiles(ct, SENTINEL_PRIORITY)
-    here = ct.get_position()
     target = _bestCandidate(here, hostiles, SENTINEL_PRIORITY, ct.can_fire)
     if target is not None:
         ct.fire(target[0])
@@ -224,15 +290,34 @@ def sentinelLoop(bot, ct: Controller) -> None:
 
 GUNNER_RANGE_SQ = GameConstants.GUNNER_VISION_RADIUS_SQ
 
-# What a gunner is placed to suppress: enemy harvesters — the source of the
-# supply. Belts are the raider's job to cut and barrier (roles/raidBot.siege),
-# not to gun, so they're deliberately absent here. HARVESTER is a GUNNER_PRIORITY
-# target, so gunnerLoop keeps firing on it.
-_GUN_TARGET_TYPES = (EntityType.HARVESTER,)
+# What a raider drops a gunner on: enemy harvesters (deny the supply) and enemy
+# gunners/sentinels/launchers (answer a turret that's shooting us and our
+# investments, or a launcher flinging our raiders back off the enemy core). Belts
+# are the raider's job to cut and barrier (roles/raidBot.siege), not to gun, so
+# they're deliberately absent. All are GUNNER_PRIORITY targets, so gunnerLoop keeps
+# firing on whichever one it's placed against.
+_GUN_TARGET_TYPES = (
+    EntityType.HARVESTER, EntityType.GUNNER, EntityType.SENTINEL, EntityType.LAUNCHER,
+)
+_GUN_TURRET_TYPES = (EntityType.GUNNER, EntityType.SENTINEL, EntityType.LAUNCHER)
+
+# A harvester within this Manhattan range of the enemy core is feeding it directly,
+# so sniping it is top-value supply denial and outranks answering a turret. Past it a
+# harvester is ordinary economic denial and ranks below a live turret threat. Without
+# this tier a turret ring around the enemy core fills the probe cap and the core's own
+# harvesters never get probed. Measured to the 2x2 footprint edge (ph.manhattanToCore).
+_CORE_SNIPE_RADIUS = 5
 
 # Cap on targets probed per turn. The raider runs near the 10ms limit, so the
 # scan is bounded rather than exhaustive — nearest few are the ones in reach.
 _GUN_TARGET_LIMIT = 3
+
+# Consecutive turns defendCore will stand in range of a threat that no pad of ours
+# bears on before giving up and going back to real work. A few turns is worth it —
+# a cooldown expires, a moving threat drifts into a bearing — but past that the
+# geometry is simply not there, and the builder is more use elsewhere than keeping
+# a vigil. See the note at the hold in defendCore for the counter this replaces.
+_DEFEND_STUCK_TURNS = 4
 
 
 def _gunFacing(pad: Position, target: Position) -> Direction | None:
@@ -266,15 +351,14 @@ def _dropGunnerOn(ct: Controller, target: Position) -> bool:
     """Build a gunner on the first orthogonal pad of the calling unit that bears on
     `target`, unless an ally gunner already covers it. True iff it built one.
 
-    The shared pad-scan behind both placeGunner (harvester denial) and defendCore
-    (home defence); the callers differ only in which targets they pass and which
-    economy gate they clear first.
+    A pure pad-scan: the target set and the economy gate are the caller's to
+    decide, so the same scan serves both harvester denial and home defence.
 
     A pad already covered by a visible enemy turret's current facing is skipped:
     bearing on the target is not enough if the turret we're answering (or one
     beside it) shoots the pad the moment the gunner appears. `turrets` is fetched
-    lazily — this runs every raider turn via placeGunner, and most turns no pad
-    bears at all, so the scan shouldn't be paid before it's needed."""
+    lazily — most turns no pad bears at all, so the scan shouldn't be paid before
+    it's needed."""
     myTeam = ct.get_team()
     if _coveredByAllyGunner(ct, myTeam, target):
         return False
@@ -301,6 +385,40 @@ def _dropGunnerOn(ct: Controller, target: Position) -> bool:
                 )
             return True
     return False
+
+
+def buildSiegeGunner(ct: Controller, pad: Position, enemyCore: Position) -> bool:
+    """Build a gunner on `pad` (a core edge-ring gap) facing into the enemy core,
+    if it bears and the pad isn't already under an enemy turret's live line. True
+    iff it built one.
+
+    The raider plants these in place of a barrier when the core ring shows no belt
+    to sever and no enemy builder to lock out (`raidBot._coreClear`): a gunner
+    occupies the tile and seals the gap exactly as a wall would, and grinds the
+    core besides. Unlike `_dropGunnerOn` there is no ally-coverage de-dup — each
+    ring gap gets its own gunner, so a sentinel already on the core mustn't veto
+    the ring — and the pad is given, not scanned: the caller has the gap tile."""
+    target = next((f for f in ph.coreFootprint(enemyCore)
+                   if manhattan(pad, f) == 1), None)  # the footprint tile pad abuts
+    if target is None:
+        return False
+    facing = _gunFacing(pad, target)
+    if facing is None:
+        return False
+    if not ct.can_fire_from(pad, facing, EntityType.GUNNER, target):
+        return False
+    if emplace.siteInDirectTurretLos(ct, pad, emplace.enemyTurrets(ct)):
+        return False
+    if not ct.can_build_gunner(pad, facing):
+        return False
+    ct.build_gunner(pad, facing)
+    if debug.ENABLED:
+        debug.log(
+            "gun",
+            f"siege-gunner at {pad} facing {facing} -> core "
+            f"rnd={ct.get_current_round()}",
+        )
+    return True
 
 
 def _coveredByAllySentinel(ct: Controller, myTeam, target: Position) -> bool:
@@ -360,14 +478,27 @@ def _dropSentinelOn(ct: Controller, target: Position) -> bool:
     return True
 
 
-def placeGunner(bot, ct: Controller) -> bool:
-    """Opportunistically plant a gunner to suppress a nearby enemy harvester.
+def placeGunner(bot, ct: Controller, enemyCore: Position | None) -> bool:
+    """Opportunistically plant a gunner beside a nearby enemy harvester (deny the
+    supply) or enemy turret (answer fire). Surplus-gated like all raider spending,
+    so it never starves the economy to arm the raider. `enemyCore` is passed in (the
+    caller already knows it) rather than imported, to dodge the raid->guns cycle.
 
     Cheap early-exits first (this runs every raider turn, and the raider is
     CPU-tight): must be able to build this turn, must be past the surplus gate,
     must afford it. Only then does it scan. Builds on the first adjacent pad from
-    which a gunner bears on an uncovered target; `gunnerLoop` does the aiming and
-    firing thereafter. Returns True iff it built one (consuming the turn).
+    which a gunner bears on an uncovered target — `_dropGunnerOn` skips a target an
+    ally gunner already covers (no stacking a second) and a pad an enemy turret
+    already bears on (no free kill on the newborn), which together are the anti-spam.
+    `gunnerLoop` aims and fires thereafter. Returns True iff it built one (consuming
+    the turn).
+
+    Targets rank in three tiers, nearest-first within each: (1) a harvester within
+    _CORE_SNIPE_RADIUS of the enemy core — feeding it directly, so cutting it is the
+    top-value snipe; (2) an enemy gunner/sentinel actively hurting us; (3) a harvester
+    elsewhere. The tiers stop a turret ring around the enemy core from crowding the
+    core's own harvesters off the probe cap, while a live turret still outranks an
+    ordinary far harvester.
     """
     if ct.get_action_cooldown() != 0:
         return False
@@ -378,17 +509,30 @@ def placeGunner(bot, ct: Controller) -> bool:
 
     myTeam = ct.get_team()
     here = ct.get_position()
-    targets = [
-        ct.get_position(eid)
-        for eid in ct.get_nearby_entities()
-        if ct.get_team(eid) != myTeam
-        and ct.get_entity_type(eid) in _GUN_TARGET_TYPES
-    ]
+    targets: list[tuple[Position, EntityType]] = []
+    for eid in ct.get_nearby_entities():
+        if ct.get_team(eid) == myTeam:
+            continue
+        etype = ct.get_entity_type(eid)
+        if etype not in _GUN_TARGET_TYPES:
+            continue
+        targets.append((ct.get_position(eid), etype))
     if not targets:
         return False
-    targets.sort(key=lambda p: manhattan(here, p))
 
-    for target in targets[:_GUN_TARGET_LIMIT]:
+    def rank(pt: tuple[Position, EntityType]) -> tuple[int, int]:
+        pos, etype = pt
+        if etype in _GUN_TURRET_TYPES:
+            group = 1
+        elif enemyCore is not None and ph.manhattanToCore(pos, enemyCore) <= _CORE_SNIPE_RADIUS:
+            group = 0
+        else:
+            group = 2
+        return group, manhattan(here, pos)
+
+    targets.sort(key=rank)
+
+    for target, _etype in targets[:_GUN_TARGET_LIMIT]:
         if _dropGunnerOn(ct, target):
             return True
     return False
@@ -403,25 +547,49 @@ def placeGunner(bot, ct: Controller) -> bool:
 
 
 # --- Home defence -----------------------------------------------------------
-# First-cut guardian: an eco-bot near our own core drops a gunner on an enemy
-# closing on it. Reactive and vision-limited — only a bot that can already see the
-# threat responds, and it never abandons a relay/build to march home (it sits below
-# those in runEcoBot). What it buys is the mechanic: a rush at the core draws fire
-# instead of nothing. gunnerLoop aims and fires the gunner after; the idle
-# self-destruct recycles it once the threat clears.
+# First-cut guardian mechanic, now shared by the standing guardian and the eco
+# path: drop a gunner on an enemy closing on our core. Reactive and vision-limited
+# — only a bot that can see the threat responds. On the eco path it also never
+# abandons a relay/build to march home (it sits below those in runEcoBot); the
+# guardian has no competing work, so it is always home to run it. gunnerLoop aims
+# and fires the placed gunner after; the idle self-destruct recycles it once the
+# threat clears.
 
 # Mirrors ecoBot.CORE_DEFENSE_RADIUS by value, kept local so guns does not depend on
 # a role module (raidBot depends on guns, not the other way).
 CORE_THREAT_RADIUS = 8
 
-# Enemy types that actually threaten the core — mobile attackers and turrets. A
-# harvester or the enemy core never comes to kill ours, so neither counts.
+# Enemy types that always threaten the core — turrets that shell it, and the
+# launcher that flings bodies at it. A harvester or the enemy core never comes to
+# kill ours, so neither counts. BUILDER_BOT is deliberately absent here and handled
+# separately: a builder is a threat only when it is actually grinding our
+# structures, not merely passing within radius (_builderThreateningStructure gates
+# it). Placing a gunner on a builder running by wasted the gun on 1-2 shots before
+# it left range — the case this split exists to stop.
 _CORE_THREAT_TYPES = (
-    EntityType.BUILDER_BOT,
     EntityType.GUNNER,
     EntityType.SENTINEL,
     EntityType.LAUNCHER,
 )
+
+
+def _builderThreateningStructure(bot, ct: Controller, epos: Position) -> bool:
+    """Is the enemy builder at `epos` in position to grind one of our buildings?
+
+    True iff one of ours sits orthogonally adjacent. Build and fire are
+    adjacent-only, so a builder attacking (or walling off, or repairing over) our
+    belt / harvester / core / turret must be standing next to it. That adjacency
+    is our stand-in for "is it occupied attacking vs just passing by": the engine
+    exposes no enemy action state — get_action_cooldown/get_move_cooldown take no
+    entity id, and there is no target/order getter — so we read position, not
+    intent. A builder merely crossing open ground near the core has nothing of
+    ours beside it and is correctly ignored; it would leave a freshly-placed
+    gunner's range in a shot or two, exactly the wasted investment this prevents."""
+    for n in ph.orthogonalTiles(epos):
+        t = ph.readTile(ct, bot.hivemind, n)
+        if t.etype is not None and not t.enemy:
+            return True
+    return False
 
 
 def _nearestCoreThreat(bot, ct: Controller):
@@ -429,7 +597,13 @@ def _nearestCoreThreat(bot, ct: Controller):
     (Position, EntityType), or None. Distance is to the core — the thing we protect
     — so the threat closest to home is engaged first. The type rides along so
     defendCore can answer a sentinel with a sentinel and everything else with a
-    gunner."""
+    gunner.
+
+    An enemy builder counts only when `_builderThreateningStructure` reads it as
+    grinding one of our buildings; a builder merely passing the core is never a
+    target (that gun got 1-2 shots and left). The gate is unconditional rather
+    than a caller's opt-in, so an attacking builder is answered by whoever can see
+    it — including before any guardian exists — and a passing one by nobody."""
     core = bot.corePos
     if core is None:
         return None
@@ -441,11 +615,16 @@ def _nearestCoreThreat(bot, ct: Controller):
         if ct.get_team(eid) == myTeam:
             continue
         etype = ct.get_entity_type(eid)
-        if etype not in _CORE_THREAT_TYPES:
+        isTurret = etype in _CORE_THREAT_TYPES
+        isBuilder = etype == EntityType.BUILDER_BOT
+        if not (isTurret or isBuilder):
             continue
         p = ct.get_position(eid)
         d = ph.manhattanToCore(p, core)
         if d > CORE_THREAT_RADIUS:
+            continue
+        # Adjacency scan only for an in-radius builder — cheaper checks first.
+        if isBuilder and not _builderThreateningStructure(bot, ct, p):
             continue
         if bestD is None or d < bestD:
             best, bestType, bestD = p, etype, d
@@ -454,19 +633,55 @@ def _nearestCoreThreat(bot, ct: Controller):
     return best, bestType
 
 
+def _defenceAnswers(ttype):
+    """Turret answers to try for a core threat of type `ttype`, best first.
+
+    Each is a `(cost_of, place)` pair: `cost_of(ct)` is what the turret costs now,
+    `place(ct, threat)` builds it on a pad bearing the threat this turn (returning
+    False when nothing bears — its own pad scan decides that).
+
+    A sentinel out-ranges and out-trades an enemy turret, so it leads against a
+    gunner or sentinel; a gunner is cheaper and can retrack a moving target, so it
+    leads against everything mobile. Whichever leads, the other rides as a fallback
+    for one case only: the preferred turret has no pad bearing the threat this turn
+    but the other one does. Answering "faster" means "gets a shot off now", so the
+    fallback fires exactly when the lead's pad scan comes up empty.
+
+    A launcher gets the sentinel lead too — it is a *stationary* building, so the
+    "wasted on a mobile body" caveat that keeps a sentinel off a builder does not
+    apply, and a launcher is exactly what a sentinel is best against: a permanent
+    target hit from beyond the reach of the nuisance builder that plants and repairs
+    it (a close-in gunner is what that builder grinds down). A builder rush stays a
+    gunner job — it is genuinely mobile, and a permanent single-arc sentinel is
+    wasted the moment it steps off the arc."""
+    gunner = (lambda ct: ct.get_gunner_cost(), _dropGunnerOn)
+    sentinel = (lambda ct: ct.get_sentinel_cost(), _dropSentinelOn)
+    if ttype in (EntityType.SENTINEL, EntityType.LAUNCHER):
+        return (sentinel, gunner)
+    if ttype == EntityType.GUNNER:
+        return (gunner, sentinel)
+    return (gunner,)
+
+
 def defendCore(bot, ct: Controller) -> bool:
     """Home defence: drop a turret on an enemy closing on our core, or move into
-    range so a pad bears on it. True if it acted this turn. A sentinel threat draws
-    our own sentinel (it out-ranges and out-trades a gunner); everything else draws
-    a gunner.
+    range so a pad bears on it. True if it acted this turn. An enemy gunner or
+    sentinel is answered with whichever of our own turrets bears this turn — a
+    sentinel preferred against a sentinel, a gunner against a gunner, the other as a
+    fallback when the preferred one has no bearing pad this turn. A launcher draws a
+    sentinel (it is stationary — the long-range answer that stays out of reach of the
+    builder repairing it), gunner as fallback. An enemy builder grinding one of our
+    buildings draws a gunner — a builder merely passing the core does not (see
+    _nearestCoreThreat / _builderThreateningStructure).
 
     Gated on affordability only — defence deliberately bypasses the offensive surplus
     gate, because a core under attack is worth spending the bank down for. But if we
-    can't afford the turret at all we bail rather than idle beside the threat: better
-    to go earn than sit there useless.
+    can't afford any answer, or we're at the unit cap, we bail rather than idle
+    beside the threat: neither changes by walking closer, so better to go earn.
 
-    Reactive v1: fires only for a threat this builder can see, and never leaves a
-    relay/build to run home (it sits below those in runEcoBot)."""
+    Reactive: fires only for a threat the calling unit can already see, and it
+    claims no priority of its own — where this sits relative to a caller's other
+    work is that caller's ladder to order."""
     if bot.corePos is None:
         return False
     found = _nearestCoreThreat(bot, ct)
@@ -474,33 +689,62 @@ def defendCore(bot, ct: Controller) -> bool:
         return False
     threat, ttype = found
 
-    # A sentinel out-ranges and out-trades a gunner, so answer an enemy sentinel
-    # with our own; every other threat still draws a gunner. Only the cost gate and
-    # the placement call differ — the walk-and-hold tail below is shared.
-    if ttype == EntityType.SENTINEL:
-        if ct.get_global_resources() < ct.get_sentinel_cost():
-            return False
-        if ct.get_unit_count() >= GameConstants.MAX_TEAM_UNITS:
-            return False
-        if ct.get_action_cooldown() == 0 and _dropSentinelOn(ct, threat):
-            return True
-    else:
-        if ct.get_global_resources() < ct.get_gunner_cost():
-            return False
-        if ct.get_action_cooldown() == 0 and _dropGunnerOn(ct, threat):
-            if debug.ENABLED:
-                debug.log("gun", f"home-defence gunner vs {threat} "
-                                 f"rnd={ct.get_current_round()}")
-            return True
-    # Affordable but not placed (cooldown, or no pad bears yet). Close in and hold
-    # station rather than fall through to seekOre and wander off the threat. walkTo
-    # tracks a moving goal, so a shifting raider stays covered.
+    answers = _defenceAnswers(ttype)
+
+    # Broke for every answer, or at the unit cap: neither is fixed by closing in, so
+    # leave (fall through to seekOre) rather than march home to idle beside a threat
+    # we can't shoot. The cap check now covers both turret kinds — the gunner path
+    # used to lean on can_build failing at the cap while the sentinel path bailed.
+    if ct.get_unit_count() >= GameConstants.MAX_TEAM_UNITS:
+        return False
+    bank = ct.get_global_resources()
+    if all(bank < cost_of(ct) for cost_of, _ in answers):
+        return False
+
+    if ct.get_action_cooldown() == 0:
+        for cost_of, place in answers:
+            if bank >= cost_of(ct) and place(ct, threat):
+                return True
+
+    # Affordable, under the cap, but nothing bore this turn (cooldown, or no pad
+    # bears yet). Close in and hold station rather than fall through to seekOre and
+    # wander off the threat. walkTo tracks a moving goal, so a shifting raider stays
+    # covered. Gunner range is the conservative reach to close to — a sentinel out-
+    # ranges it, so a pad still bears once we're this near.
     def inRange(p: Position) -> bool:
         return p.distance_squared(threat) <= GUNNER_RANGE_SQ
 
     if walkTo(bot, ct, inRange, threat, ("defend", threat.x, threat.y)):
+        bot._defendStuckTurns = 0
         return True
-    return holdTask(bot, "defendHold", BLOCKED_WAIT_TURNS)
+
+    # walkTo returned False: we are already in range (it reports arrival that way)
+    # but no pad bore on the threat this turn, or there is no route to it. Standing
+    # here is only worth it if it is about to become useful.
+    #
+    # This used to be `holdTask(bot, "defendHold", BLOCKED_WAIT_TURNS)`, which reads
+    # like a 4-turn patience but never expired: walkTo calls clearHold on arrival, so
+    # every turn in range wiped holdReason, holdTask then saw a *changed* reason,
+    # reset the counter to 0, and returned 1 <= 4 — true forever. A builder that
+    # could never get a bearing kept a vigil beside the threat until something killed
+    # it. Measured on a drumlin mirror: a builder held at distance 2 from an enemy
+    # gunner from r121 until it died at r130. Own counter, so nothing else's
+    # clearHold can reset it.
+    bot._defendStuckTurns += 1
+    if bot._defendStuckTurns > _DEFEND_STUCK_TURNS:
+        bot._defendStuckTurns = 0
+        return False
+
+    # Self-preservation outranks the vigil: never hold station on a tile an enemy
+    # gunner is already aimed at. We are not answering the threat from here anyway —
+    # that is why we are in this branch — so waiting on that tile buys a free shot
+    # and nothing else. Computed only in this branch, which is rare, so the scan
+    # isn't paid on the turns defence actually works.
+    if emplace.tileUnderGunnerFire(ct, ct.get_position(), emplace.enemyGunners(ct)):
+        bot._defendStuckTurns = 0
+        return False
+
+    return True
 
 
 # --- Ammo ---------------------------------------------------------------

@@ -98,9 +98,11 @@ def _predictTarget(bot, ct: Controller) -> Position | None:
     builder, which runs `pickOre` from scratch on its first turn exactly as it always
     has. Being wrong costs one suboptimal tile, never a commitment.
 
-    `read_store(store.BUILDERS) + 1` is the index the newborn will be allocated, so this reproduces
-    the `ORE_SPREAD` fan-out that builder is itself going to apply — which is what
-    makes consecutive builders leave by different faces of the core.
+    `built + _MYINDEX_OFFSET` (== `read_store(store.BUILDERS) + 2`) is the index the
+    newborn will be allocated — the spawn write has already landed by the time it
+    reads, so the count is inclusive of itself; see observations.md on the empirical
+    +2 offset. Reproducing the `ORE_SPREAD` fan-out at that index is what makes
+    consecutive builders leave by different faces of the core.
 
     Only attempted on a fingerprinted map. `ORE_LOCATIONS` is what gives the core the
     whole ore field at turn 0 (hivemind loads it once `map_id` is known); without it
@@ -125,7 +127,7 @@ def _predictTarget(bot, ct: Controller) -> Position | None:
     def distTo(ore: Position) -> int:
         return ph.manhattanToCore(ore, core)
 
-    return chooseOre(bot, ct, distTo, ct.read_store(store.BUILDERS) + 1)
+    return chooseOre(bot, ct, distTo, myIndex)
 
 
 def _towards(target: Position):

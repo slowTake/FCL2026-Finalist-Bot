@@ -99,7 +99,8 @@ and would be expensive to relearn.
   (they move on their own) and blacklists anything else.
 - **Builders are born facing where they are going, but are told nothing.** The core
   runs the same `chooseOre` the newborn will run — with the index that builder is
-  about to be allocated (`read_store(4) + 1`) — and spawns it on the ring tile
+  about to be allocated (`read_store(4) + 2`; the spawn write has already landed, so
+  the count includes the newborn — see the `my_index` "+2" entry below) — and spawns it on the ring tile
   nearest that node. The guess is then discarded: nothing goes in the store, the
   builder re-picks from scratch, so a wrong guess costs one tile and never a
   commitment. Spread comes free from `ORE_SPREAD`, which already fans consecutive
@@ -117,6 +118,14 @@ and would be expensive to relearn.
   drakkarfjord. A single run is therefore a real measurement, not a sample — do not
   dismiss an unwelcome result as seed noise, and do not average runs expecting the
   spread to mean anything.
+- **`bot_gauntlet` (vs starter) is the exception, and fjordgate is its coin flip.**
+  The starter bot calls an unseeded Python RNG, so vs-starter results are not
+  reproducible run to run. fjordgate is the map where that matters: its two cores
+  sit close together, so the match genuinely swings on its own. Measured across
+  repeated runs it flipped W/L on unchanged code, on both sides of a change, and
+  still flipped with TLE disabled (`--tle 1000`) — so it is map geometry, not a
+  timeout. A 14/15 whose only loss is fjordgate is a pass. If some *other* map
+  flips, sample it ~8x against stashed baseline code before believing it.
 - **The distance metric is Manhattan, everywhere.** Builders move cardinal-only and
   belts chain cardinally, so both travel time and belt cost are 4-connected — the
   metric has to match the connectivity or the threshold built on it is anisotropic.
@@ -143,6 +152,26 @@ things were the difference between 30x30 maps working and timing out:
 
 Caches hang off the hivemind or Player instance, never module globals — units
 share a subinterpreter and module state would leak between them.
+
+Two later fixes, both found by profiling raider TLEs on valkyrie (30x30) via a
+replay's `botOutput.execTimeUs`/`tled` — the raider's search cost climbed from
+~2ms to ~9ms/turn as the map filled in, TLEing turn after turn once it reached
+the enemy core:
+
+- **Raider travel replanned every step.** `raidBot.advance` recomputed its
+  ~8-tile staging waypoint each turn, so `walkTo`'s goal key churned and a full
+  A* ran per tile of the whole crossing. Committing the waypoint on
+  `bot._raidWaypoint` until it is reached lets `walkTo` cache one hop and follow
+  it — measured ~74% fewer raider travel replans. `approach` never had the bug
+  because it keys by a stable site.
+- **The A* heuristic was ~10x too weak.** `makeHeuristic` scaled Manhattan by
+  `MIN_STEP_COST` (= `NETWORK` = 1) to stay admissible, but a normal step costs
+  `BASE` (10), so the estimate barely steered the search and the frontier grew
+  ~2*D**2 (Dijkstra-like) — the cost class behind *every* builder's search
+  ballooning on an explored map, eco included. Scaling by `BASE` (weighted A*,
+  deliberately inadmissible — path optimality is not required against a
+  hand-tuned cost table) makes the walk search directed. Relay planning runs
+  without a heuristic, so its optimality is untouched.
 
 ## Known asymmetry
 
