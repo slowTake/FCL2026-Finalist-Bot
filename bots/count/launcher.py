@@ -223,7 +223,19 @@ def requestLaunch(bot, ct: Controller, target: Position | None) -> bool:
     pos = ct.get_position()
     if manhattan(pos, target) <= LAUNCH_MIN_GAP:
         return False
-    if _adjacentAllyLauncher(bot, ct) is None:
+    launcher = _adjacentAllyLauncher(bot, ct)
+    if launcher is None:
+        return False
+
+    # An apron launcher (planted at the enemy core, within ENEMY_APRON_RADIUS of it)
+    # is a pure denial turret: runLauncher takes the away-repel branch and returns
+    # before it ever reads LAUNCH_REQUEST, so a request posted to it can never be
+    # served. Posting anyway strands us on a hold for a throw that isn't coming, and
+    # overwrites a genuinely-waiting builder's request in the single shared slot.
+    # Same geometry test runLauncher uses to pick that branch — applied to the
+    # launcher's tile, not ours, since that is the body whose behaviour we predict.
+    enemyCore = raid.enemyCorePos(bot, ct)
+    if enemyCore is not None and ph.manhattanToCore(launcher, enemyCore) <= ENEMY_APRON_RADIUS:
         return False
 
     store.put(ct, store.LAUNCH_REQUEST, packRequest(pos, target))
