@@ -161,10 +161,13 @@ def _bestCandidate(here, candidates, priority, reachable):
 # or nothing ever crossed its arc. It still holds a slot and draws ammo top-up
 # (topUpAmmo banks a reload per built turret), so recycle it rather than leave it
 # parked; the raider drops a fresh one when a new harvester is worth suppressing.
+# A dead-arc gunner isn't bearing on anything near the enemy core either, so — as
+# with the sentinel clock below — a short grace period beats compounding
+# slot/ammo costs on a position that was never going to pay for itself again.
 # Keyed on target-in-range, not shots-fired, so an ammo-starved gunner sitting on
 # a live target is NOT recycled (see gunnerLoop). Measured in engine rounds via
 # get_current_round().
-IDLE_SELF_DESTRUCT_ROUNDS = 50
+IDLE_SELF_DESTRUCT_ROUNDS = 15
 
 # The sentinel counterpart. Previously ran on a longer clock than the gunner's on
 # the theory that a core-siege investment (30 Ti vs a gunner's 20) legitimately
