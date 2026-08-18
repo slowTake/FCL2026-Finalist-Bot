@@ -73,12 +73,13 @@ class Player:
         self.oreTarget: Position | None = None
         self.oreSkip: dict[tuple[int, int], int] = {}
         # Lowest HP this builder has driven an enemy barrier sitting on a claimed
-        # ore node to, tile -> (low HP, turn) (ecoBot.buildHarvester via
-        # _barrierRepaired). Barrier-grind is otherwise a stateless re-fire, so an
-        # enemy repairing the barrier as fast as we cut would trap the builder
-        # bleeding Ti on a node it can never free; when the low stops improving we
-        # give the node up via oreSkip and move on. Per-unit and self-healing, same
-        # as oreSkip. Empty on any unit that never grinds an ore barrier.
+        # ore node to, tile -> (low HP, consecutive stalled checks) — see
+        # patience.stallCheck (ecoBot.buildHarvester via _barrierRepaired).
+        # Barrier-grind is otherwise a stateless re-fire, so an enemy repairing the
+        # barrier as fast as we cut would trap the builder bleeding Ti on a node it
+        # can never free; when the low stops improving we give the node up via
+        # oreSkip and move on. Per-unit and self-healing, same as oreSkip. Empty on
+        # any unit that never grinds an ore barrier.
         self._oreGrindLow: dict[tuple[int, int], tuple[int, int]] = {}
         # Fling detection (ecoBot._handleFling). Position at the start of this
         # unit's last eco turn, to spot an external >1-tile displacement (an enemy
@@ -208,12 +209,18 @@ class Player:
         # it re-fires an adjacent enemy belt every turn it can, so an enemy that
         # repairs the belt as fast as we grind it drains our Ti (2/shot) forever
         # for no net damage — a losing trade. _beltGrindLow tracks the lowest HP
-        # this raider has driven each belt tile to, and the round it hit that low;
-        # when the low stops improving for _BELT_STALL_TURNS the belt is being
-        # out-repaired, so we bar it in _beltGaveUp (tile -> round barred) and move
-        # on. Temporary and per-unit, same as the blacklists above: it self-heals
-        # on _BELT_GIVEUP_MEMORY_TURNS so a belt the enemy stops tending is
-        # re-probed. Both empty on any unit that never sieges.
+        # this raider has driven each belt tile to, and how many consecutive
+        # engaged looks it's held there (patience.stallCheck); once that reaches
+        # _BELT_STALL_TURNS the belt is being out-repaired, so we bar it in
+        # _beltGaveUp (tile -> round barred) and move on. Temporary and per-unit,
+        # same as the blacklists above: _beltGaveUp self-heals on
+        # _BELT_GIVEUP_MEMORY_TURNS so a belt the enemy stops tending is
+        # re-probed; _beltGrindLow is cleared (patience.stallForget) the next
+        # time this raider looks at a tile that's no longer a live enemy belt,
+        # so a later rebuild is judged fresh rather than against a stale low —
+        # best-effort, since a tile it never revisits keeps a stale entry until
+        # the next thing that overwrites it. Both empty on any unit that never
+        # sieges.
         self._beltGrindLow: dict[tuple[int, int], tuple[int, int]] = {}
         self._beltGaveUp: dict[tuple[int, int], int] = {}
 

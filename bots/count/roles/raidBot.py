@@ -25,7 +25,7 @@ import pathfindingHelpers as ph
 import raid
 import store
 from movement import walkOrRetarget, walkTo
-from patience import BLOCKED_WAIT_TURNS, clearHold, holdTask
+from patience import BLOCKED_WAIT_TURNS, clearHold, holdTask, stallCheck, stallForget
 from pathing import manhattan
 
 # Far enough to make progress, short enough that one A* stays inside budget.
@@ -185,13 +185,14 @@ _SIEGE_UNREACHABLE_MEMORY_TURNS = 20
 # Belt-cut give-up thresholds (kept in bot._beltGrindLow / bot._beltGaveUp). The
 # belt-cut loop fires at an adjacent enemy belt every turn it can; with no
 # progress check, an enemy that repairs the belt as fast as we grind it bleeds us
-# 2 Ti/shot forever. _BELT_STALL_TURNS is how long we keep firing without driving
-# the belt to a new low HP before ruling it out-repaired and moving on — long
-# enough to break a belt we're genuinely winning (a 20 HP belt is ~10 unopposed
-# shots), short enough to cap the wasted Ti at a bad trade. _BELT_GIVEUP_MEMORY
-# _TURNS is how long the tile then stays barred before we re-probe it, so a belt
-# the enemy stops tending is picked back up — matching the self-healing window on
-# the siege blacklists above.
+# 2 Ti/shot forever. _BELT_STALL_TURNS is how many consecutive engaged looks (via
+# patience.stallCheck, not elapsed rounds — see there for why) we tolerate without
+# the belt's HP hitting a new low before ruling it out-repaired and moving on —
+# long enough to break a belt we're genuinely winning (a 20 HP belt is ~10
+# unopposed shots), short enough to cap the wasted Ti at a bad trade.
+# _BELT_GIVEUP_MEMORY_TURNS is how long the tile then stays barred before we
+# re-probe it, so a belt the enemy stops tending is picked back up — matching the
+# self-healing window on the siege blacklists above.
 _BELT_STALL_TURNS = 11
 _BELT_GIVEUP_MEMORY_TURNS = 25
 
@@ -199,10 +200,14 @@ _BELT_GIVEUP_MEMORY_TURNS = 25
 def _siegeTileNeedsWork(bot, ct: Controller, tile: Position) -> bool:
     """True if this core-ring tile is either an enemy belt to cut or an open gap
     to wall. Already-barriered tiles, our own turrets, walls, ore, and occupied
-    tiles are all 'done' and skipped."""
+    tiles are all 'done' and skipped. A belt in bot._beltGaveUp (ruled out-repaired
+    by the cut loop) is also 'done' for targeting purposes — otherwise the nearest
+    tile 'needing work' is one this raider has explicitly sworn off, and it parks
+    beside it doing nothing for the whole give-up window instead of circling to
+    real work elsewhere on the ring."""
     t = ph.readTile(ct, bot.hivemind, tile)
     if t.enemy and t.etype in ph.BELT_TYPES:
-        return True  # incoming belt to sever
+        return (tile.x, tile.y) not in bot._beltGaveUp  # incoming belt to sever
     if t.etype is None and not t.wall and not t.ore and not t.builder:
         return True  # open gap to wall in
     return False
@@ -457,43 +462,45 @@ def _siege(bot, ct: Controller, enemyCore: Position) -> bool:
             if manhattan(pos, t) != 1:
                 continue
             tile = ph.readTile(ct, bot.hivemind, t)
-            if tile.enemy and tile.etype in ph.BELT_TYPES and ct.can_fire(t):
-                key = (t.x, t.y)
-                # Already ruled out-repaired within the give-up window: don't
-                # re-open the trade. Skip it as a cut target and let the loop try
-                # another edge / fall through to reposition.
-                if key in bot._beltGaveUp:
-                    continue
-                # Give-up check: only bleed Ti into a belt we're actually grinding
-                # down. Track the lowest HP we've driven this belt to; if firing
-                # stops setting new lows for _BELT_STALL_TURNS the enemy is
-                # repairing it as fast as we cut, so bar it and move on. If HP is
-                # unreadable (no building id), fall through and fire as before.
-                bid = ct.get_tile_building_id(t)
-                hp = ct.get_hp(bid) if bid is not None else None
-                if hp is not None:
-                    rnd = ct.get_current_round()
-                    low, lowRnd = bot._beltGrindLow.get(key, (hp + 1, rnd))
-                    if hp < low:
-                        bot._beltGrindLow[key] = (hp, rnd)
-                    elif rnd - lowRnd >= _BELT_STALL_TURNS:
-                        bot._beltGaveUp[key] = rnd
-                        bot._beltGrindLow.pop(key, None)
-                        if debug.ENABLED:
-                            debug.log("raidBot", f"siege-cut-giveup {t} hp={hp} "
-                                                 f"stalled>={_BELT_STALL_TURNS} rnd={rnd}")
-                        continue
-                ct.fire(t)
+            key = (t.x, t.y)
+            if not (tile.enemy and tile.etype in ph.BELT_TYPES):
+                # Not a live enemy belt right now (destroyed, rebuilt as something
+                # else, or captured) — forget any grind memory from a previous belt
+                # here so a later rebuild on this tile is judged fresh, not given up
+                # on sight against a stale low from the one we already killed.
+                stallForget(bot._beltGrindLow, key)
+                continue
+            if not ct.can_fire(t):
+                continue
+            # Already ruled out-repaired within the give-up window: don't re-open
+            # the trade. Skip it as a cut target — _siegeTileNeedsWork also treats
+            # it as done, so the reposition step below won't park beside it either.
+            if key in bot._beltGaveUp:
+                continue
+            # Give-up check: only bleed Ti into a belt we're actually grinding
+            # down. If HP is unreadable (no building id), fall through and fire as
+            # before.
+            bid = ct.get_tile_building_id(t)
+            hp = ct.get_hp(bid) if bid is not None else None
+            if hp is not None and stallCheck(bot._beltGrindLow, key, hp, _BELT_STALL_TURNS):
+                bot._beltGaveUp[key] = ct.get_current_round()
+                stallForget(bot._beltGrindLow, key)
                 if debug.ENABLED:
-                    debug.log("raidBot", f"siege-cut {pos}->{t} rnd={ct.get_current_round()}")
-                return True
+                    debug.log("raidBot", f"siege-cut-giveup {t} hp={hp} "
+                                         f"stalled>={_BELT_STALL_TURNS} rnd={ct.get_current_round()}")
+                continue
+            ct.fire(t)
+            if debug.ENABLED:
+                debug.log("raidBot", f"siege-cut {pos}->{t} rnd={ct.get_current_round()}")
+            return True
         # A clear core (no belt to sever, no enemy builder to lock out in current
         # vision) means a wall would seal nothing and a launcher has no builders to
         # fling — so against a build-nothing rush the raider goes gunners-only:
         # no launcher, no barrier fallback, just gunners to grind the core (or
         # nothing this turn and retry once funded). Read once per action turn now,
-        # since it gates both the launcher and the wall below; the cheap belt-cut
-        # path above returns first, so it never pays for this read.
+        # since it gates both the launcher and the wall below; a successful cut
+        # above still returns before this, but a belt skipped as given-up or
+        # unfireable falls through and pays for it, same as an all-sealed ring.
         coreClear = _coreClear(bot, ct, enemyCore)
         # 1.5) Embed the one apron launcher in the ring, in place of a barrier on
         # the enemy-homeward edge tile — surplus-gated, so it never displaces the

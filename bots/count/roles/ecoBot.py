@@ -9,7 +9,7 @@ import heal
 import launcher
 import pathfindingHelpers as ph
 from movement import exploreStep, walkTo
-from patience import BLOCKED_WAIT_TURNS, clearHold, holdTask, waitTi
+from patience import BLOCKED_WAIT_TURNS, clearHold, holdTask, stallCheck, stallForget, waitTi
 import store
 from relays import hijackRelay, relayAbort, relayToHome
 
@@ -527,12 +527,17 @@ def buildHarvester(bot, ct: Controller) -> bool:
         bot.oreTarget = None
         return hijackRelay(bot, ct, ore)
     if t.etype == EntityType.BARRIER and t.enemy:
-        # Being out-repaired: the barrier's HP has stalled, so the enemy is mending
-        # it as fast as we grind. Give the node up (oreSkip holds it off for
-        # ORE_SKIP_TURNS, then it's re-probed) and re-pick rather than bleed Ti.
-        if _barrierRepaired(bot, ct, ore):
+        # Only a turn we're actually about to shoot counts as an engaged look —
+        # patience.stallCheck wants that, and a builder merely holding (broke,
+        # off-cooldown check aside) shouldn't advance the stall clock toward
+        # giving up a barrier it never got to contest.
+        if ct.can_fire(ore) and _barrierRepaired(bot, ct, ore):
+            # Being out-repaired: the barrier's HP has stalled, so the enemy is
+            # mending it as fast as we grind. Give the node up (oreSkip holds it
+            # off for ORE_SKIP_TURNS, then it's re-probed) and re-pick rather than
+            # bleed Ti.
             _skipOre(bot, ore)
-            bot._oreGrindLow.pop((ore.x, ore.y), None)
+            stallForget(bot._oreGrindLow, (ore.x, ore.y))
             bot.oreTarget = None
             if debug.ENABLED:
                 debug.log("ore", f"barrier repaired, skip ore {ore} "
@@ -550,7 +555,7 @@ def buildHarvester(bot, ct: Controller) -> bool:
     # No enemy barrier on the node now (cleared, or never there): drop any grind
     # memory so a barrier that later reappears here is judged fresh, not against a
     # stale low from a previous grind (which would skip it immediately).
-    bot._oreGrindLow.pop((ore.x, ore.y), None)
+    stallForget(bot._oreGrindLow, (ore.x, ore.y))
 
     if waitTi(bot, ct, ct.get_harvester_cost()):
         return True
@@ -861,18 +866,15 @@ def _worthClearing(bot, ore: Position) -> bool:
 
 def _barrierRepaired(bot, ct: Controller, ore: Position) -> bool:
     """True if grinding the barrier on `ore` has stopped making progress — its HP
-    hasn't hit a new low for ORE_BARRIER_STALL_TURNS, i.e. the enemy repairs it as
-    fast as we cut. Keeps grinding a barrier we're actually breaking (HP still
-    falling). HP unreadable (no building id) reads as not-stalled, so we fall
-    through and grind as before."""
+    hasn't hit a new low for ORE_BARRIER_STALL_TURNS consecutive engaged looks
+    (patience.stallCheck — a count of checks, not elapsed turns, so a builder
+    flung or retargeted off the node mid-grind doesn't return to an instant false
+    give-up), i.e. the enemy repairs it as fast as we cut. Keeps grinding a barrier
+    we're actually breaking (HP still falling). HP unreadable (no building id)
+    reads as not-stalled, so we fall through and grind as before."""
     bid = ct.get_tile_building_id(ore)
     if bid is None:
         return False
     hp = ct.get_hp(bid)
     key = (ore.x, ore.y)
-    turn = bot.hivemind.global_turn
-    low, lowTurn = bot._oreGrindLow.get(key, (hp + 1, turn))
-    if hp < low:
-        bot._oreGrindLow[key] = (hp, turn)
-        return False
-    return turn - lowTurn >= ORE_BARRIER_STALL_TURNS
+    return stallCheck(bot._oreGrindLow, key, hp, ORE_BARRIER_STALL_TURNS)
