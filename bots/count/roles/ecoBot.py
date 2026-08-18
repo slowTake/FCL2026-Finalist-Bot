@@ -78,6 +78,13 @@ FLING_JUMP_MAX = 6
 # the source is meaningless there and the tracker never runs mid-relay. Tunable.
 STALL_NO_PROGRESS_TURNS = 30
 
+# How long reconnectOrphan waits between attempts on a harvester it couldn't reroute
+# home (a launcher still covers every approach, or no route exists yet). Bounds the
+# retry to one relay-plan every this-many turns rather than one every turn — the
+# re-search-every-turn cost the pressCore/TLE work warns against — while still giving
+# the blocking launcher time to be answered between tries. Tunable.
+RECONNECT_RETRY_TURNS = 30
+
 
 def runEcoBot(bot, ct: Controller) -> None:
     # An eco-builder that has delivered a harvester grabs guardian duty if the
@@ -135,6 +142,12 @@ def runEcoBot(bot, ct: Controller) -> None:
     if repairCoreBelts(bot, ct):
         return
 
+    # Re-relay one of our own harvesters whose line was abandoned mid-build (a
+    # launcher fling, a death) and now feeds nothing — nobody else ever returns to
+    # it (rankOre skips own-harvester tiles, repairCoreBelts is barrier-only).
+    if reconnectOrphan(bot, ct):
+        return
+
     if seekOre(bot, ct):
         return
 
@@ -179,6 +192,12 @@ def _handleFling(bot, ct: Controller) -> None:
     # Thrown away from the goal by a hostile launcher: concede the node.
     _skipOre(bot, goal)
     if bot.inRelay:
+        # Remember the harvester we were relaying (goal == relayFrom here) so we come
+        # back to reconnect it once the launcher is gone — conceding alone orphans it
+        # (nobody re-targets an own harvester). Delay the first retry so we don't walk
+        # straight back into a launcher that is still live.
+        bot._orphanHarvester = goal
+        bot._orphanNextTry = ct.get_current_round() + RECONNECT_RETRY_TURNS
         _concedeRelay(bot)
     bot.oreTarget = None
     clearHold(bot)
@@ -382,6 +401,86 @@ def _finishRepair(bot, ct: Controller) -> bool:
 
     _clearRepair(bot)  # already filled (ally belt), or the enemy replaced it — done
     return False
+
+
+# ---------------------------------------------------------------------------
+# Orphan reconnection — re-relay an own harvester whose line was abandoned
+# ---------------------------------------------------------------------------
+
+
+def _launcherGrabTiles(bot, ct: Controller) -> set[tuple[int, int]]:
+    """The 8-neighbourhoods of every visible enemy launcher — the tiles from which it
+    grabs and flings a builder. A reconnection relay hard-avoids these so its new line
+    routes around a launcher still standing, rather than back into the same fling.
+    Threat-*cost* alone (makeCostFn) isn't enough: it prices the grab ring dear but
+    still routes through it when that's the only way to the core."""
+    me = ct.get_team()
+    out: set[tuple[int, int]] = set()
+    for bid in ct.get_nearby_buildings():
+        if ct.get_team(bid) == me:
+            continue
+        if ct.get_entity_type(bid) != EntityType.LAUNCHER:
+            continue
+        for n in ph.adjacentTiles(ct.get_position(bid)):
+            out.add((n.x, n.y))
+    return out
+
+
+def reconnectOrphan(bot, ct: Controller) -> bool:
+    """Re-relay the harvester this builder was flung off before its line reached the
+    core. Conceding a flung relay (via `_handleFling`) leaves the harvester feeding
+    nothing, and nobody else returns to it: `rankOre` skips own-harvester tiles, and
+    `repairCoreBelts` only reconnects a line an enemy *barrier* cut, not one that was
+    never finished. So the builder that built it remembers it and comes back.
+
+    Retried on a cooldown (`RECONNECT_RETRY_TURNS`), not every turn, so a harvester
+    still walled off by a live launcher isn't re-planned every turn (the
+    re-search-every-turn cost). Each attempt hard-avoids any launcher grab ring in
+    view, so it either routes around the fling lane or fails cleanly and waits — the
+    common case being the launcher gets answered and destroyed, after which the next
+    attempt routes home normally.
+    """
+    orphan = bot._orphanHarvester
+    if orphan is None or bot.inRelay or bot.corePos is None:
+        return False
+    if ct.get_current_round() < bot._orphanNextTry:
+        return False   # cooling off between attempts
+
+    t = ph.readTile(ct, bot.hivemind, orphan)
+    if not (t.etype == EntityType.HARVESTER and not t.enemy):
+        bot._orphanHarvester = None   # destroyed or taken by the enemy — forget it
+        return False
+
+    ctx = ph.costContext(bot, ct, "relay")
+    if any(ctx.isNetworkMember(n) for n in ph.orthogonalTiles(orphan)):
+        bot._orphanHarvester = None   # reconnected by other means — nothing owed
+        return False
+
+    # Re-relay it, strict: merge only onto a proven network member. Without this
+    # planRelay reads the orphan's own dead-ended partial line as intact from afar
+    # (_chainVisiblyIntact trusts an out-of-vision chain) and reports it connected,
+    # laying nothing. Any enemy launcher grab ring *in view* is hard-avoided so the
+    # line routes around a live one; a launcher out of vision isn't in the set, so a
+    # still-live one can re-fling us — bounded, since that re-records the orphan
+    # (_handleFling) and we retry after the cooldown.
+    bot.relayFrom = orphan
+    bot.inRelay = True
+    bot._strictRelay = True
+    bot.oreTarget = None            # commit — as buildHarvester/seizeHarvester do
+    bot.relayAvoid |= _launcherGrabTiles(bot, ct)
+    clearHold(bot)
+    # Cooldown set before the attempt so it holds whether the line commits or fails.
+    # Deliberately do NOT clear _orphanHarvester on commit: relayToHome can still
+    # abort this line later without delivering (a contested tile, a collapsed
+    # re-plan), and those aren't flings, so _handleFling won't re-record it —
+    # clearing here would silently revert to the original orphan bug. The pre-check
+    # above clears it once the harvester is observed connected; the inRelay gate at
+    # the top keeps us from interfering while the line runs.
+    bot._orphanNextTry = ct.get_current_round() + RECONNECT_RETRY_TURNS
+    acted = relayToHome(bot, ct)
+    if bot.inRelay and debug.ENABLED:
+        debug.log("reconnect", f"re-relaying orphan {orphan} rnd={ct.get_current_round()}")
+    return acted or bot.inRelay
 
 
 def buildHarvester(bot, ct: Controller) -> bool:

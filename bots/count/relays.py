@@ -174,6 +174,12 @@ def planRelay(bot, ct: Controller) -> _Plan:
     def mergeable(p: Position) -> bool:
         if ctx.isNetworkMember(p):
             return True
+        if bot._strictRelay:
+            # Reconnection: the harvester's own abandoned partial line reads intact
+            # from a distance (_chainVisiblyIntact trusts an out-of-vision chain), so
+            # a strict relay merges only onto a proven network member and re-lays a
+            # real route home instead of trusting the dead end.
+            return False
         if not ph.isAllyBelt(ct, bot.hivemind, p):
             return False
         key = (p.x, p.y)
@@ -433,6 +439,7 @@ def _teardownRelay(bot) -> None:
     bot.relayAvoid.clear()
     bot.relayRebuilds.clear()
     bot.inRelay = False
+    bot._strictRelay = False
 
 
 def relayAbort(bot) -> bool:

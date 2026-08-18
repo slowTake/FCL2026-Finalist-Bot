@@ -55,6 +55,12 @@ class Player:
         # tile -> times this relay has re-laid it, so a destroy/rebuild war with
         # another builder is detectable (see relays.BELT_CONTEST_LIMIT)
         self.relayRebuilds: dict[tuple[int, int], int] = {}
+        # Reconnection relays (ecoBot.reconnectOrphan) set this so planRelay merges
+        # only onto a *proven* network member, not a belt chain it merely can't see to
+        # be cut — the orphan's own dead-ended partial line reads intact from afar and
+        # would otherwise be trusted, leaving the harvester unconnected. Off for normal
+        # relays, which rely on that out-of-vision trust. Cleared by _teardownRelay.
+        self._strictRelay = False
 
         # Walk state (movement.py)
         self.walkPath: list[Position] | None = None
@@ -77,6 +83,13 @@ class Player:
         self._ecoStallGoal: tuple[int, int] | None = None
         self._ecoBestDist: int = 0
         self._ecoStallTurns: int = 0
+        # Orphan reconnection (ecoBot.reconnectOrphan). The harvester this builder
+        # built but was flung off before its relay reached the core — it feeds nothing
+        # and nobody else returns to it (rankOre skips own-harvester tiles). Held so
+        # the builder re-relays it home once the fling threat clears; _orphanNextTry
+        # rate-limits the re-plan so a still-blocked orphan isn't re-searched every turn.
+        self._orphanHarvester: Position | None = None
+        self._orphanNextTry: int = 0
 
         # Guardian role (roles/guardianBot.py). Set True in relays.relayDone once
         # this builder has delivered a harvester end-to-end — the eligibility gate
