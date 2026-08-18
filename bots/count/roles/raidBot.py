@@ -182,6 +182,19 @@ _DODGE_RADIUS = 2
 # coarseness — see _markIfNoRoute.
 _SIEGE_UNREACHABLE_MEMORY_TURNS = 20
 
+# Belt-cut give-up thresholds (kept in bot._beltGrindLow / bot._beltGaveUp). The
+# belt-cut loop fires at an adjacent enemy belt every turn it can; with no
+# progress check, an enemy that repairs the belt as fast as we grind it bleeds us
+# 2 Ti/shot forever. _BELT_STALL_TURNS is how long we keep firing without driving
+# the belt to a new low HP before ruling it out-repaired and moving on — long
+# enough to break a belt we're genuinely winning (a 20 HP belt is ~10 unopposed
+# shots), short enough to cap the wasted Ti at a bad trade. _BELT_GIVEUP_MEMORY
+# _TURNS is how long the tile then stays barred before we re-probe it, so a belt
+# the enemy stops tending is picked back up — matching the self-healing window on
+# the siege blacklists above.
+_BELT_STALL_TURNS = 11
+_BELT_GIVEUP_MEMORY_TURNS = 25
+
 
 def _siegeTileNeedsWork(bot, ct: Controller, tile: Position) -> bool:
     """True if this core-ring tile is either an enemy belt to cut or an open gap
@@ -272,6 +285,21 @@ def _pruneUnreachable(bot, ct: Controller) -> dict[tuple[int, int], int]:
         for k in [k for k, marked in mem.items()
                   if rnd - marked >= _SIEGE_UNREACHABLE_MEMORY_TURNS]:
             del mem[k]
+    return mem
+
+
+def _pruneBeltGaveUp(bot, ct: Controller) -> dict[tuple[int, int], int]:
+    """Drop belt give-up entries older than _BELT_GIVEUP_MEMORY_TURNS and forget
+    the matching HP-progress memory; return the live dict (bot._beltGaveUp). Same
+    age-window shape as _pruneUnreachable. Expiry is what lets a raider re-probe a
+    belt the enemy has stopped repairing."""
+    mem = bot._beltGaveUp
+    if mem:
+        rnd = ct.get_current_round()
+        for k in [k for k, marked in mem.items()
+                  if rnd - marked >= _BELT_GIVEUP_MEMORY_TURNS]:
+            del mem[k]
+            bot._beltGrindLow.pop(k, None)
     return mem
 
 
@@ -417,6 +445,7 @@ def _siege(bot, ct: Controller, enemyCore: Position) -> bool:
     fireCache: dict = {}
     dodge = _pruneDodge(bot, ct)
     _pruneUnreachable(bot, ct)
+    _pruneBeltGaveUp(bot, ct)
     exposed = bool(gunners) and emplace.tileUnderGunnerFire(ct, pos, gunners, cache=fireCache)
 
     # Act only from a tile outside every gunner's live line. Standing in one, we
@@ -429,6 +458,31 @@ def _siege(bot, ct: Controller, enemyCore: Position) -> bool:
                 continue
             tile = ph.readTile(ct, bot.hivemind, t)
             if tile.enemy and tile.etype in ph.BELT_TYPES and ct.can_fire(t):
+                key = (t.x, t.y)
+                # Already ruled out-repaired within the give-up window: don't
+                # re-open the trade. Skip it as a cut target and let the loop try
+                # another edge / fall through to reposition.
+                if key in bot._beltGaveUp:
+                    continue
+                # Give-up check: only bleed Ti into a belt we're actually grinding
+                # down. Track the lowest HP we've driven this belt to; if firing
+                # stops setting new lows for _BELT_STALL_TURNS the enemy is
+                # repairing it as fast as we cut, so bar it and move on. If HP is
+                # unreadable (no building id), fall through and fire as before.
+                bid = ct.get_tile_building_id(t)
+                hp = ct.get_hp(bid) if bid is not None else None
+                if hp is not None:
+                    rnd = ct.get_current_round()
+                    low, lowRnd = bot._beltGrindLow.get(key, (hp + 1, rnd))
+                    if hp < low:
+                        bot._beltGrindLow[key] = (hp, rnd)
+                    elif rnd - lowRnd >= _BELT_STALL_TURNS:
+                        bot._beltGaveUp[key] = rnd
+                        bot._beltGrindLow.pop(key, None)
+                        if debug.ENABLED:
+                            debug.log("raidBot", f"siege-cut-giveup {t} hp={hp} "
+                                                 f"stalled>={_BELT_STALL_TURNS} rnd={rnd}")
+                        continue
                 ct.fire(t)
                 if debug.ENABLED:
                     debug.log("raidBot", f"siege-cut {pos}->{t} rnd={ct.get_current_round()}")

@@ -195,6 +195,20 @@ class Player:
         # sides build.
         self._siegeUnreachable: dict[tuple[int, int], int] = {}
 
+        # Repaired-belt give-up state for the raider's siege belt-cut
+        # (roles/raidBot._siege). The belt-cut fire loop is otherwise stateless:
+        # it re-fires an adjacent enemy belt every turn it can, so an enemy that
+        # repairs the belt as fast as we grind it drains our Ti (2/shot) forever
+        # for no net damage — a losing trade. _beltGrindLow tracks the lowest HP
+        # this raider has driven each belt tile to, and the round it hit that low;
+        # when the low stops improving for _BELT_STALL_TURNS the belt is being
+        # out-repaired, so we bar it in _beltGaveUp (tile -> round barred) and move
+        # on. Temporary and per-unit, same as the blacklists above: it self-heals
+        # on _BELT_GIVEUP_MEMORY_TURNS so a belt the enemy stops tending is
+        # re-probed. Both empty on any unit that never sieges.
+        self._beltGrindLow: dict[tuple[int, int], tuple[int, int]] = {}
+        self._beltGaveUp: dict[tuple[int, int], int] = {}
+
         # Count of dead searches this unit's walkTo has run (bumped in
         # movement.walkTo). Callers snapshot it before a walk and compare after, to
         # ask "did *that* walk fail" — the sticky holdReason can't answer it, and a
