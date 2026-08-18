@@ -166,17 +166,21 @@ def _bestCandidate(here, candidates, priority, reachable):
 # get_current_round().
 IDLE_SELF_DESTRUCT_ROUNDS = 50
 
-# The sentinel counterpart, on a longer clock. A sentinel is the long-range core-
-# siege investment (30 Ti vs a gunner's 20) and legitimately sits with an empty arc
-# for long stretches between waves, so it ages out later than a gunner. Same
-# rationale otherwise: a permanent turret holds a MAX_TEAM_UNITS slot and draws
-# ammo top-up whether or not it ever fires, so a sentinel on a genuinely dead
-# position (its target destroyed, or aimed at ground nothing crosses) is recycled.
-# Keyed on a target on its *fixed arc*, not merely in vision: a sentinel cannot
-# rotate, so a hostile it can never bear on must not keep it alive (this is the one
-# deliberate difference from gunnerLoop, whose visible-keyed clock is correct only
-# because a gunner rotates onto any visible target).
-SENTINEL_IDLE_SELF_DESTRUCT_ROUNDS = 150
+# The sentinel counterpart. Previously ran on a longer clock than the gunner's on
+# the theory that a core-siege investment (30 Ti vs a gunner's 20) legitimately
+# sits quiet between waves — but a sentinel with a dead arc is, by definition, not
+# bearing on anything near the enemy core (its one job), so a long grace period
+# just compounds ammo top-up and slot-holding costs on a position that was never
+# going to pay for itself. 10 rounds is enough to ride out a lull between waves
+# without carrying a dead position for the rest of the match. Same rationale
+# otherwise: a permanent turret holds a MAX_TEAM_UNITS slot and draws ammo top-up
+# whether or not it ever fires, so a sentinel on a genuinely dead position (its
+# target destroyed, or aimed at ground nothing crosses) is recycled. Keyed on a
+# target on its *fixed arc*, not merely in vision: a sentinel cannot rotate, so a
+# hostile it can never bear on must not keep it alive (this is the one deliberate
+# difference from gunnerLoop, whose visible-keyed clock is correct only because a
+# gunner rotates onto any visible target).
+SENTINEL_IDLE_SELF_DESTRUCT_ROUNDS = 10
 
 
 def gunnerLoop(bot, ct: Controller) -> None:
