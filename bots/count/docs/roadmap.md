@@ -609,3 +609,91 @@ Two items fixed the same pass:
 4. **`store.HARVESTERS` still counts orphans** (write-only today, so latent). If a
    future gate reads it (e.g. the guardian `HARVESTERS >= 2` idea), decrement it on
    `_concedeRelay` and re-increment on a successful reconnection.
+
+---
+
+## 2026-08-18 §5 — Fable pass over three new features, two bugs fixed
+
+Read-only Fable review of three commits that landed after §1-§4 (`8f33c23` erebus
+anti-rush gunners, `30c2ae3` siege belt-cut give-up, `8a3e7ca` ore-barrier
+clearing near core), plus a fourth (`6d2bba6`, the `bots/nologic` no-logic test
+opponent) out of scope as a pure test fixture. Baseline mirror_gauntlet on the
+unmodified HEAD was already CLEAN (15 maps) before this pass.
+
+**`8f33c23` (SOUND-WITH-NITS, no fix needed).** Against a clear core (`_coreClear`
+— no belt to sever, no builder to lock out), the raider now goes gunner-or-nothing
+on ring gaps instead of falling back to a barrier; verified this is strategically
+correct (a barrier on a clear core seals nothing and permanently blocks the tile a
+future gunner needs) and has a stable backstop when broke (`_nextSiegeTile` still
+finds real work or the raider holds, no repeated search). Confirms the
+`_SIEGE_MIN_TI` reserve fix from §3 still applies to the new gunner path. Minor
+nits (a comment made stale by the next commit, a small CPU cost from reading
+`_coreClear` eagerly) not worth fixing.
+
+**`30c2ae3` and `8a3e7ca` (BUG-FOUND, fixed).** Both commits added a "give up if
+being out-repaired" mechanism — siege belt-cut in `raidBot.py`, ore-barrier
+clearing in `ecoBot.py` — independently, ~25 minutes apart, with the same shape
+and the same class of bug:
+
+1. **F1 — `raidBot._beltGrindLow` never cleared on a successful kill.** Only the
+   give-up branch popped the entry. A belt ground to death and later rebuilt by the
+   enemy would be judged against the stale near-death low on first sight and barred
+   with zero shots fired. (`ecoBot.py`'s ore-barrier twin already had the correct
+   cleanup on a "no barrier here now" read — this bug was raidBot-only.)
+2. **F2 — give-up didn't propagate to retargeting.** `_siegeTileNeedsWork` and
+   `_nextSiegeTile` didn't consult `bot._beltGaveUp`, so a raider with no other
+   nearby work could be routed to park beside a belt it had already sworn off, idle
+   for up to `_BELT_GIVEUP_MEMORY_TURNS` (25 rounds).
+3. **F3 — both mechanisms compared wall-clock elapsed rounds, not turns of actual
+   engagement.** An interruption (pushed off by fire, flung, retargeted, broke) of
+   ≥11 rounds caused an instant false give-up the instant work resumed, with zero
+   shots having actually failed during the gap.
+
+**Fix:** a new shared helper, `patience.stallCheck`/`stallForget`
+(`bots/count/patience.py`), replacing both hand-rolled trackers. It stores
+`(low, consecutive-stale-checks)` instead of `(low, round-hit-low)` — the counter
+only advances on a call, so an absence leaves it untouched rather than accruing
+against elapsed time, closing F3 by construction for both call sites at once (and
+dissolving the `ct.get_current_round()` vs `bot.hivemind.global_turn` inconsistency
+between the two implementations, since neither touches a round/turn value anymore).
+`raidBot.py`'s belt-cut loop now calls `stallForget` on any adjacent tile that no
+longer reads as a live enemy belt (closes F1), and `_siegeTileNeedsWork` treats a
+barred belt as done (closes F2). The two hand-rolled copies collapse to one
+implementation, retiring the AGENTS.md "one counter, not six" nit the duplication
+was drifting toward.
+
+A second Fable pass over the fix itself confirmed F1/F2/F3 fully closed (traced the
+kill-then-rebuild path, the prune/retarget interplay, and every belt-tile
+classification through the restructured loop) and found no new bugs — verdict
+SOUND-WITH-NITS. Two of its four nits were fixed in the same pass:
+
+- **N2 — `ecoBot._barrierRepaired` was called before confirming a shot could
+  actually be taken**, so a builder merely holding (broke, mid-cooldown-adjacent)
+  advanced the stall counter without contesting anything — could give up a barrier
+  it never got to fight. Fixed: gated behind `ct.can_fire(ore)` first, matching the
+  tighter pattern already used at the raidBot call site.
+- **N3 — a `main.py` comment overclaimed** that `_beltGrindLow` clears "the moment"
+  a tile stops being a live enemy belt; reworded to state the actual (best-effort,
+  next-look) guarantee, matching N1 below.
+
+**Accepted, not fixed:**
+- **N1 (low) — the forget-on-death is best-effort, not immediate.** It only fires
+  the next time this raider looks at that tile from adjacency on an act-eligible
+  turn (not exposed, not broke, cooldown clear). Narrower than the pre-fix F1 (which
+  bit on every ordinary kill-then-rebuild); needs a near-give-up grind on that exact
+  tile immediately before a rebuild-while-away to bite. `ecoBot.py`'s equivalent
+  cleanup has the same gating class, pre-existing.
+- **N4 (non-issue) — `stallCheck` doesn't reset its own counter on a True return**;
+  both current callers immediately `stallForget`, so this never surfaces. Documented
+  in the helper's own docstring ("caller owns cleanup") rather than guarded in code.
+- **F4 (§ carried over, still not fixed) — give-up memory-window asymmetry**: belt
+  give-up self-heals in `_BELT_GIVEUP_MEMORY_TURNS`=25 rounds; ore give-up reuses
+  `_skipOre`'s `ORE_SKIP_TURNS`=150, tuned for "unreachable node" not "out-repaired
+  barrier". A barriered node near our own core whose defender wanders off stays
+  unharvested for 150 rounds. Fixing cleanly needs `_skipOre` to take a custom
+  duration (touches 4 call sites) or a bespoke fourth barred-set — deferred as a
+  nit, not a bug.
+
+Verified: mirror_gauntlet CLEAN across 15 maps both before this pass (baseline on
+the unmodified feature commits) and after (with the fix applied), byte-compiled
+clean throughout.
