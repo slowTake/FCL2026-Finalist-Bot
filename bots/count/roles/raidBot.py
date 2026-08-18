@@ -454,7 +454,7 @@ def _siege(bot, ct: Controller, enemyCore: Position) -> bool:
             if coreClear is None:
                 coreClear = _coreClear(bot, ct, enemyCore)
             if (coreClear
-                    and ct.get_global_resources() >= ct.get_gunner_cost()
+                    and ct.get_global_resources() >= ct.get_gunner_cost() + _SIEGE_MIN_TI
                     and guns.buildSiegeGunner(ct, t, enemyCore)):
                 return True
             ct.build_barrier(t)
