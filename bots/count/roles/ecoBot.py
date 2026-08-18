@@ -11,7 +11,7 @@ import pathfindingHelpers as ph
 from movement import exploreStep, walkTo
 from patience import BLOCKED_WAIT_TURNS, clearHold, holdTask, waitTi
 import store
-from relays import hijackRelay, relayToHome
+from relays import hijackRelay, relayAbort, relayToHome
 
 # How many of the nearest ore nodes builders fan out across. Deterministic off
 # my_index, so two builders with different indices rarely pick the same node.
@@ -193,17 +193,14 @@ def _handleFling(bot, ct: Controller) -> None:
 def _concedeRelay(bot) -> None:
     """Abandon a relay the enemy flung us off, without marking a delivery.
 
-    Deliberately not relays.relayDone, which sets _harvesterDelivered (guardian
-    eligibility) — a flung relay did not deliver. The harvester already built is
-    orphaned: accepted, since we cannot finish its belt while the launcher keeps
-    throwing us off the lane, and an oscillating builder delivers nothing anyway.
+    The harvester already built is orphaned: accepted, since we cannot finish its
+    belt while the launcher keeps throwing us off the lane, and an oscillating
+    builder delivers nothing anyway. Delegates to relays.relayAbort — which is
+    deliberately not relayDone (that sets _harvesterDelivered / guardian
+    eligibility, and a flung relay did not deliver) — so the delivery-free teardown
+    lives in one place, in the module that owns the relay state.
     """
-    bot.relayPath = None
-    bot.relayAnchor = None
-    bot.relayFrom = None
-    bot.relayAvoid.clear()
-    bot.relayRebuilds.clear()
-    bot.inRelay = False
+    relayAbort(bot)
 
 
 # ---------------------------------------------------------------------------
