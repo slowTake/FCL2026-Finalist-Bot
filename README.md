@@ -147,6 +147,13 @@ python scripts/fcv_bot_gauntlet.py <your-bot> starter --all-maps --json-output r
 
 Optional AI root-cause diagnosis (`--oracle`) uses the Claude API and **costs real money from a personal API budget** — it never spends without an explicit `--oracle-yes` on top of `--oracle`. See [`fcv_gauntlet/oracle/README.md`](fcv_gauntlet/oracle/README.md) for setup and budget caps, and [`fcv_gauntlet/oracle/AGENT.md`](fcv_gauntlet/oracle/AGENT.md) for the confirmation rule any agent must follow before using it.
 
+### Live ladder analysis
+
+For checking how the submitted bot is actually doing on the real overnight ladder (not local gauntlet runs):
+
+- `scripts/get_stats.py` — ladder rank/rating plus a `<bot>_performance.md` win-rate report by map/opponent/version.
+- `scripts/create_db.py` — downloads recent ladder replays and samples build/economy state into `scripts/match_observations.csv` for cross-map/opponent comparison.
+
 ## CI bot test
 
 When your bot is ready, commit it under `bots/<your-bot>/main.py` and open a PR.
