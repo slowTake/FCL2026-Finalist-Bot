@@ -24,11 +24,10 @@ HARVESTERS = 0        # running count of harvesters built (ecoBot)
 RAID_TARGET = 1       # packed sentinel emplacement, or 0 (raid.packTarget)
 ROLES = 2             # packed builder indices, one field per role
 LAUNCH_REQUEST = 3    # transient launch request: packed (requester, target) or 0
-# NOTE: the 2026-08-15 roadmap reserved this slot "free for defence". Launch
-# requests are transient (last-write-wins, consumed the turn they're read), so a
-# persistent defence signal cannot share it — when guardian work lands, one of
-# the two needs a different home. Flagged here rather than in the roadmap so the
-# next writer sees it. See launcher.packRequest for the encoding.
+# See launcher.packRequest for the encoding. (The 2026-08-15 roadmap once reserved
+# this slot "free for defence" and warned a persistent defence signal could not
+# share a transient one; the guardian landed inside ROLES instead, so the conflict
+# never materialised and slot 3 is the launcher's alone.)
 
 # --- HiveMind's. Read freely, never write. ----------------------------------
 
@@ -44,9 +43,36 @@ _FIRST_HIVEMIND_SLOT = 4
 
 ROLE_RAIDER = 0
 ROLE_RAIDER_2 = 1     # second raider — the opening pair raids (respawn.py)
+ROLE_GUARDIAN = 2     # home-defence guardian — first eco-builder to deliver a
+                      # harvester claims it (roles/guardianBot.py)
 
 _ROLE_BITS = 5
 _ROLE_MASK = (1 << _ROLE_BITS) - 1
+
+# The guardian carries a liveness heartbeat so a dead guardian's claim goes stale
+# and the next eligible eco-builder re-claims it — no builder-respawn machinery
+# required (roadmap #3 is still open). Twelve bits of masked round number ride in
+# the high end of the ROLES slot, above the three 5-bit role fields (bits 0-14),
+# so the guardian needs no slot of its own. A match is ~1000 rounds and the field
+# holds 4096, so it never wraps in practice; the age read below stays wrap-aware
+# regardless.
+#
+# Write-ordering safety: stampGuardian and assignRole both do a masked
+# read-modify-write over the whole ROLES word, each clearing only its own bits,
+# so they compose. The one race — two masked writes landing the same round and
+# the second dropping the first's field — cannot happen here: the core assigns
+# the raider fields only during the opening spawns, well before any harvester is
+# delivered, and guardian writes only begin once one has been. The two write
+# windows never overlap.
+#
+# That non-overlap is an *invariant of the current roles*, not something the code
+# enforces. Anything that gives the raider fields a live re-writer — the raider
+# liveness stamp or role re-assignment on death that roadmap.md defers — puts a
+# second writer on this word in the same rounds the guardian is stamping, and the
+# argument above stops holding. Read this before adding one.
+_GUARDIAN_HB_SHIFT = ROLE_GUARDIAN * _ROLE_BITS + _ROLE_BITS  # 15
+_GUARDIAN_HB_BITS = 12
+_GUARDIAN_HB_MASK = (1 << _GUARDIAN_HB_BITS) - 1
 
 
 def put(ct: Controller, slot: int, value: int) -> None:
@@ -81,3 +107,40 @@ def assignRole(ct: Controller, role: int, index: int) -> None:
     shift = role * _ROLE_BITS
     keep = ct.read_store(ROLES) & ~(_ROLE_MASK << shift)
     put(ct, ROLES, keep | (index << shift))
+
+
+def stampGuardian(ct: Controller, index: int, round_n: int) -> None:
+    """Name the guardian and refresh its liveness heartbeat in one write.
+
+    Clears only the guardian index field and the heartbeat field, leaving the
+    raider fields untouched — see the write-ordering note above. An index too
+    large to encode is dropped whole rather than truncated, matching assignRole.
+    """
+    if not 0 <= index <= _ROLE_MASK:
+        return
+    ts = round_n & _GUARDIAN_HB_MASK
+    shift = ROLE_GUARDIAN * _ROLE_BITS
+    val = ct.read_store(ROLES)
+    val &= ~(_ROLE_MASK << shift)
+    val &= ~(_GUARDIAN_HB_MASK << _GUARDIAN_HB_SHIFT)
+    val |= index << shift
+    val |= ts << _GUARDIAN_HB_SHIFT
+    put(ct, ROLES, val)
+
+
+def readGuardian(ct: Controller) -> tuple[int, int]:
+    """The guardian's builder index and its last heartbeat round (both masked).
+
+    Index 0 means nobody holds the role. The heartbeat is a round number masked
+    to _GUARDIAN_HB_BITS — staleness is the caller's to compute, with a
+    wrap-aware age against its own masked current round."""
+    val = ct.read_store(ROLES)
+    index = (val >> (ROLE_GUARDIAN * _ROLE_BITS)) & _ROLE_MASK
+    ts = (val >> _GUARDIAN_HB_SHIFT) & _GUARDIAN_HB_MASK
+    return index, ts
+
+
+def guardianHeartbeatMask() -> int:
+    """The modulus round numbers are reduced to before comparison (for callers
+    doing the wrap-aware age arithmetic)."""
+    return _GUARDIAN_HB_MASK

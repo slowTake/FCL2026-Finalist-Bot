@@ -165,16 +165,39 @@ def tileUnderGunnerFire(
     return (tile.x, tile.y) in covered
 
 
+# The *firing* turrets — TURRET_TYPES minus the launcher. Not the same set, and
+# the difference is load-bearing here (see enemyTurrets).
+_AIMED_TURRET_TYPES = (EntityType.GUNNER, EntityType.SENTINEL)
+
+
 def enemyTurrets(ct: Controller) -> list[tuple[Position, Direction, EntityType]]:
-    """Visible enemy turrets (gunner/sentinel/launcher) as (pos, facing, type),
-    in engine order. For vetting a sentinel emplacement against a free shot."""
+    """Visible enemy *aimed* turrets (gunner/sentinel) as (pos, facing, type), in
+    engine order. For vetting a sentinel emplacement against a free shot.
+
+    Launchers are excluded, for two independent reasons — either one fatal:
+
+    1) `get_direction` raises GameError on an entity with no facing, and a launcher
+       has none. Every caller here runs inside `Player.run`'s bare except, which
+       swallows the error without so much as a debug line, so the *whole turn* died
+       — heal, siege, build, walk — silently, every turn an enemy launcher stood in
+       vision. Measured on a drumlin mirror: raiders bricked from the exact round an
+       enemy launcher appeared, standing still until they were shot to death, banks
+       climbing past 650 Ti untouched. It reads as "the bot is idling", never as a
+       crash, which is why it survived this long.
+    2) Even guarded, a launcher does not belong in this set. It has no firing line;
+       what it has is a throw-*landing* disc, which is harmless to stand in. Feeding
+       it to `_coverage`/`get_attackable_tiles_from` would veto every pad in that
+       disc and refuse emplacements that are perfectly safe. `ph._threatTiles`
+       already documents this exact trap and special-cases launchers before asking
+       for a direction — this function simply never got the same treatment.
+    """
     myTeam = ct.get_team()
     out: list[tuple[Position, Direction, EntityType]] = []
     for bid in ct.get_nearby_buildings():
         if ct.get_team(bid) == myTeam:
             continue
         etype = ct.get_entity_type(bid)
-        if etype not in ph.TURRET_TYPES:
+        if etype not in _AIMED_TURRET_TYPES:
             continue
         out.append((ct.get_position(bid), ct.get_direction(bid), etype))
     return out
@@ -220,17 +243,12 @@ def sentinelPadBearing(
     engine will actually build it. None if nothing bears.
 
     Built by inverting the attack pattern: a sentinel on `pad` facing `d` hits
-    `aim` iff `(aim - pad)` is one of `d`'s offsets. Both callers want the same
-    three gates in the same order, and each had its own copy:
+    `aim` iff `(aim - pad)` is one of `d`'s offsets. The same three gates in the
+    same order serve both aim shapes — a 2x2 core footprint (four aim tiles) and a
+    single threat tile — since `aims` is any iterable of Positions.
 
-    * `raid.fallbackEmplacement` — pads are the raider's own neighbours (already
-      filtered by its `_buildable`, and minus the site it just failed on), aims
-      are the enemy core's four footprint tiles.
-    * `guns._dropSentinelOn` — pads are the calling unit's neighbours, aims are
-      the single threat tile being answered.
-
-    Policy stays outside: filter `pads` before calling. `aims` is any iterable of
-    Positions, so one target and a 2x2 footprint are the same call.
+    Policy stays outside: filter `pads` before calling (to a unit's own buildable
+    neighbours, minus any site already ruled out).
 
     The LoS veto is evaluated lazily — only once a facing actually bears from
     that pad — so a pad that could never have worked costs no engine calls. An

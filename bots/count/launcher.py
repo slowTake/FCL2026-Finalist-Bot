@@ -56,6 +56,25 @@ PLACE_WAIT_TURNS = 6
 # apron — so this is slack, not a tight fit; past it, skip placement entirely.
 APRON_RADIUS = 4
 
+# A launcher sitting this close to the *enemy* core is an offensive apron launcher
+# (planted by a sieging raider, roles/raidBot.buildApronLauncher), not the core
+# launcher beside our own base. It flips runLauncher into the offensive mode:
+# fling enemy repair/relay builders *away* from their core instead of ferrying
+# our own. Distinct from APRON_RADIUS above, which is the spawn apron around *our*
+# core — a launcher there is far outside this radius and keeps the defensive path.
+ENEMY_APRON_RADIUS = 3
+
+# A launched *friendly* builder must be able to walk back out of where it lands.
+# Some maps (royale) have fully walled rooms whose interior tiles read
+# passable-and-clear but are reachable only by being thrown in over the wall — a
+# permanent trap. A landing tile counts as escapable only if the walkable area
+# reachable from it is at least this big: open ground clears it in a ring or two,
+# and the largest sealed royale pocket (its 12-tile centre room) never does.
+# Tunable — anything in (12, ~25] separates trap from open there. Applied only to
+# our own builders; enemies are still flung into such rooms on purpose (a trap for
+# them is a win). See _escapable / _bestThrow(requireEscapable=True).
+ESCAPE_MIN_TILES = 20
+
 
 # ---------------------------------------------------------------------------
 # Request packing:  valid(1) | rx(7) | ry(7) | tx(7) | ty(7)  = 29 bits
@@ -204,7 +223,19 @@ def requestLaunch(bot, ct: Controller, target: Position | None) -> bool:
     pos = ct.get_position()
     if manhattan(pos, target) <= LAUNCH_MIN_GAP:
         return False
-    if _adjacentAllyLauncher(bot, ct) is None:
+    launcher = _adjacentAllyLauncher(bot, ct)
+    if launcher is None:
+        return False
+
+    # An apron launcher (planted at the enemy core, within ENEMY_APRON_RADIUS of it)
+    # is a pure denial turret: runLauncher takes the away-repel branch and returns
+    # before it ever reads LAUNCH_REQUEST, so a request posted to it can never be
+    # served. Posting anyway strands us on a hold for a throw that isn't coming, and
+    # overwrites a genuinely-waiting builder's request in the single shared slot.
+    # Same geometry test runLauncher uses to pick that branch — applied to the
+    # launcher's tile, not ours, since that is the body whose behaviour we predict.
+    enemyCore = raid.enemyCorePos(bot, ct)
+    if enemyCore is not None and ph.manhattanToCore(launcher, enemyCore) <= ENEMY_APRON_RADIUS:
         return False
 
     store.put(ct, store.LAUNCH_REQUEST, packRequest(pos, target))
@@ -216,19 +247,15 @@ def requestLaunch(bot, ct: Controller, target: Position | None) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _repelHostile(bot, ct: Controller) -> bool:
-    """Fling the nearest grabbable enemy builder back toward the enemy core.
+def _grabbableHostiles(bot, ct: Controller) -> list[Position]:
+    """Nearby enemy builder bots, nearest to this launcher first.
 
     Nearest first because that is both the most urgent threat and the one most
-    likely to be inside pickup range; `can_launch` is the real gate on whether it
-    can actually be picked up, so out-of-reach candidates simply fail and the
-    loop moves on. The throw goal is the enemy core, so `_bestThrow` sends the
-    body toward its own side — away from our launcher and economy.
+    likely to be inside pickup range; `can_launch` on the caller's side is the
+    real gate on whether a body can actually be picked up, so out-of-reach
+    candidates simply fail there and the caller's loop moves on. Shared by the
+    defensive (throw toward enemy core) and offensive (throw away from it) repels.
     """
-    enemyCore = raid.enemyCorePos(bot, ct)
-    if enemyCore is None:
-        return False
-
     me = ct.get_team()
     launcherPos = ct.get_position()
     hostiles = [
@@ -238,8 +265,21 @@ def _repelHostile(bot, ct: Controller) -> bool:
         and ct.get_entity_type(eid) == EntityType.BUILDER_BOT
     ]
     hostiles.sort(key=lambda p: manhattan(launcherPos, p))
+    return hostiles
 
-    for hp in hostiles:
+
+def _repelHostile(bot, ct: Controller) -> bool:
+    """Fling the nearest grabbable enemy builder back toward the enemy core.
+
+    The throw goal is the enemy core, so `_bestThrow` sends the body toward its
+    own side — away from our launcher and economy. This is the *defensive* repel,
+    for the launcher beside our own core.
+    """
+    enemyCore = raid.enemyCorePos(bot, ct)
+    if enemyCore is None:
+        return False
+
+    for hp in _grabbableHostiles(bot, ct):
         target = _bestThrow(bot, ct, hp, enemyCore)
         if target is None:
             continue
@@ -255,17 +295,82 @@ def _repelHostile(bot, ct: Controller) -> bool:
     return False
 
 
+def _repelAwayFromCore(bot, ct: Controller, enemyCore: Position) -> bool:
+    """Offensive apron repel: fling the nearest grabbable enemy builder *away* from
+    its own core, so a repair/relay body lands several tiles out and has to walk
+    all the way back before it can touch the core again.
+
+    Mirror of `_repelHostile` but with the throw inverted — `_flingAwayThrow`
+    maximises distance from the enemy core instead of minimising it. Used only by
+    an apron launcher (within ENEMY_APRON_RADIUS of the enemy core).
+    """
+    for hp in _grabbableHostiles(bot, ct):
+        target = _flingAwayThrow(bot, ct, hp, enemyCore)
+        if target is None:
+            continue
+        if ct.can_launch(hp, target):
+            ct.launch(hp, target)
+            if debug.ENABLED:
+                debug.log(
+                    "launcher",
+                    f"repelled {hp} -> {target} away from core {enemyCore} "
+                    f"rnd={ct.get_current_round()}",
+                )
+            return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # The launcher turret loop
 # ---------------------------------------------------------------------------
 
 
-def _bestThrow(bot, ct: Controller, requester: Position, target: Position):
+def _escapable(bot, ct: Controller, tile: Position) -> bool:
+    """Can a builder dropped on `tile` walk back out — i.e. is `tile` in a walkable
+    area of at least ESCAPE_MIN_TILES, rather than a fully walled-off pocket.
+
+    Bounded flood over walkable tiles (`not ph.isImpassable`, which already forbids
+    walls, cores and ally harvesters). Stops the instant the reachable set hits the
+    threshold, so it visits at most ESCAPE_MIN_TILES tiles — cheap, and the launcher
+    has spare budget. An out-of-vision tile reads wall=False, so an unseen region
+    floods as open; the pocket walls sit beside our core and are in the ledger by
+    the time a launcher fires, so a real trap is still caught, and the unknown case
+    degrades to the old behaviour rather than regressing.
+    """
+    hm = bot.hivemind
+    seen = {(tile.x, tile.y)}
+    stack = [tile]
+    while stack:
+        if len(seen) >= ESCAPE_MIN_TILES:
+            return True
+        cur = stack.pop()
+        for n in ph.orthogonalTiles(cur):
+            key = (n.x, n.y)
+            if key in seen or ph.isImpassable(ct, hm, n):
+                continue
+            seen.add(key)
+            stack.append(n)
+    return len(seen) >= ESCAPE_MIN_TILES
+
+
+def _bestThrow(
+    bot,
+    ct: Controller,
+    requester: Position,
+    target: Position,
+    *,
+    requireEscapable: bool = False,
+):
     """The in-range tile that lands the builder closest to `target`.
 
     Only tiles strictly closer to the goal than the requester currently is are
     considered, so a launch is never wasted throwing a builder sideways or back.
     can_launch is the real legality check; this only ranks candidates.
+
+    `requireEscapable` (friendly throws only) rejects a landing tile inside a fully
+    walled-off pocket the builder could never walk out of. The flood is run only on
+    a strictly-improving candidate, so at most a handful per throw. Left off for the
+    enemy-repel callers on purpose: throwing an enemy into such a pocket traps it.
     """
     try:
         tiles = ct.get_attackable_tiles()
@@ -284,6 +389,39 @@ def _bestThrow(bot, ct: Controller, requester: Position, target: Position):
             continue  # must be a clear passable tile to land on
         d = manhattan(tile, target)
         if d < bestD:
+            if requireEscapable and not _escapable(bot, ct, tile):
+                continue
+            bestD = d
+            best = tile
+    return best
+
+
+def _flingAwayThrow(bot, ct: Controller, requester: Position, enemyCore: Position):
+    """The in-range tile that lands the builder *farthest* from the enemy core.
+
+    The inverse of `_bestThrow`: only tiles strictly farther from the core than the
+    requester currently is are considered, so a fling never drops the body closer to
+    the thing we're denying it. can_launch is the real legality check; this only
+    ranks candidates. Distance is the point-to-2x2 clamp `manhattanToCore`, so a
+    landing tile is scored against the whole core body, not one anchor corner.
+    """
+    try:
+        tiles = ct.get_attackable_tiles()
+    except Exception:
+        return None
+
+    best = None
+    bestD = ph.manhattanToCore(requester, enemyCore)
+    for tile in tiles:
+        if not ph.inBounds(ct, tile):
+            continue
+        if ph.isImpassable(ct, bot.hivemind, tile):
+            continue
+        t = ph.readTile(ct, bot.hivemind, tile)
+        if t.etype is not None or t.builder or t.ore:
+            continue  # must be a clear passable tile to land on
+        d = ph.manhattanToCore(tile, enemyCore)
+        if d > bestD:
             bestD = d
             best = tile
     return best
@@ -300,6 +438,20 @@ def runLauncher(bot, ct: Controller) -> None:
     if ct.get_action_cooldown() != 0:
         return
 
+    # An apron launcher (planted at the enemy core by a sieging raider) is a pure
+    # denial turret: it only ever flings enemy repair/relay builders *away* from
+    # their core, and never ferries our own — no raider requests a throw this deep
+    # in enemy ground. Told apart from the core launcher by geometry alone (it sits
+    # within ENEMY_APRON_RADIUS of the enemy core; the core launcher is far outside
+    # it), so no per-unit state or store slot is needed.
+    enemyCore = raid.enemyCorePos(bot, ct)
+    if (
+        enemyCore is not None
+        and ph.manhattanToCore(ct.get_position(), enemyCore) <= ENEMY_APRON_RADIUS
+    ):
+        _repelAwayFromCore(bot, ct, enemyCore)
+        return
+
     if _repelHostile(bot, ct):
         return
 
@@ -308,13 +460,21 @@ def runLauncher(bot, ct: Controller) -> None:
         return
     requester, target = req
 
+    # Consume the request on read, before deciding whether to serve it. A builder
+    # genuinely waiting re-posts every turn it holds, so clearing here never strands
+    # it; but a request whose author has since died, been shoved, or walked off when
+    # its patience expired would otherwise persist in the slot and fling whoever
+    # next wanders onto that tile toward a now-stale target. Consuming it bounds any
+    # request to the single launcher turn after it was posted.
+    store.put(ct, store.LAUNCH_REQUEST, 0)
+
     # The requester must still be a friendly builder sitting where it said it
     # was — it holds for exactly this, but it may have died or been shoved.
     t = ph.readTile(ct, bot.hivemind, requester)
     if not t.builder or t.builderEnemy:
         return
 
-    best = _bestThrow(bot, ct, requester, target)
+    best = _bestThrow(bot, ct, requester, target, requireEscapable=True)
     if best is None:
         return
 
@@ -326,6 +486,3 @@ def runLauncher(bot, ct: Controller) -> None:
                 f"threw {requester} -> {best} (goal {target}) "
                 f"rnd={ct.get_current_round()}",
             )
-        # Consume the request so a stale one can't re-fling whoever wanders onto
-        # the requester tile next.
-        store.put(ct, store.LAUNCH_REQUEST, 0)

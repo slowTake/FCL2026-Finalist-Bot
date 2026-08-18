@@ -9,9 +9,9 @@ import heal
 import launcher
 import pathfindingHelpers as ph
 from movement import exploreStep, walkTo
-from patience import BLOCKED_WAIT_TURNS, clearHold, holdTask, waitTi
+from patience import BLOCKED_WAIT_TURNS, clearHold, holdTask, stallCheck, stallForget, waitTi
 import store
-from relays import hijackRelay, relayToHome
+from relays import hijackRelay, relayAbort, relayToHome
 
 # How many of the nearest ore nodes builders fan out across. Deterministic off
 # my_index, so two builders with different indices rarely pick the same node.
@@ -25,7 +25,7 @@ ORE_SPREAD = 4
 # expensive to run per node inside the 10ms budget); it only has to rank walled-off
 # nodes below clear ones, not price them exactly. Tuned on mirror_gauntlet; 0 restores
 # the old pure-Manhattan behaviour.
-DETOUR_PER_WALL = 2
+DETOUR_PER_WALL = 3
 
 # A remembered ore sighting older than this is worth walking back to verify. The
 # harvester we think is on it may be long dead: nothing refreshes a tile once a
@@ -50,14 +50,77 @@ HIJACK_MAX_MANHATTAN = 12
 # worth a short detour — but not an expedition.
 HIJACK_BONUS = 4
 
+# An ore node with an enemy barrier on it is claimable — the builder walks up and
+# grinds the barrier off (buildHarvester), then harvests — but only when it's this
+# close to our core. Grinding a full barrier is ~10 shots of Ti, a real commitment,
+# so we only make it for a node near home; a far barriered node is still skipped in
+# favour of open ore. Tighter than HIJACK_MAX_MANHATTAN on purpose: tapping a
+# harvester is one action, clearing a barrier is a multi-turn grind.
+ORE_BARRIER_CLEAR_RADIUS = 7
+
+# Rank cost added to a barriered ore node's distance, ~ the Ti/turns to grind the
+# barrier down. Keeps a comparably-near clear node preferred: we only route to the
+# barriered one when it's clearly the best remaining option nearby.
+ORE_BARRIER_CLEAR_PENALTY = 20
+
+# Grinding an ore barrier that hasn't hit a new low HP for this many turns is being
+# repaired as fast as we cut — a losing Ti trade. Give the node up (oreSkip) and
+# move on. Long enough to break a barrier we're genuinely winning (a full barrier
+# is ~10 unopposed shots), short enough to cap the wasted Ti.
+ORE_BARRIER_STALL_TURNS = 11
+
 # Manhattan radius from our core within which an idle builder will clear an enemy
 # barrier that has severed one of our supply lines and re-lay the belt. Bounded to
 # "near the core" on purpose: this is a defensive bandage for the enemy's
 # core-siege (mirror of raidBot._siege), not a map-wide relay-repair system.
 CORE_DEFENSE_RADIUS = 8
 
+# A builder only ever moves one tile per turn, so a larger jump is an external
+# displacement — a launcher throw. Bounded above by the engine throw range
+# (r**2 <= 26 -> Chebyshev 5) plus one intervening self-move, so a stale
+# last-position (e.g. after a guardian stint) reads as "too far" and is ignored
+# rather than mistaken for a fling. See _handleFling.
+FLING_JUMP_MIN = 2
+FLING_JUMP_MAX = 6
+
+# Net-progress backstop for the approach phase (seekOre). walkTo clears the hold
+# on every successful step, so a builder that keeps being shoved back — a launcher
+# that flings it *toward* the goal short of it, a swap-deadlock that steps it back
+# and forth, any knockback _handleFling's single-jump test misses — reports
+# progress each turn yet never actually closes on its node, and the ordinary
+# blocked-patience give-up in seekOre never fires. So track the closest we have
+# ever been to the current node; if that best doesn't improve for this many turns,
+# concede the node (skip + re-pick) rather than churn on it forever. Generous on
+# purpose: a legitimate detour around a wall can plateau the manhattan distance for
+# a good stretch, and this must never fire on one. Approach-only — a relay
+# legitimately walks *away* from its harvester as it lays belt home, so distance to
+# the source is meaningless there and the tracker never runs mid-relay. Tunable.
+STALL_NO_PROGRESS_TURNS = 30
+
+# How long reconnectOrphan waits between attempts on a harvester it couldn't reroute
+# home (a launcher still covers every approach, or no route exists yet). Bounds the
+# retry to one relay-plan every this-many turns rather than one every turn — the
+# re-search-every-turn cost the pressCore/TLE work warns against — while still giving
+# the blocking launcher time to be answered between tries. Tunable.
+RECONNECT_RETRY_TURNS = 30
+
 
 def runEcoBot(bot, ct: Controller) -> None:
+    # An eco-builder that has delivered a harvester grabs guardian duty if the
+    # role is open or its holder has died. A no-op otherwise. Function-level
+    # import so ecoBot keeps no module-level dependency on guardianBot (which
+    # imports back into ecoBot for its quiet-economy step). Runs even mid-relay:
+    # claiming only writes the store slot; this builder finishes its current work
+    # as an eco-bot this turn and main routes it to runGuardian from the next.
+    import guardianBot
+    guardianBot.claimIfOpen(bot, ct)
+
+    # Concede a node the enemy just flung us off, before re-driving the relay:
+    # otherwise we march the harvester end straight back into the launch lane and
+    # get thrown again. Pure state cleanup — it never consumes the turn, so the
+    # ladder below re-picks and walks a fresh node this same turn.
+    _handleFling(bot, ct)
+
     if bot.inRelay and relayToHome(bot, ct):
         return
 
@@ -98,10 +161,84 @@ def runEcoBot(bot, ct: Controller) -> None:
     if repairCoreBelts(bot, ct):
         return
 
+    # Re-relay one of our own harvesters whose line was abandoned mid-build (a
+    # launcher fling, a death) and now feeds nothing — nobody else ever returns to
+    # it (rankOre skips own-harvester tiles, repairCoreBelts is barrier-only).
+    if reconnectOrphan(bot, ct):
+        return
+
     if seekOre(bot, ct):
         return
 
     exploreStep(bot, ct)
+
+
+# ---------------------------------------------------------------------------
+# Fling recovery — concede a node an enemy launcher just threw us off
+# ---------------------------------------------------------------------------
+
+
+def _handleFling(bot, ct: Controller) -> None:
+    """Concede the current node if an enemy launcher just flung us off it.
+
+    A launcher throw is the only way a builder moves more than one tile in a
+    turn. Our own core launcher ferries builders *toward* their ore, so the
+    direction of the jump — closer to the goal (friendly ferry) vs farther
+    (hostile fling) — is what tells the two apart. On a hostile fling we skip
+    the node (bounded by ORE_SKIP_TURNS) and drop any in-progress relay, so
+    seekOre picks a different node instead of walking straight back into the
+    launch lane to be thrown again.
+
+    State cleanup only — it never consumes the turn; the runEcoBot ladder below
+    it re-picks and walks a fresh node the same turn.
+    """
+    cur = ct.get_position()
+    last = bot._ecoLastPos
+    bot._ecoLastPos = cur
+    if last is None:
+        return
+    cheb = max(abs(cur.x - last.x), abs(cur.y - last.y))
+    if not (FLING_JUMP_MIN <= cheb <= FLING_JUMP_MAX):
+        return  # a normal 1-tile move, or a stale last-position — not a fling
+    goal = bot.relayFrom if bot.inRelay else bot.oreTarget
+    if goal is None:
+        return  # displaced with no committed task to strand
+    md_last = abs(last.x - goal.x) + abs(last.y - goal.y)
+    md_cur = abs(cur.x - goal.x) + abs(cur.y - goal.y)
+    if md_cur <= md_last:
+        return  # thrown *toward* the goal — our own ferry launcher, keep going
+
+    # Thrown away from the goal by a hostile launcher: concede the node.
+    _skipOre(bot, goal)
+    if bot.inRelay:
+        # Remember the harvester we were relaying (goal == relayFrom here) so we come
+        # back to reconnect it once the launcher is gone — conceding alone orphans it
+        # (nobody re-targets an own harvester). Delay the first retry so we don't walk
+        # straight back into a launcher that is still live.
+        bot._orphanHarvester = goal
+        bot._orphanNextTry = ct.get_current_round() + RECONNECT_RETRY_TURNS
+        _concedeRelay(bot)
+    bot.oreTarget = None
+    clearHold(bot)
+    if debug.ENABLED:
+        debug.log(
+            "fling",
+            f"flung {last}->{cur} off goal {goal}; conceding "
+            f"rnd={ct.get_current_round()}",
+        )
+
+
+def _concedeRelay(bot) -> None:
+    """Abandon a relay the enemy flung us off, without marking a delivery.
+
+    The harvester already built is orphaned: accepted, since we cannot finish its
+    belt while the launcher keeps throwing us off the lane, and an oscillating
+    builder delivers nothing anyway. Delegates to relays.relayAbort — which is
+    deliberately not relayDone (that sets _harvesterDelivered / guardian
+    eligibility, and a flung relay did not deliver) — so the delivery-free teardown
+    lives in one place, in the module that owns the relay state.
+    """
+    relayAbort(bot)
 
 
 # ---------------------------------------------------------------------------
@@ -142,19 +279,16 @@ def _grindBarrier(bot, ct: Controller, tile: Position, waitReason: str, fireReas
     Returns `(fired, keepTask)`:
 
     * `fired` — the shot actually went off this turn. Only then may a caller
-      commit state off the back of it (`repairCoreBelts` latches `_repairTile`
-      here, and must not do that on a turn we merely held).
+      commit state off the back of it (e.g. latch a multi-turn grind target); a
+      turn we merely held must not.
     * `keepTask` — what the caller should return: True to stay on the task
       (we fired, or we're still inside the patience budget), False once patience
       is spent and the caller may give up. This is `holdTask`'s own contract,
       passed straight through.
 
-    The three barrier-grinding sites — start a repair, continue a committed
-    repair, clear a barrier squatting on claimed ore — were each running this
-    same cooldown/can_fire/fire/hold ladder. `buildHarvester`'s copy had no
-    cooldown branch because it already returns early on a busy cooldown; keeping
-    the branch here is harmless there and stops the next caller inheriting a
-    ladder that only works from one specific place.
+    Includes the cooldown branch even where a call site already returns early on a
+    busy cooldown: harmless there, and it stops the fire/hold ladder from only
+    working from one specific place.
     """
     if ct.get_action_cooldown() != 0:
         return False, holdTask(bot, waitReason, BLOCKED_WAIT_TURNS)
@@ -288,6 +422,86 @@ def _finishRepair(bot, ct: Controller) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# Orphan reconnection — re-relay an own harvester whose line was abandoned
+# ---------------------------------------------------------------------------
+
+
+def _launcherGrabTiles(bot, ct: Controller) -> set[tuple[int, int]]:
+    """The 8-neighbourhoods of every visible enemy launcher — the tiles from which it
+    grabs and flings a builder. A reconnection relay hard-avoids these so its new line
+    routes around a launcher still standing, rather than back into the same fling.
+    Threat-*cost* alone (makeCostFn) isn't enough: it prices the grab ring dear but
+    still routes through it when that's the only way to the core."""
+    me = ct.get_team()
+    out: set[tuple[int, int]] = set()
+    for bid in ct.get_nearby_buildings():
+        if ct.get_team(bid) == me:
+            continue
+        if ct.get_entity_type(bid) != EntityType.LAUNCHER:
+            continue
+        for n in ph.adjacentTiles(ct.get_position(bid)):
+            out.add((n.x, n.y))
+    return out
+
+
+def reconnectOrphan(bot, ct: Controller) -> bool:
+    """Re-relay the harvester this builder was flung off before its line reached the
+    core. Conceding a flung relay (via `_handleFling`) leaves the harvester feeding
+    nothing, and nobody else returns to it: `rankOre` skips own-harvester tiles, and
+    `repairCoreBelts` only reconnects a line an enemy *barrier* cut, not one that was
+    never finished. So the builder that built it remembers it and comes back.
+
+    Retried on a cooldown (`RECONNECT_RETRY_TURNS`), not every turn, so a harvester
+    still walled off by a live launcher isn't re-planned every turn (the
+    re-search-every-turn cost). Each attempt hard-avoids any launcher grab ring in
+    view, so it either routes around the fling lane or fails cleanly and waits — the
+    common case being the launcher gets answered and destroyed, after which the next
+    attempt routes home normally.
+    """
+    orphan = bot._orphanHarvester
+    if orphan is None or bot.inRelay or bot.corePos is None:
+        return False
+    if ct.get_current_round() < bot._orphanNextTry:
+        return False   # cooling off between attempts
+
+    t = ph.readTile(ct, bot.hivemind, orphan)
+    if not (t.etype == EntityType.HARVESTER and not t.enemy):
+        bot._orphanHarvester = None   # destroyed or taken by the enemy — forget it
+        return False
+
+    ctx = ph.costContext(bot, ct, "relay")
+    if any(ctx.isNetworkMember(n) for n in ph.orthogonalTiles(orphan)):
+        bot._orphanHarvester = None   # reconnected by other means — nothing owed
+        return False
+
+    # Re-relay it, strict: merge only onto a proven network member. Without this
+    # planRelay reads the orphan's own dead-ended partial line as intact from afar
+    # (_chainVisiblyIntact trusts an out-of-vision chain) and reports it connected,
+    # laying nothing. Any enemy launcher grab ring *in view* is hard-avoided so the
+    # line routes around a live one; a launcher out of vision isn't in the set, so a
+    # still-live one can re-fling us — bounded, since that re-records the orphan
+    # (_handleFling) and we retry after the cooldown.
+    bot.relayFrom = orphan
+    bot.inRelay = True
+    bot._strictRelay = True
+    bot.oreTarget = None            # commit — as buildHarvester/seizeHarvester do
+    bot.relayAvoid |= _launcherGrabTiles(bot, ct)
+    clearHold(bot)
+    # Cooldown set before the attempt so it holds whether the line commits or fails.
+    # Deliberately do NOT clear _orphanHarvester on commit: relayToHome can still
+    # abort this line later without delivering (a contested tile, a collapsed
+    # re-plan), and those aren't flings, so _handleFling won't re-record it —
+    # clearing here would silently revert to the original orphan bug. The pre-check
+    # above clears it once the harvester is observed connected; the inRelay gate at
+    # the top keeps us from interfering while the line runs.
+    bot._orphanNextTry = ct.get_current_round() + RECONNECT_RETRY_TURNS
+    acted = relayToHome(bot, ct)
+    if bot.inRelay and debug.ENABLED:
+        debug.log("reconnect", f"re-relaying orphan {orphan} rnd={ct.get_current_round()}")
+    return acted or bot.inRelay
+
+
 def buildHarvester(bot, ct: Controller) -> bool:
     """Plant a harvester on the claimed ore, then commit to relaying it home.
 
@@ -313,6 +527,22 @@ def buildHarvester(bot, ct: Controller) -> bool:
         bot.oreTarget = None
         return hijackRelay(bot, ct, ore)
     if t.etype == EntityType.BARRIER and t.enemy:
+        # Only a turn we're actually about to shoot counts as an engaged look —
+        # patience.stallCheck wants that, and a builder merely holding (broke,
+        # off-cooldown check aside) shouldn't advance the stall clock toward
+        # giving up a barrier it never got to contest.
+        if ct.can_fire(ore) and _barrierRepaired(bot, ct, ore):
+            # Being out-repaired: the barrier's HP has stalled, so the enemy is
+            # mending it as fast as we grind. Give the node up (oreSkip holds it
+            # off for ORE_SKIP_TURNS, then it's re-probed) and re-pick rather than
+            # bleed Ti.
+            _skipOre(bot, ore)
+            stallForget(bot._oreGrindLow, (ore.x, ore.y))
+            bot.oreTarget = None
+            if debug.ENABLED:
+                debug.log("ore", f"barrier repaired, skip ore {ore} "
+                                 f"rnd={ct.get_current_round()}")
+            return False
         # Grind it down. Keep the claim: once it falls, the tile reads clear next
         # pass and we build as normal.
         fired, keepTask = _grindBarrier(
@@ -321,6 +551,11 @@ def buildHarvester(bot, ct: Controller) -> bool:
         if fired and debug.ENABLED:
             debug.log("ore", f"clear barrier on ore {ore} rnd={ct.get_current_round()}")
         return keepTask
+
+    # No enemy barrier on the node now (cleared, or never there): drop any grind
+    # memory so a barrier that later reappears here is judged fresh, not against a
+    # stale low from a previous grind (which would skip it immediately).
+    stallForget(bot._oreGrindLow, (ore.x, ore.y))
 
     if waitTi(bot, ct, ct.get_harvester_cost()):
         return True
@@ -374,6 +609,22 @@ def seekOre(bot, ct: Controller) -> bool:
     if launcher.requestLaunch(bot, ct, ore):
         return True
 
+    # Net-progress backstop: we are reporting walk "progress" every turn but not
+    # actually getting closer to the node (shoved back, oscillating). Give it up
+    # before spending the turn walking, so we re-pick next turn instead of churning.
+    if _approachStalled(bot, ct, ore):
+        _skipOre(bot, ore)
+        bot.oreTarget = None
+        _clearApproach(bot)
+        if debug.ENABLED:
+            debug.log(
+                "fling",
+                f"approach stalled on {ore} (no gain in "
+                f"{STALL_NO_PROGRESS_TURNS} turns); conceding "
+                f"rnd={ct.get_current_round()}",
+            )
+        return False
+
     def beside(p: Position) -> bool:
         return abs(p.x - ore.x) + abs(p.y - ore.y) == 1
 
@@ -385,7 +636,41 @@ def seekOre(bot, ct: Controller) -> bool:
     # enemy harvester for 400 turns.
     _skipOre(bot, ore)
     bot.oreTarget = None
+    _clearApproach(bot)
     return False
+
+
+def _approachStalled(bot, ct: Controller, ore: Position) -> bool:
+    """Tick the net-progress tracker for the walk toward `ore`; True once the
+    closest we have come to it hasn't improved for STALL_NO_PROGRESS_TURNS turns.
+
+    Keyed on the node: a new target restarts the tracker. Resets on every new best
+    (minimum) manhattan distance, which any real approach keeps achieving as it
+    nears the node — so only a builder that genuinely stops closing the gap ages
+    out. See STALL_NO_PROGRESS_TURNS for why this exists and why it is approach-only.
+    """
+    pos = ct.get_position()
+    d = abs(pos.x - ore.x) + abs(pos.y - ore.y)
+    key = (ore.x, ore.y)
+    if bot._ecoStallGoal != key:
+        bot._ecoStallGoal = key
+        bot._ecoBestDist = d
+        bot._ecoStallTurns = 0
+        return False
+    if d < bot._ecoBestDist:
+        bot._ecoBestDist = d
+        bot._ecoStallTurns = 0
+        return False
+    bot._ecoStallTurns += 1
+    return bot._ecoStallTurns >= STALL_NO_PROGRESS_TURNS
+
+
+def _clearApproach(bot) -> None:
+    """Drop the net-progress tracker once we stop approaching a node (conceded it,
+    or it was reached and handed to build/relay). A fresh target re-seeds it."""
+    bot._ecoStallGoal = None
+    bot._ecoBestDist = 0
+    bot._ecoStallTurns = 0
 
 
 def _detourPenalty(ct: Controller, hm, origin: Position, ore: Position) -> int:
@@ -464,6 +749,9 @@ def rankOre(bot, ct: Controller, distTo) -> tuple[list[Position], list[Position]
         elif t.etype == EntityType.HARVESTER and t.enemy:
             if _withinHijackRange(bot, ore) and not _alreadyTapped(bot, ct, ore):
                 ranked.append((d - HIJACK_BONUS, ore))
+        elif t.etype == EntityType.BARRIER and t.enemy:
+            if _worthClearing(bot, ore):
+                ranked.append((d + ORE_BARRIER_CLEAR_PENALTY, ore))
         elif _sightingStale(bot, ct, ore):
             stale.append(ore)
 
@@ -476,8 +764,10 @@ def chooseOre(bot, ct: Controller, distTo, index: int) -> Position | None:
     """Pick out of `rankOre` by `index`, fanning consecutive builders across nodes.
 
     The spread is `index % min(len, ORE_SPREAD)` and not a claim — see observations.md
-    under Known gaps. `respawn` calls this with the index the *next* builder will be
-    given, purely to guess where it will head; that guess never reaches the builder.
+    under Known gaps. For the pre-spawn guess, `index` is the one the builder about to
+    be spawned will be given (`built + _MYINDEX_OFFSET`, empirically +2 — see
+    observations.md); the guess only predicts where it will head and never reaches the
+    builder.
     """
     ranked, stale = rankOre(bot, ct, distTo)
     if ranked:
@@ -518,6 +808,8 @@ def _oreWorthGoing(bot, ct: Controller, ore: Position) -> bool:
         return True
     if t.etype == EntityType.HARVESTER and t.enemy:
         return _withinHijackRange(bot, ore) and not _alreadyTapped(bot, ct, ore)
+    if t.etype == EntityType.BARRIER and t.enemy:
+        return _worthClearing(bot, ore)
     return _sightingStale(bot, ct, ore)
 
 
@@ -559,3 +851,30 @@ def _withinHijackRange(bot, ore: Position) -> bool:
     if core is None:
         return True
     return ph.manhattanToCore(ore, core) <= HIJACK_MAX_MANHATTAN
+
+
+def _worthClearing(bot, ore: Position) -> bool:
+    """True if an enemy-barriered ore node is worth claiming to grind clear: close
+    enough to our core (ORE_BARRIER_CLEAR_RADIUS) and not one we already gave up on
+    (repaired, held off in oreSkip). A far barriered node isn't worth a multi-turn
+    grind — open ore is a better use of the builder."""
+    if _skipped(bot, ore):
+        return False
+    core = bot.corePos
+    return core is None or ph.manhattanToCore(ore, core) <= ORE_BARRIER_CLEAR_RADIUS
+
+
+def _barrierRepaired(bot, ct: Controller, ore: Position) -> bool:
+    """True if grinding the barrier on `ore` has stopped making progress — its HP
+    hasn't hit a new low for ORE_BARRIER_STALL_TURNS consecutive engaged looks
+    (patience.stallCheck — a count of checks, not elapsed turns, so a builder
+    flung or retargeted off the node mid-grind doesn't return to an instant false
+    give-up), i.e. the enemy repairs it as fast as we cut. Keeps grinding a barrier
+    we're actually breaking (HP still falling). HP unreadable (no building id)
+    reads as not-stalled, so we fall through and grind as before."""
+    bid = ct.get_tile_building_id(ore)
+    if bid is None:
+        return False
+    hp = ct.get_hp(bid)
+    key = (ore.x, ore.y)
+    return stallCheck(bot._oreGrindLow, key, hp, ORE_BARRIER_STALL_TURNS)

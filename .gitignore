@@ -11,6 +11,7 @@ replay.replay*
 local_bots/
 docs/superpowers/
 *.zip
+*.log
 .cursor/
 .DS_Store
 .aider*

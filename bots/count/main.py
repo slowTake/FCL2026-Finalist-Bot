@@ -27,11 +27,13 @@ if _HERE:
 
 from fcode import Controller, EntityType, Position  # noqa: E402
 
+import debug  # noqa: E402
 import guns  # noqa: E402
 import launcher  # noqa: E402
 import raid  # noqa: E402
 import store  # noqa: E402
 from ecoBot import runEcoBot  # noqa: E402
+from guardianBot import runGuardian  # noqa: E402
 from hivemind import CoreState, HiveMind, unpack_cores  # noqa: E402
 from raidBot import runRaidBot  # noqa: E402
 from respawn import isReplenishmentRaider, runCoreSpawn  # noqa: E402
@@ -53,6 +55,12 @@ class Player:
         # tile -> times this relay has re-laid it, so a destroy/rebuild war with
         # another builder is detectable (see relays.BELT_CONTEST_LIMIT)
         self.relayRebuilds: dict[tuple[int, int], int] = {}
+        # Reconnection relays (ecoBot.reconnectOrphan) set this so planRelay merges
+        # only onto a *proven* network member, not a belt chain it merely can't see to
+        # be cut — the orphan's own dead-ended partial line reads intact from afar and
+        # would otherwise be trusted, leaving the harvester unconnected. Off for normal
+        # relays, which rely on that out-of-vision trust. Cleared by _teardownRelay.
+        self._strictRelay = False
 
         # Walk state (movement.py)
         self.walkPath: list[Position] | None = None
@@ -64,6 +72,45 @@ class Player:
         # Economy state (ecoBot.py)
         self.oreTarget: Position | None = None
         self.oreSkip: dict[tuple[int, int], int] = {}
+        # Lowest HP this builder has driven an enemy barrier sitting on a claimed
+        # ore node to, tile -> (low HP, consecutive stalled checks) — see
+        # patience.stallCheck (ecoBot.buildHarvester via _barrierRepaired).
+        # Barrier-grind is otherwise a stateless re-fire, so an enemy repairing the
+        # barrier as fast as we cut would trap the builder bleeding Ti on a node it
+        # can never free; when the low stops improving we give the node up via
+        # oreSkip and move on. Per-unit and self-healing, same as oreSkip. Empty on
+        # any unit that never grinds an ore barrier.
+        self._oreGrindLow: dict[tuple[int, int], tuple[int, int]] = {}
+        # Fling detection (ecoBot._handleFling). Position at the start of this
+        # unit's last eco turn, to spot an external >1-tile displacement (an enemy
+        # launcher throw) turn-over-turn. None until its first eco turn.
+        self._ecoLastPos: Position | None = None
+        # Net-progress backstop (ecoBot._approachStalled). The node currently being
+        # walked to, the closest we have come to it, and how many turns that best
+        # has stood without improving — so a builder reporting walk progress every
+        # turn yet never closing on its node is given up rather than churning.
+        self._ecoStallGoal: tuple[int, int] | None = None
+        self._ecoBestDist: int = 0
+        self._ecoStallTurns: int = 0
+        # Orphan reconnection (ecoBot.reconnectOrphan). The harvester this builder
+        # built but was flung off before its relay reached the core — it feeds nothing
+        # and nobody else returns to it (rankOre skips own-harvester tiles). Held so
+        # the builder re-relays it home once the fling threat clears; _orphanNextTry
+        # rate-limits the re-plan so a still-blocked orphan isn't re-searched every turn.
+        self._orphanHarvester: Position | None = None
+        self._orphanNextTry: int = 0
+
+        # Guardian role (roles/guardianBot.py). Set True in relays.relayDone once
+        # this builder has delivered a harvester end-to-end — the eligibility gate
+        # for claiming guardian duty. The patrol cursor is this guardian's place
+        # in its leash-waypoint ring. Both are only ever read on builders.
+        self._harvesterDelivered = False
+        self._guardianPatrolIdx = 0
+        # Did the guardian ladder run to completion last turn. Gates the liveness
+        # heartbeat, so a guardian that faults or TLEs in the same place every turn
+        # stops stamping and is replaced instead of holding the role while doing
+        # nothing (guardianBot.runGuardian). True initially so the first turn stamps.
+        self._guardianTurnOk = True
 
         # Enemy core, once this unit (via the shared ledger) has actually seen it
         # (raid.enemyCorePos). Ground truth that overrides a wrong/absent
@@ -88,8 +135,8 @@ class Player:
         self._placedLauncher = False
 
         # Raider replenishment clock (respawn.runCoreSpawn). Round the core last
-        # spawned an 800-Ti replenishment raider, so the next waits out the
-        # interval. None until the first one; only ever set on the core.
+        # spawned a replenishment raider (see respawn.REPLENISH_TI), so the next
+        # waits out the interval. None until the first one; only ever set on the core.
         self._lastReplenishRound: int | None = None
 
         # Gunner idle timer (guns.gunnerLoop). Round this gunner last had a
@@ -100,6 +147,14 @@ class Player:
         # empty arc. None until its first loop, which seeds the clock at birth so
         # a never-targeted gunner still ages out. Stays None on non-gunner units.
         self._gunnerLastActive: int | None = None
+
+        # Sentinel idle timer (guns.sentinelLoop). Round this sentinel last had a
+        # target on its fixed arc — a sentinel can't rotate, so this is keyed on an
+        # on-arc target (can_fire_from), not merely a visible one. It self-destructs
+        # after guns.SENTINEL_IDLE_SELF_DESTRUCT_ROUNDS with a dead arc. None until
+        # its first loop, which seeds the clock at birth so a never-targeted sentinel
+        # still ages out. Stays None on non-sentinel units.
+        self._sentinelLastActive: int | None = None
 
         # Patience (patience.py)
         self.holdReason: str | None = None
@@ -124,6 +179,65 @@ class Player:
         # instead. Empty on any unit that never sieges.
         self._siegeDodgeBlacklist: dict[tuple[int, int], int] = {}
 
+        # Raider travel waypoint (roles/raidBot.advance). A raider crossing to the
+        # enemy core commits to one ~8-tile staging tile and reuses it until reached
+        # so walkTo caches the hop instead of replanning a full A* every step — the
+        # churning-waypoint replan was the raider's dominant search cost on a large
+        # map. Paired with the site it was picked for, so a retarget recomputes.
+        # Both None on any unit that never travels as a raider.
+        self._raidWaypoint: Position | None = None
+        self._raidWaypointSite: tuple[int, int] | None = None
+
+        # Raider press-core back-off (roles/raidBot.pressCore). Round until which a
+        # raider whose route to the enemy core just failed stops re-running the
+        # ~9ms A*+BFS. Without it, a raider flung outside the enemy core-ring wall
+        # (its committed waypoint now walled off) re-grinds the same dead search
+        # every turn and TLEs. 0 = not backed off. Only ever set on a raider.
+        self._pressCoreBackoffUntil = 0
+
+        # Tiles this raider's siege walk found no route to, tile -> round marked
+        # (roles/raidBot._markIfNoRoute) — both the ring tiles it works and the tiles
+        # it dodges to. Each has somewhere else to go, so a dead search bars that one
+        # tile and the pick moves on, rather than re-grinding the same ~9ms A*+BFS at
+        # it every turn (which is a per-turn TLE, i.e. a raider that visibly stops
+        # doing anything). Barring is temporary: ground opens and closes as both
+        # sides build.
+        self._siegeUnreachable: dict[tuple[int, int], int] = {}
+
+        # Repaired-belt give-up state for the raider's siege belt-cut
+        # (roles/raidBot._siege). The belt-cut fire loop is otherwise stateless:
+        # it re-fires an adjacent enemy belt every turn it can, so an enemy that
+        # repairs the belt as fast as we grind it drains our Ti (2/shot) forever
+        # for no net damage — a losing trade. _beltGrindLow tracks the lowest HP
+        # this raider has driven each belt tile to, and how many consecutive
+        # engaged looks it's held there (patience.stallCheck); once that reaches
+        # _BELT_STALL_TURNS the belt is being out-repaired, so we bar it in
+        # _beltGaveUp (tile -> round barred) and move on. Temporary and per-unit,
+        # same as the blacklists above: _beltGaveUp self-heals on
+        # _BELT_GIVEUP_MEMORY_TURNS so a belt the enemy stops tending is
+        # re-probed; _beltGrindLow is cleared (patience.stallForget) the next
+        # time this raider looks at a tile that's no longer a live enemy belt,
+        # so a later rebuild is judged fresh rather than against a stale low —
+        # best-effort, since a tile it never revisits keeps a stale entry until
+        # the next thing that overwrites it. Both empty on any unit that never
+        # sieges.
+        self._beltGrindLow: dict[tuple[int, int], tuple[int, int]] = {}
+        self._beltGaveUp: dict[tuple[int, int], int] = {}
+
+        # Count of dead searches this unit's walkTo has run (bumped in
+        # movement.walkTo). Callers snapshot it before a walk and compare after, to
+        # ask "did *that* walk fail" — the sticky holdReason can't answer it, and a
+        # round stamp can't either once two walks share a turn. Monotonic; only the
+        # difference is ever read, so it never needs resetting.
+        self.noRouteSeq = 0
+
+        # Consecutive turns guns.defendCore has stood in range of a core threat that
+        # none of our pads bear on. Its own counter and not patience.holdTask,
+        # because walkTo clears the shared hold on every arrival — which silently
+        # made that patience infinite and kept a builder beside a threat until it
+        # died. Reset on any turn defence actually acts or gives up.
+        self._defendStuckTurns = 0
+
         # Instrumentation (telemetry.py) — None unless COUNT_CPU=1.
         self._cpu = CpuMeter() if CPU_TELEMETRY else None
 
@@ -146,6 +260,18 @@ class Player:
         except Exception:
             if self._cpu is not None:
                 self._cpu.fault()
+            # Say what died, when tracing is on. The swallow itself is right — an
+            # escaping exception destroys this unit for the rest of the match — but
+            # swallowing it *silently* cost us a whole class of bug: a unit that
+            # throws on turn 1 and every turn after looks exactly like a unit that
+            # decided to stand still, and a raider bricked this way sat idle for 89
+            # rounds with a full bank before anyone thought to suspect a crash
+            # (emplace.enemyTurrets on an enemy launcher). One debug-gated line
+            # turns that silence into the answer.
+            if debug.ENABLED:
+                import traceback
+                debug.log("fault", f"id={ct.get_id()} rnd={ct.get_current_round()} "
+                                   f"{traceback.format_exc().strip().splitlines()[-1]}")
 
         # Sampled after the handler rather than in a `finally` — the engine's bot
         # validator rejects `finally` outright — so a faulted turn is measured
@@ -185,6 +311,16 @@ class Player:
 
         if index and (index in (raider1, raider2) or isReplenishmentRaider(index)):
             runRaidBot(self, ct)
+            return
+
+        # Guardian is claimed at runtime (not named at spawn like raiders): the
+        # first eco-builder to deliver a harvester writes its index here via
+        # guardianBot.claimIfOpen. The index is unique and never reused, so only
+        # the actual guardian matches — a dead guardian's stale slot matches
+        # nobody and is reclaimed by the next eligible builder.
+        guardian, _hb = store.readGuardian(ct)
+        if index and index == guardian:
+            runGuardian(self, ct)
             return
 
         runEcoBot(self, ct)
