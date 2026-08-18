@@ -50,6 +50,25 @@ HIJACK_MAX_MANHATTAN = 12
 # worth a short detour — but not an expedition.
 HIJACK_BONUS = 4
 
+# An ore node with an enemy barrier on it is claimable — the builder walks up and
+# grinds the barrier off (buildHarvester), then harvests — but only when it's this
+# close to our core. Grinding a full barrier is ~10 shots of Ti, a real commitment,
+# so we only make it for a node near home; a far barriered node is still skipped in
+# favour of open ore. Tighter than HIJACK_MAX_MANHATTAN on purpose: tapping a
+# harvester is one action, clearing a barrier is a multi-turn grind.
+ORE_BARRIER_CLEAR_RADIUS = 7
+
+# Rank cost added to a barriered ore node's distance, ~ the Ti/turns to grind the
+# barrier down. Keeps a comparably-near clear node preferred: we only route to the
+# barriered one when it's clearly the best remaining option nearby.
+ORE_BARRIER_CLEAR_PENALTY = 20
+
+# Grinding an ore barrier that hasn't hit a new low HP for this many turns is being
+# repaired as fast as we cut — a losing Ti trade. Give the node up (oreSkip) and
+# move on. Long enough to break a barrier we're genuinely winning (a full barrier
+# is ~10 unopposed shots), short enough to cap the wasted Ti.
+ORE_BARRIER_STALL_TURNS = 11
+
 # Manhattan radius from our core within which an idle builder will clear an enemy
 # barrier that has severed one of our supply lines and re-lay the belt. Bounded to
 # "near the core" on purpose: this is a defensive bandage for the enemy's
@@ -508,6 +527,17 @@ def buildHarvester(bot, ct: Controller) -> bool:
         bot.oreTarget = None
         return hijackRelay(bot, ct, ore)
     if t.etype == EntityType.BARRIER and t.enemy:
+        # Being out-repaired: the barrier's HP has stalled, so the enemy is mending
+        # it as fast as we grind. Give the node up (oreSkip holds it off for
+        # ORE_SKIP_TURNS, then it's re-probed) and re-pick rather than bleed Ti.
+        if _barrierRepaired(bot, ct, ore):
+            _skipOre(bot, ore)
+            bot._oreGrindLow.pop((ore.x, ore.y), None)
+            bot.oreTarget = None
+            if debug.ENABLED:
+                debug.log("ore", f"barrier repaired, skip ore {ore} "
+                                 f"rnd={ct.get_current_round()}")
+            return False
         # Grind it down. Keep the claim: once it falls, the tile reads clear next
         # pass and we build as normal.
         fired, keepTask = _grindBarrier(
@@ -516,6 +546,11 @@ def buildHarvester(bot, ct: Controller) -> bool:
         if fired and debug.ENABLED:
             debug.log("ore", f"clear barrier on ore {ore} rnd={ct.get_current_round()}")
         return keepTask
+
+    # No enemy barrier on the node now (cleared, or never there): drop any grind
+    # memory so a barrier that later reappears here is judged fresh, not against a
+    # stale low from a previous grind (which would skip it immediately).
+    bot._oreGrindLow.pop((ore.x, ore.y), None)
 
     if waitTi(bot, ct, ct.get_harvester_cost()):
         return True
@@ -709,6 +744,9 @@ def rankOre(bot, ct: Controller, distTo) -> tuple[list[Position], list[Position]
         elif t.etype == EntityType.HARVESTER and t.enemy:
             if _withinHijackRange(bot, ore) and not _alreadyTapped(bot, ct, ore):
                 ranked.append((d - HIJACK_BONUS, ore))
+        elif t.etype == EntityType.BARRIER and t.enemy:
+            if _worthClearing(bot, ore):
+                ranked.append((d + ORE_BARRIER_CLEAR_PENALTY, ore))
         elif _sightingStale(bot, ct, ore):
             stale.append(ore)
 
@@ -765,6 +803,8 @@ def _oreWorthGoing(bot, ct: Controller, ore: Position) -> bool:
         return True
     if t.etype == EntityType.HARVESTER and t.enemy:
         return _withinHijackRange(bot, ore) and not _alreadyTapped(bot, ct, ore)
+    if t.etype == EntityType.BARRIER and t.enemy:
+        return _worthClearing(bot, ore)
     return _sightingStale(bot, ct, ore)
 
 
@@ -806,3 +846,33 @@ def _withinHijackRange(bot, ore: Position) -> bool:
     if core is None:
         return True
     return ph.manhattanToCore(ore, core) <= HIJACK_MAX_MANHATTAN
+
+
+def _worthClearing(bot, ore: Position) -> bool:
+    """True if an enemy-barriered ore node is worth claiming to grind clear: close
+    enough to our core (ORE_BARRIER_CLEAR_RADIUS) and not one we already gave up on
+    (repaired, held off in oreSkip). A far barriered node isn't worth a multi-turn
+    grind — open ore is a better use of the builder."""
+    if _skipped(bot, ore):
+        return False
+    core = bot.corePos
+    return core is None or ph.manhattanToCore(ore, core) <= ORE_BARRIER_CLEAR_RADIUS
+
+
+def _barrierRepaired(bot, ct: Controller, ore: Position) -> bool:
+    """True if grinding the barrier on `ore` has stopped making progress — its HP
+    hasn't hit a new low for ORE_BARRIER_STALL_TURNS, i.e. the enemy repairs it as
+    fast as we cut. Keeps grinding a barrier we're actually breaking (HP still
+    falling). HP unreadable (no building id) reads as not-stalled, so we fall
+    through and grind as before."""
+    bid = ct.get_tile_building_id(ore)
+    if bid is None:
+        return False
+    hp = ct.get_hp(bid)
+    key = (ore.x, ore.y)
+    turn = bot.hivemind.global_turn
+    low, lowTurn = bot._oreGrindLow.get(key, (hp + 1, turn))
+    if hp < low:
+        bot._oreGrindLow[key] = (hp, turn)
+        return False
+    return turn - lowTurn >= ORE_BARRIER_STALL_TURNS

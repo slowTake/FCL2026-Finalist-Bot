@@ -72,6 +72,14 @@ class Player:
         # Economy state (ecoBot.py)
         self.oreTarget: Position | None = None
         self.oreSkip: dict[tuple[int, int], int] = {}
+        # Lowest HP this builder has driven an enemy barrier sitting on a claimed
+        # ore node to, tile -> (low HP, turn) (ecoBot.buildHarvester via
+        # _barrierRepaired). Barrier-grind is otherwise a stateless re-fire, so an
+        # enemy repairing the barrier as fast as we cut would trap the builder
+        # bleeding Ti on a node it can never free; when the low stops improving we
+        # give the node up via oreSkip and move on. Per-unit and self-healing, same
+        # as oreSkip. Empty on any unit that never grinds an ore barrier.
+        self._oreGrindLow: dict[tuple[int, int], tuple[int, int]] = {}
         # Fling detection (ecoBot._handleFling). Position at the start of this
         # unit's last eco turn, to spot an external >1-tile displacement (an enemy
         # launcher throw) turn-over-turn. None until its first eco turn.
