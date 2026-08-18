@@ -69,6 +69,15 @@ class Player:
         self.walkGoal = None
         self.walkAvoid: set[tuple[int, int]] = set()
 
+        # Core-reachable open-terrain set (ph.coreBeltReach). Cached across turns and
+        # only re-flooded when the ledger grows (new terrain) or the refresh window
+        # lapses — terrain is immutable, so this stays valid between. `_beltReachKnown`
+        # is the ledger tile-count it was built at; `_beltReachRound` the round.
+        # Drives pocket-ore rejection and the relay-seed approach in ecoBot.
+        self._beltReachKnown = -1
+        self._beltReachRound = -1
+        self._beltReachSet: set[tuple[int, int]] = set()
+
         # Economy state (ecoBot.py)
         self.oreTarget: Position | None = None
         self.oreSkip: dict[tuple[int, int], int] = {}
