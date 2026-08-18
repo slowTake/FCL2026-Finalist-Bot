@@ -622,8 +622,10 @@ def chooseOre(bot, ct: Controller, distTo, index: int) -> Position | None:
     """Pick out of `rankOre` by `index`, fanning consecutive builders across nodes.
 
     The spread is `index % min(len, ORE_SPREAD)` and not a claim — see observations.md
-    under Known gaps. `respawn` calls this with the index the *next* builder will be
-    given, purely to guess where it will head; that guess never reaches the builder.
+    under Known gaps. For the pre-spawn guess, `index` is the one the builder about to
+    be spawned will be given (`built + _MYINDEX_OFFSET`, empirically +2 — see
+    observations.md); the guess only predicts where it will head and never reaches the
+    builder.
     """
     ranked, stale = rankOre(bot, ct, distTo)
     if ranked:

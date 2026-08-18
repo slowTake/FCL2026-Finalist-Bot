@@ -99,7 +99,8 @@ and would be expensive to relearn.
   (they move on their own) and blacklists anything else.
 - **Builders are born facing where they are going, but are told nothing.** The core
   runs the same `chooseOre` the newborn will run — with the index that builder is
-  about to be allocated (`read_store(4) + 1`) — and spawns it on the ring tile
+  about to be allocated (`read_store(4) + 2`; the spawn write has already landed, so
+  the count includes the newborn — see the `my_index` "+2" entry below) — and spawns it on the ring tile
   nearest that node. The guess is then discarded: nothing goes in the store, the
   builder re-picks from scratch, so a wrong guess costs one tile and never a
   commitment. Spread comes free from `ORE_SPREAD`, which already fans consecutive
