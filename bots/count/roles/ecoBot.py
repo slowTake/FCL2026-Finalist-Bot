@@ -576,6 +576,21 @@ def buildHarvester(bot, ct: Controller) -> bool:
     if (pos.x, pos.y) not in ph.coreBeltReach(bot, ct):
         return False
 
+    # Don't sit in a gun's firing line waiting for titanium to build one harvester —
+    # concede a threatened tile we have already been hit on (hp below max) and re-pick;
+    # oreSkip holds it off so we don't march straight back, and seekOre's seed pick
+    # prefers a safe tile when one exists. We still build outright when we can afford
+    # it now (below): that is one turn of exposure, not an open-ended vigil.
+    if (ct.get_global_resources() < ct.get_harvester_cost()
+            and (pos.x, pos.y) in ph.costContext(bot, ct, "walk").threat
+            and ct.get_hp() < ct.get_max_hp()):
+        _skipOre(bot, ore)
+        bot.oreTarget = None
+        if debug.ENABLED:
+            debug.log("ore", f"under fire at {pos} building {ore}; conceding "
+                             f"rnd={ct.get_current_round()}")
+        return False
+
     if waitTi(bot, ct, ct.get_harvester_cost()):
         return True
     if ct.get_global_resources() < ct.get_harvester_cost():
@@ -637,10 +652,15 @@ def seekOre(bot, ct: Controller) -> bool:
             _clearApproach(bot)
             return False
         onSeed = any(pos.x == n.x and pos.y == n.y for n in seeds)
-        # Nearest to the core (the natural belt start), then nearest to us — a
-        # second key that mirrors with the map, so the pick is symmetric where the
-        # bare N,E,S,W order would tie two lateral seeds and favour one side.
+        # Prefer a seed out of an enemy gun's firing line first — parking the build on
+        # a shot tile is what leaves a waiting builder bleeding (soft: it still falls
+        # back to a threatened seed when that is the only one). Then nearest to the
+        # core (the natural belt start), then nearest to us — a second distance key
+        # that mirrors with the map, so the pick is symmetric where the bare N,E,S,W
+        # order would tie two lateral seeds and favour one side.
+        threat = ph.costContext(bot, ct, "walk").threat
         seedGoal = min(seeds, key=lambda n: (
+            (n.x, n.y) in threat,
             ph.manhattanToCore(n, bot.corePos),
             abs(n.x - pos.x) + abs(n.y - pos.y),
         ))
