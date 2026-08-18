@@ -433,30 +433,36 @@ def _siege(bot, ct: Controller, enemyCore: Position) -> bool:
                 if debug.ENABLED:
                     debug.log("raidBot", f"siege-cut {pos}->{t} rnd={ct.get_current_round()}")
                 return True
+        # A clear core (no belt to sever, no enemy builder to lock out in current
+        # vision) means a wall would seal nothing and a launcher has no builders to
+        # fling — so against a build-nothing rush the raider goes gunners-only:
+        # no launcher, no barrier fallback, just gunners to grind the core (or
+        # nothing this turn and retry once funded). Read once per action turn now,
+        # since it gates both the launcher and the wall below; the cheap belt-cut
+        # path above returns first, so it never pays for this read.
+        coreClear = _coreClear(bot, ct, enemyCore)
         # 1.5) Embed the one apron launcher in the ring, in place of a barrier on
         # the enemy-homeward edge tile — surplus-gated, so it never displaces the
-        # cheap cut/wall grind. A no-op once one is already planted.
-        if buildApronLauncher(bot, ct, enemyCore):
+        # cheap cut/wall grind. A no-op once one is already planted. Skipped on a
+        # clear core: no enemy builders to trap.
+        if not coreClear and buildApronLauncher(bot, ct, enemyCore):
             return True
         # 2) Seal an adjacent open ring tile (also seals a belt tile we just
         #    cleared). Normally a barrier — it cuts supply and locks out repairing
-        #    builders. But when the core shows no belt to sever and no enemy builder
-        #    to lock out in current vision (_coreClear), a wall seals nothing; plant
-        #    a gunner instead: it occupies the gap exactly as a barrier would AND
-        #    grinds the core. _coreClear is read lazily — only once a real gap is
-        #    found — to keep this CPU-tight hot loop cheap.
-        coreClear = None
+        #    builders. But when the core is clear (_coreClear) a wall seals nothing;
+        #    plant a gunner instead: it occupies the gap exactly as a barrier would
+        #    AND grinds the core. If a gunner is unaffordable this turn, leave the
+        #    gap open for a funded turn rather than wasting the tile on a wall.
         for t in ringTiles:
             if manhattan(pos, t) != 1:
                 continue
             if not ct.can_build_barrier(t):
                 continue
-            if coreClear is None:
-                coreClear = _coreClear(bot, ct, enemyCore)
-            if (coreClear
-                    and ct.get_global_resources() >= ct.get_gunner_cost() + _SIEGE_MIN_TI
-                    and guns.buildSiegeGunner(ct, t, enemyCore)):
-                return True
+            if coreClear:
+                if (ct.get_global_resources() >= ct.get_gunner_cost() + _SIEGE_MIN_TI
+                        and guns.buildSiegeGunner(ct, t, enemyCore)):
+                    return True
+                continue  # clear core: gunner-or-nothing, never a wall
             ct.build_barrier(t)
             if debug.ENABLED:
                 debug.log("raidBot", f"siege-wall {pos}->{t} rnd={ct.get_current_round()}")
