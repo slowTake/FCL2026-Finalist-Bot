@@ -469,6 +469,34 @@ def _coveredByAllySentinel(ct: Controller, myTeam, target: Position) -> bool:
     return False
 
 
+def _alreadyAnswered(ct: Controller, myTeam, target: Position, ttype: EntityType) -> bool:
+    """Cross-type de-dup for home defence: is `target` already covered by an ally
+    turret *adequate for this threat*, so defendCore should place nothing more.
+
+    The per-kind drop helpers only refuse to stack a *second of their own kind*
+    (`_coveredByAllyGunner` / `_coveredByAllySentinel`), so without this an enemy
+    gunner answered by our gunner still draws a sentinel too, and vice versa. This
+    closes that: a threat that already has an adequate answer gets no second turret.
+
+    Adequacy is asymmetric, and that asymmetry is the whole point:
+      * A bearing sentinel out-ranges and out-trades anything, so it answers *any*
+        threat — if one bears, we need nothing else.
+      * A gunner retracks and trades evenly only against a mobile, close-range threat
+        — an enemy gunner or a builder grinding our buildings. Against an enemy
+        sentinel or launcher a gunner is a stopgap that gets out-traded, so a gunner
+        in range there does NOT count as answered: we still want the real sentinel.
+
+    Vision-scoped like its two helpers (nearby buildings only), so two builders far
+    apart can still each answer the same threat — a separate gap, not this one."""
+    if _coveredByAllySentinel(ct, myTeam, target):
+        return True
+    if ttype in (EntityType.GUNNER, EntityType.BUILDER_BOT) and _coveredByAllyGunner(
+        ct, myTeam, target
+    ):
+        return True
+    return False
+
+
 def _dropSentinelOn(ct: Controller, target: Position) -> bool:
     """Build a sentinel on the first orthogonal pad of the calling unit whose
     permanent facing bears on `target`, unless an ally sentinel already covers it.
@@ -735,6 +763,12 @@ def defendCore(bot, ct: Controller, chase: bool = True) -> bool:
     if found is None:
         return False
     threat, ttype = found
+
+    # Already handled by an adequate ally turret? Then add nothing — don't stack a
+    # second sentinel (or a redundant gunner) on a threat that's covered. Falls
+    # through to the caller's other work rather than idling beside it.
+    if _alreadyAnswered(ct, ct.get_team(), threat, ttype):
+        return False
 
     answers = _defenceAnswers(ttype)
 
