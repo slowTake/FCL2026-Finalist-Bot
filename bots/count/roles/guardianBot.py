@@ -218,10 +218,15 @@ def _ladder(bot, ct: Controller) -> None:
     # the guns -> respawn -> ecoBot import cycle (same reason ecoBot imports it
     # this way). defendCore answers turrets, launchers, and enemy builders that are
     # grinding our buildings (never a passing builder — see guns.py). It sits above
-    # the leash step on purpose: its own target set is bounded to the core-threat
-    # radius, so it cannot wander, and answering a live threat outranks coming home.
+    # the leash step on purpose: answering a live threat outranks coming home.
+    #
+    # chase=False: the guardian only *builds* against a threat (out to the full
+    # CORE_THREAT_RADIUS — a sentinel out-ranges it) and never walks the body out to
+    # chase. That keeps it home instead of being baited off the core by a mobile
+    # gunner, while the leash/patrol below repositions it for a bearing across turns.
+    # The eco path keeps chase=True so a farming builder can leave its spot to defend.
     import guns
-    if guns.defendCore(bot, ct):
+    if guns.defendCore(bot, ct, chase=False):
         return
 
     # Quiet from here down. Pull back inside the leash before doing chores so a

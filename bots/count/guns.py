@@ -587,10 +587,13 @@ def placeGunner(bot, ct: Controller, enemyCore: Position | None) -> bool:
 # gun-placement response past the core footprint toward field harvesters, which at 8
 # were undefended (defendCore only ever looked within the core radius).
 #
-# No longer mirrors ecoBot.CORE_DEFENSE_RADIUS (belt-repair) or GUARDIAN_LEASH
-# (quiet-roam), both still 8. Trade-off at this radius: defendCore's walk-toward can
-# now pull the guardian up to 15 tiles off the core chasing a mobile threat — a
-# bait-out risk addressed next.
+# Deliberately NO LONGER mirrors ecoBot.CORE_DEFENSE_RADIUS (belt-repair, still 8) or
+# guardianBot.GUARDIAN_LEASH (quiet-roam, still 8). The bait-out that a bare radius
+# bump would open — a mobile gunner walking the guardian 15 tiles off the core — is
+# closed by defendCore's `chase` flag: the guardian runs chase=False, so this radius
+# governs only how far it will *build* (a sentinel out-ranges the threat), never how
+# far it will walk. The eco path runs chase=True, so a farming builder still closes
+# in to defend within this radius.
 CORE_THREAT_RADIUS = 15
 
 # Enemy types that always threaten the core — turrets that shell it, and the
@@ -697,7 +700,7 @@ def _defenceAnswers(ttype):
     return (gunner,)
 
 
-def defendCore(bot, ct: Controller) -> bool:
+def defendCore(bot, ct: Controller, chase: bool = True) -> bool:
     """Home defence: drop a turret on an enemy closing on our core, or move into
     range so a pad bears on it. True if it acted this turn. An enemy gunner or
     sentinel is answered with whichever of our own turrets bears this turn — a
@@ -712,6 +715,16 @@ def defendCore(bot, ct: Controller) -> bool:
     gate, because a core under attack is worth spending the bank down for. But if we
     can't afford any answer, or we're at the unit cap, we bail rather than idle
     beside the threat: neither changes by walking closer, so better to go earn.
+
+    `chase` decouples build-reach from body-reach. When True (the eco path), a unit
+    with no bearing pad this turn walks toward the threat to get one — an eco-builder
+    can leave its spot to defend. When False (the guardian), it only *builds* from
+    where it can already bear and never walks out: the placement still reaches the
+    full CORE_THREAT_RADIUS (a sentinel out-ranges the threat, so a guardian answers a
+    far turret without relocating), but the standing body stays home instead of being
+    baited off the core by a mobile gunner. The guardian's own patrol repositions it
+    within its leash across turns, so a bearing that isn't there this turn often is
+    the next.
 
     Reactive: fires only for a threat the calling unit can already see, and it
     claims no priority of its own — where this sits relative to a caller's other
@@ -739,6 +752,14 @@ def defendCore(bot, ct: Controller) -> bool:
         for cost_of, place in answers:
             if bank >= cost_of(ct) and place(ct, threat):
                 return True
+
+    # Build-only callers (the guardian) stop here: nothing bore from where we stand,
+    # and we will not walk the body out to chase — holding the core outranks
+    # answering a threat we can only reach by leaving it. Falls through to the
+    # caller's own leash/patrol, which repositions us within the leash for a bearing
+    # next turn.
+    if not chase:
+        return False
 
     # Affordable, under the cap, but nothing bore this turn (cooldown, or no pad
     # bears yet). Close in and hold station rather than fall through to seekOre and
