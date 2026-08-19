@@ -304,12 +304,43 @@ def layBelt(bot, ct: Controller, tile: Position, nextTile: Position) -> bool:
             # around it the line is unfinished — abort WITHOUT claiming a delivery
             # (relayAbort, not relayDone: a conceded relay never reached the core).
             return _replanAvoiding(bot, ct, tile) or relayAbort(bot, ct)
-        # ours, pointing the wrong way. destroy is free and costs no cooldown,
-        # so the replacement goes down in the same turn.
+        # A wrong-facing team-mate belt — route around it, don't bulldoze it.
+        # Bulldozing is the adversarial-relaying war: two harvesters' lines converge
+        # on the same tile (usually open ground on the shortest path to core, not a
+        # real chokepoint) and each re-faces the other's belt for turns, because the
+        # give-up counter is per-builder and never trips across the fight, and the
+        # original static paths were planned before either belt existed so nothing
+        # re-costs them. _replanAvoiding blacklists exactly this tile and re-plans, so
+        # the search is forced onto the open detour beside it. This also covers the
+        # early stub-vs-stub race a connectivity check would miss: we yield whether or
+        # not the rival line has reached the network yet. (A relay-wide belt surcharge
+        # was tried instead and dropped — it pushed lines apart on dense maps like
+        # ragnarok, a measured regression, and the avoid-set already forces the detour.)
+        if _replanAvoiding(bot, ct, tile):
+            return True
+        # No way around. Concede rather than fight a live line: aborting orphans the
+        # harvester into reconnectOrphan, which retries once the winning line has
+        # completed and joined the network (then even a strict re-relay grafts onto
+        # it). Only reclaim the tile when it is a belt we can *see* is dead debris
+        # (a visibly-cut stub), never one whose chain still reaches the network —
+        # re-facing that would strand everything upstream that drains through it.
+        ctx = ph.costContext(bot, ct, "relay")
+        if _chainVisiblyIntact(ctx, ct, bot.hivemind, tile):
+            return relayAbort(bot, ct)
+        # Visibly-cut debris on our only route (no detour exists). Reclaim it in place.
+        # The failed _replanAvoiding just blacklisted this tile and nulled the path on
+        # its way to returning False; undo the blacklist so we don't build a belt on a
+        # tile our own next-turn replan would then route around (that stranded belt is
+        # the stub the reroute was meant to avoid). Safe to discard unconditionally:
+        # this call reached `tile` by walking a path planned through ctx.avoid, so the
+        # tile cannot have been in relayAvoid before now — the only entry we remove is
+        # the one _replanAvoiding just added, never an earlier blacklist or a launcher
+        # grab-ring tile. `facing` is still the original tile->nextTile step, which is
+        # correct — with no detour this tile stays on route. destroy is free, so the
+        # replacement goes down the same turn.
+        bot.relayAvoid.discard((tile.x, tile.y))
         if not ct.can_destroy(tile):
-            return holdTask(bot, "wrongFacing", BLOCKED_WAIT_TURNS) or _replanAvoiding(
-                bot, ct, tile
-            )
+            return holdTask(bot, "wrongFacing", BLOCKED_WAIT_TURNS)
         ct.destroy(tile)
         ph.invalidateTile(bot.hivemind, tile)
         replacing = True
