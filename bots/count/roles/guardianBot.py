@@ -82,8 +82,15 @@ def claimIfOpen(bot, ct: Controller) -> None:
     very first claim is naturally safe here (it fires the turn relayDone ran); a
     re-claim after a guardian death lands on a builder that is usually mid-line,
     which is exactly the case this guard exists for. Waiting a few rounds for the
-    line to finish costs nothing against a TTL the design already tolerates."""
-    if not eligible(bot) or bot.inRelay:
+    line to finish costs nothing against a TTL the design already tolerates.
+
+    Also never claims with a pending orphan. The guardian ladder never runs
+    reconnectOrphan, so a builder holding `_orphanHarvester` (a line that aborted
+    or was flung, awaiting re-relay) would strand that harvester the same way a
+    mid-relay switch does. Defer until it reconnects — the pre-existing orphan
+    machinery clears the flag once the line is restored or the harvester is gone,
+    and the guardian TTL absorbs the wait."""
+    if not eligible(bot) or bot.inRelay or getattr(bot, "_orphanHarvester", None) is not None:
         return
     idx = bot.hivemind.my_index
     if idx <= 0:

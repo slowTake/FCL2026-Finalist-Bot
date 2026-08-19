@@ -68,7 +68,7 @@ def relayToHome(bot, ct: Controller) -> bool:
             # would orphan the harvester and forge guardian eligibility (see
             # relayAbort). Tear down without the flag and fall through to other work
             # this turn, exactly as relayDone does on a genuine completion.
-            return relayAbort(bot)
+            return relayAbort(bot, ct)
         # _Plan.ROUTED: bot.relayPath is now set — fall through and lay it.
 
     belts, anchor = bot.relayPath, bot.relayAnchor
@@ -307,7 +307,7 @@ def layBelt(bot, ct: Controller, tile: Position, nextTile: Position) -> bool:
             # restarts the loop. Concede the tile and go around; if we can't route
             # around it the line is unfinished — abort WITHOUT claiming a delivery
             # (relayAbort, not relayDone: a conceded relay never reached the core).
-            return _replanAvoiding(bot, ct, tile) or relayAbort(bot)
+            return _replanAvoiding(bot, ct, tile) or relayAbort(bot, ct)
         # ours, pointing the wrong way. destroy is free and costs no cooldown,
         # so the replacement goes down in the same turn.
         if not ct.can_destroy(tile):
@@ -442,7 +442,7 @@ def _teardownRelay(bot) -> None:
     bot._strictRelay = False
 
 
-def relayAbort(bot) -> bool:
+def relayAbort(bot, ct: Controller) -> bool:
     """End a relay that did NOT deliver — the delivery-free sibling of relayDone.
 
     Same teardown and hold reset, but never sets `_harvesterDelivered`: for a relay
@@ -452,9 +452,24 @@ def relayAbort(bot) -> bool:
     (rankOre skips own-harvester tiles, repairCoreBelts is barrier-only) — and forge
     the builder's guardian eligibility, which keys on that flag.
 
+    Records `relayFrom` as an orphan before teardown, so a first-time abort — a
+    failed plan, a conceded contested tile — enters ecoBot.reconnectOrphan's retry
+    loop exactly as a fling does. Without this, a harvester whose line never finished
+    on its first attempt is abandoned forever: nothing else ever re-targets an own
+    harvester. Guarded to our own harvester so an aborted enemy-harvester tap
+    (hijackRelay) is not chased — the same check reconnectOrphan makes. The retry
+    cooldown (`_orphanNextTry`) is left untouched: the fling path sets its own
+    (launcher-avoidance) before conceding, and reconnectOrphan self-manages it for
+    the non-fling paths.
+
     Returns False, as relayDone does, so the builder falls through to its next task
     this turn rather than idling.
     """
+    src = bot.relayFrom
+    if src is not None:
+        t = ph.readTile(ct, bot.hivemind, src)
+        if t.etype == EntityType.HARVESTER and not t.enemy:
+            bot._orphanHarvester = src
     _teardownRelay(bot)
     clearHold(bot)
     return False

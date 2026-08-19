@@ -228,7 +228,7 @@ def _handleFling(bot, ct: Controller) -> None:
         # straight back into a launcher that is still live.
         bot._orphanHarvester = goal
         bot._orphanNextTry = ct.get_current_round() + RECONNECT_RETRY_TURNS
-        _concedeRelay(bot)
+        _concedeRelay(bot, ct)
     bot.oreTarget = None
     clearHold(bot)
     if debug.ENABLED:
@@ -239,7 +239,7 @@ def _handleFling(bot, ct: Controller) -> None:
         )
 
 
-def _concedeRelay(bot) -> None:
+def _concedeRelay(bot, ct: Controller) -> None:
     """Abandon a relay the enemy flung us off, without marking a delivery.
 
     The harvester already built is orphaned: accepted, since we cannot finish its
@@ -247,9 +247,11 @@ def _concedeRelay(bot) -> None:
     builder delivers nothing anyway. Delegates to relays.relayAbort — which is
     deliberately not relayDone (that sets _harvesterDelivered / guardian
     eligibility, and a flung relay did not deliver) — so the delivery-free teardown
-    lives in one place, in the module that owns the relay state.
+    lives in one place, in the module that owns the relay state. _handleFling has
+    already recorded the orphan (with its launcher-avoidance cooldown) before this
+    call; relayAbort re-records the same own harvester, which is idempotent here.
     """
-    relayAbort(bot)
+    relayAbort(bot, ct)
 
 
 # ---------------------------------------------------------------------------
