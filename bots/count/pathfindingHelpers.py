@@ -5,6 +5,7 @@ All game knowledge for pathing lives here; pathing.py stays a bare search.
 
 from __future__ import annotations
 
+from collections import deque
 from typing import NamedTuple
 
 from fcode import Controller, Direction, EntityType, Environment, Position
@@ -257,6 +258,104 @@ def coreFootprint(corePos: Position) -> list[Position]:
         Position(corePos.x, corePos.y + 1),
         Position(corePos.x + 1, corePos.y + 1),
     ]
+
+
+# Recompute the reach flood at least this often even when the ledger hasn't grown —
+# a cheap backstop against the rare in-place terrain update (an ore tile first seen
+# under a harvester, its ore flag set only once the tile is later seen bare) that
+# doesn't change the ledger's tile count. Small next to a match; the flood is a few
+# ms at most and this makes it run ~once per this-many turns in the steady state.
+_BELT_REACH_REFRESH = 30
+
+
+def _openTerrain(lm, W: int, H: int, x: int, y: int) -> bool:
+    """Could a belt ever occupy (x, y): in bounds and not permanent ore/wall.
+
+    Reads the shared ledger (`hm.local_map`) only — no Controller call — so the flood
+    below stays pure dict lookups and off the FFI-per-tile cost that made a
+    Controller-backed version ~4ms on a 30x30 open map. Buildings are ignored on
+    purpose: a belt/harvester sits on ground that was already open, and a transient
+    enemy building must not be read as a permanent pocket wall. Mirrors
+    `_readLedger`'s wall/ore determination. Unexplored tiles read open (fog-safe)."""
+    if not (0 <= x < W and 0 <= y < H):
+        return False
+    entry = lm.get((x, y))
+    if entry is None:
+        return True  # never seen by the team — optimistically open
+    if entry.get("ore"):
+        return False
+    ent = entry.get("entity")
+    if ent is not None:
+        if ent.get("type") in ("WALL", "ORE"):
+            return False
+    elif entry.get("passable") is False:
+        return False
+    return True
+
+
+def coreBeltReach(bot, ct: Controller) -> set[tuple[int, int]]:
+    """Every open-terrain tile that connects to the core through open terrain — empty
+    ground (belts and harvesters sit on it); ore and walls are the only barriers,
+    since a belt never sits on ore. One ledger flood from the core footprint, cached
+    per unit and shared by every ore check.
+
+    A free ore node is relayable — and safe to build from — only when it has an
+    orthogonal neighbour in this set: that neighbour is the tile the relay's first
+    belt occupies and the tile the builder stands on to build. A node walled off
+    from the core by its own field (a pocket) has no such neighbour, so we neither
+    plant a harvester nothing can carry home nor let a builder step inside and seal
+    itself in behind its own (impassable) harvesters.
+
+    Terrain (ore/walls) is immutable, so the result only changes when a *new* tile is
+    learned. The shared ledger only ever grows (entries are never dropped), so its
+    tile count is a sound cache key: the flood runs a handful of times while the map
+    is still being explored — when it is cheap and A* is too — then stops, keeping it
+    off the budget on the crowded late-game turns where a 30x30 flood plus a full A*
+    would otherwise blow the 10ms limit. `_BELT_REACH_REFRESH` re-floods occasionally
+    regardless, covering the rare in-place terrain update.
+
+    Fog reads as open, so an unexplored region stays optimistically reachable and
+    only *confirmed* ore/wall walls a pocket off — a builder only ever decides to
+    build once it can see the node, by which point the enclosure is known.
+    """
+    reach: set[tuple[int, int]] = set()
+    core = bot.corePos
+    if core is not None:
+        lm = bot.hivemind.local_map
+        known = len(lm)
+        rnd = ct.get_current_round()
+        if (getattr(bot, "_beltReachKnown", None) == known
+                and rnd - bot._beltReachRound < _BELT_REACH_REFRESH):
+            return bot._beltReachSet
+        W, H = ct.get_map_width(), ct.get_map_height()
+        # Each tile enters `reach` at most once and is popped at most once, so the
+        # flood self-bounds at W*H pops — the guard is a belt-and-braces halt that
+        # never binds (no fingerprinted map exceeds it), not an economy-shrinking cap.
+        limit = W * H
+        queue: deque[tuple[int, int]] = deque()
+        for p in coreFootprint(core):
+            for dx, dy in _ORTHO:
+                key = (p.x + dx, p.y + dy)
+                if key not in reach and _openTerrain(lm, W, H, key[0], key[1]):
+                    reach.add(key)
+                    queue.append(key)
+        iters = 0
+        while queue and iters < limit:
+            iters += 1
+            x, y = queue.popleft()
+            for dx, dy in _ORTHO:
+                key = (x + dx, y + dy)
+                if key in reach:
+                    continue
+                if _openTerrain(lm, W, H, key[0], key[1]):
+                    reach.add(key)
+                    queue.append(key)
+
+        bot._beltReachKnown = known
+        bot._beltReachRound = rnd
+        bot._beltReachSet = reach
+
+    return reach
 
 
 def manhattanToCore(pos: Position, corePos: Position) -> int:

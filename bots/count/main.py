@@ -69,6 +69,15 @@ class Player:
         self.walkGoal = None
         self.walkAvoid: set[tuple[int, int]] = set()
 
+        # Core-reachable open-terrain set (ph.coreBeltReach). Cached across turns and
+        # only re-flooded when the ledger grows (new terrain) or the refresh window
+        # lapses — terrain is immutable, so this stays valid between. `_beltReachKnown`
+        # is the ledger tile-count it was built at; `_beltReachRound` the round.
+        # Drives pocket-ore rejection and the relay-seed approach in ecoBot.
+        self._beltReachKnown = -1
+        self._beltReachRound = -1
+        self._beltReachSet: set[tuple[int, int]] = set()
+
         # Economy state (ecoBot.py)
         self.oreTarget: Position | None = None
         self.oreSkip: dict[tuple[int, int], int] = {}
@@ -99,6 +108,34 @@ class Player:
         # rate-limits the re-plan so a still-blocked orphan isn't re-searched every turn.
         self._orphanHarvester: Position | None = None
         self._orphanNextTry: int = 0
+
+        # Relay verification (ecoBot.verifyRelay). Every 2nd harvester this builder
+        # delivers, it walks that line back to the core to catch a belt destroyed out
+        # of vision — the shared ledger never expires a ghost belt, so nothing else
+        # re-checks a completed line. _relaysConnected is the per-builder delivery
+        # counter (own harvesters only); _verifyHarvester/_verifyLine/_verifyAnchor/
+        # _verifyIdx hold the in-progress walk. A break found on the walk is handed to
+        # reconnectOrphan, which owns the actual repair.
+        self._relaysConnected: int = 0
+        self._verifyHarvester: Position | None = None
+        self._verifyLine: list[Position] | None = None
+        self._verifyAnchor: Position | None = None
+        self._verifyIdx: int = 0
+        self._verifyStep: int = -1   # +1 walk harvester->core, -1 core->harvester
+        self._verifyDeadline: int = 0  # round by which the walk must finish or abandon
+
+        # Orphan walk-confirm (ecoBot._walkConfirmConnected). Before rebuilding an
+        # orphan's line, the builder walks any belt leaving it to learn — from ground
+        # truth, tile by tile — whether it already reaches home; a line another builder
+        # laid may never have entered this unit's ledger, so isNetworkMember can't see
+        # it. _followLine is the belt chain discovered so far; _followDeadline bounds
+        # the walk; _followFor is the harvester it belongs to, so a follow paused by
+        # higher ladder rungs is dropped rather than resumed on a different orphan if
+        # the single _orphanHarvester slot was swapped underneath it. None when no
+        # confirm is in progress.
+        self._followLine: list[Position] | None = None
+        self._followDeadline: int = 0
+        self._followFor: Position | None = None
 
         # Guardian role (roles/guardianBot.py). Set True in relays.relayDone once
         # this builder has delivered a harvester end-to-end — the eligibility gate
@@ -230,6 +267,16 @@ class Player:
         # round stamp can't either once two walks share a turn. Monotonic; only the
         # difference is ever read, so it never needs resetting.
         self.noRouteSeq = 0
+
+        # Memo of the last walk search that came up empty: the goal it was for, the
+        # tile we stood on, and the round. walkTo consults it to skip re-running a
+        # full A*+BFS every turn for a route that just wasn't there and can't have
+        # appeared while we haven't moved — the per-turn cost behind the stuck-unit
+        # TLEs (ore pocket, core press). Any of goal/tile/window changing forces a
+        # fresh search, so a blocker clearing or the unit shifting re-probes at once.
+        self._noRouteGoal = None
+        self._noRoutePos: tuple[int, int] | None = None
+        self._noRouteRound = -(10 ** 9)
 
         # Consecutive turns guns.defendCore has stood in range of a core threat that
         # none of our pads bear on. Its own counter and not patience.holdTask,

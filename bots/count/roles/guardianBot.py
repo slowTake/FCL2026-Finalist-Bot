@@ -82,8 +82,21 @@ def claimIfOpen(bot, ct: Controller) -> None:
     very first claim is naturally safe here (it fires the turn relayDone ran); a
     re-claim after a guardian death lands on a builder that is usually mid-line,
     which is exactly the case this guard exists for. Waiting a few rounds for the
-    line to finish costs nothing against a TTL the design already tolerates."""
-    if not eligible(bot) or bot.inRelay:
+    line to finish costs nothing against a TTL the design already tolerates.
+
+    Also never claims with a pending orphan or an in-progress verification walk. The
+    guardian ladder runs neither reconnectOrphan nor verifyRelay, so a builder holding
+    `_orphanHarvester` (a line awaiting re-relay) or `_verifyHarvester` (a line it is
+    walking to check) would strand that work the same way a mid-relay switch does — and
+    the verify case is worst by timing, since a builder becomes guardian-eligible on the
+    very delivery that arms the walk. Defer until both clear; the guardian TTL absorbs
+    the wait and the pre-existing machinery clears the flags on its own."""
+    if (
+        not eligible(bot)
+        or bot.inRelay
+        or getattr(bot, "_orphanHarvester", None) is not None
+        or getattr(bot, "_verifyHarvester", None) is not None
+    ):
         return
     idx = bot.hivemind.my_index
     if idx <= 0:
@@ -211,10 +224,15 @@ def _ladder(bot, ct: Controller) -> None:
     # the guns -> respawn -> ecoBot import cycle (same reason ecoBot imports it
     # this way). defendCore answers turrets, launchers, and enemy builders that are
     # grinding our buildings (never a passing builder — see guns.py). It sits above
-    # the leash step on purpose: its own target set is bounded to the core-threat
-    # radius, so it cannot wander, and answering a live threat outranks coming home.
+    # the leash step on purpose: answering a live threat outranks coming home.
+    #
+    # chase=False: the guardian only *builds* against a threat (out to the full
+    # CORE_THREAT_RADIUS — a sentinel out-ranges it) and never walks the body out to
+    # chase. That keeps it home instead of being baited off the core by a mobile
+    # gunner, while the leash/patrol below repositions it for a bearing across turns.
+    # The eco path keeps chase=True so a farming builder can leave its spot to defend.
     import guns
-    if guns.defendCore(bot, ct):
+    if guns.defendCore(bot, ct, chase=False):
         return
 
     # Quiet from here down. Pull back inside the leash before doing chores so a

@@ -11,6 +11,12 @@ from pathing import astar, bfs
 
 _WALK_MAX_ITERS = 450
 
+# Turns a failed walk search is trusted before it is re-run for an unmoved unit
+# against an unchanged goal. Short so a blocker clearing (or a freshly cut path)
+# is re-probed within a couple of turns; long enough that a genuinely stuck unit
+# stops paying a full A*+BFS every single turn — see the no-route memo in walkTo.
+_NOROUTE_RECHECK_TURNS = 4
+
 
 def walkTo(bot, ct: Controller, isGoal, heuristicGoal: Position | None, goal) -> bool:
     """Advance one step toward any tile matching isGoal. True if the turn was used.
@@ -41,8 +47,25 @@ def walkTo(bot, ct: Controller, isGoal, heuristicGoal: Position | None, goal) ->
     path = bot.walkPath if bot.walkGoal == goal else None
     idx = _indexOf(path, pos) if path else None
     if idx is None or idx >= len(path) - 1:
+        # A route this walk just failed to find can't have appeared while we stood
+        # on the same tile with the same goal — so within a short window, take the
+        # earlier "no route" as read and hold, instead of re-running a full A*+BFS
+        # that will only exhaust again. This is what stops a unit wedged at an
+        # unreachable goal from burning ~900 search iterations a turn (the TLE).
+        rnd = ct.get_current_round()
+        if (bot._noRouteGoal == goal
+                and bot._noRoutePos == (pos.x, pos.y)
+                and rnd - bot._noRouteRound < _NOROUTE_RECHECK_TURNS):
+            if debug.ENABLED:
+                debug.log("walkTo", f"idx={bot.hivemind.my_index} goal={goal} "
+                                     f"pos={pos} NO PATH (memoised, skip replan)")
+            bot.noRouteSeq += 1
+            return holdTask(bot, "noRoute", BLOCKED_WAIT_TURNS)
         path = _plan(bot, ct, isGoal, heuristicGoal)
         if path is None:
+            bot._noRouteGoal = goal
+            bot._noRoutePos = (pos.x, pos.y)
+            bot._noRouteRound = rnd
             # Tick the dead-search counter. `holdReason` alone can't answer "did the
             # search I just ran come up empty?": it is sticky until some other call
             # clears it, and the move-cooldown early return above exits before
@@ -61,6 +84,7 @@ def walkTo(bot, ct: Controller, isGoal, heuristicGoal: Position | None, goal) ->
                 debug.log("walkTo", f"idx={bot.hivemind.my_index} goal={goal} "
                                      f"pos={pos} NO PATH FOUND (_plan returned None)")
             return holdTask(bot, "noRoute", BLOCKED_WAIT_TURNS)
+        bot._noRouteGoal = None  # found a route — drop any stale no-route memo
         bot.walkGoal = goal
         idx = 0
         if debug.ENABLED:

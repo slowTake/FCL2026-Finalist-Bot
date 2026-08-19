@@ -11,12 +11,23 @@ import pathfindingHelpers as ph
 from movement import exploreStep, walkTo
 from patience import BLOCKED_WAIT_TURNS, clearHold, holdTask, stallCheck, stallForget, waitTi
 import store
-from relays import hijackRelay, relayAbort, relayToHome
+from relays import beltCorrect, hijackRelay, relayAbort, relayToHome, traceToCore
 
 # How many of the nearest ore nodes builders fan out across. Deterministic off
 # my_index, so two builders with different indices rarely pick the same node.
 # Not a claim — see observations.md.
 ORE_SPREAD = 4
+
+# The spread only fans across nodes that are near-*equidistant* — this is how much
+# farther than the nearest a node may be and still count as a peer to spread onto,
+# in the detour-aware step units `distTo` returns. A blind `index % ORE_SPREAD`
+# ignored distance and walked a builder 20-30 tiles past a free node because its
+# index landed on a farther rank — and once early builders became the guardian or
+# raiders, the surviving indices stopped covering the nearest ranks at all, so easy
+# close nodes went unworked. Bounding the fan-out to a distance band takes the
+# nearest node whenever the next one is meaningfully farther, while still splitting a
+# genuine spawn cluster. Small: a cluster is tight; anything past it is a real trek.
+SPREAD_BAND = 5
 
 # Manhattan is blind to walls: a node behind one reads as near as an open node at
 # the same beeline distance, but the walk around the wall is longer. Add an estimate
@@ -161,6 +172,14 @@ def runEcoBot(bot, ct: Controller) -> None:
     if repairCoreBelts(bot, ct):
         return
 
+    # Periodic maintenance: every 2nd delivery, walk the just-connected line back to
+    # the core and confirm it's intact (catches a belt destroyed out of vision — the
+    # ledger never expires a ghost). Below the urgent work above so a threat or a
+    # core-cut pre-empts it, but above reconnectOrphan (a break found hands off there
+    # this same turn) and seekOre (so it runs before the builder leaves for new ore).
+    if verifyRelay(bot, ct):
+        return
+
     # Re-relay one of our own harvesters whose line was abandoned mid-build (a
     # launcher fling, a death) and now feeds nothing — nobody else ever returns to
     # it (rankOre skips own-harvester tiles, repairCoreBelts is barrier-only).
@@ -217,7 +236,7 @@ def _handleFling(bot, ct: Controller) -> None:
         # straight back into a launcher that is still live.
         bot._orphanHarvester = goal
         bot._orphanNextTry = ct.get_current_round() + RECONNECT_RETRY_TURNS
-        _concedeRelay(bot)
+        _concedeRelay(bot, ct)
     bot.oreTarget = None
     clearHold(bot)
     if debug.ENABLED:
@@ -228,7 +247,7 @@ def _handleFling(bot, ct: Controller) -> None:
         )
 
 
-def _concedeRelay(bot) -> None:
+def _concedeRelay(bot, ct: Controller) -> None:
     """Abandon a relay the enemy flung us off, without marking a delivery.
 
     The harvester already built is orphaned: accepted, since we cannot finish its
@@ -236,9 +255,11 @@ def _concedeRelay(bot) -> None:
     builder delivers nothing anyway. Delegates to relays.relayAbort — which is
     deliberately not relayDone (that sets _harvesterDelivered / guardian
     eligibility, and a flung relay did not deliver) — so the delivery-free teardown
-    lives in one place, in the module that owns the relay state.
+    lives in one place, in the module that owns the relay state. _handleFling has
+    already recorded the orphan (with its launcher-avoidance cooldown) before this
+    call; relayAbort re-records the same own harvester, which is idempotent here.
     """
-    relayAbort(bot)
+    relayAbort(bot, ct)
 
 
 # ---------------------------------------------------------------------------
@@ -423,6 +444,121 @@ def _finishRepair(bot, ct: Controller) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Relay verification — every 2nd delivery, walk the line to the core to catch a
+# belt destroyed out of vision (the ledger never expires a ghost). Detect only:
+# the fix is delegated to reconnectOrphan.
+# ---------------------------------------------------------------------------
+
+
+def _clearVerify(bot) -> None:
+    bot._verifyHarvester = None
+    bot._verifyLine = None
+    bot._verifyAnchor = None
+    bot._verifyIdx = 0
+
+
+def _handoffVerify(bot, ct: Controller) -> None:
+    """A break was found on the walk: hand the harvester to reconnectOrphan, which
+    owns the actual repair (strict re-relay, grab-ring avoidance, obstruction
+    grinding, delivery accounting). `_orphanNextTry = now` so it fires this same turn
+    — relayAbort deliberately leaves that field untouched, and a stale future value
+    from an earlier fling would otherwise defer the fix for the cooldown."""
+    bot._orphanHarvester = bot._verifyHarvester
+    bot._orphanNextTry = ct.get_current_round()
+    _clearVerify(bot)
+
+
+def verifyRelay(bot, ct: Controller) -> bool:
+    """Walk the line of a just-connected harvester back to the core, confirming each
+    belt still exists. This is the one way to catch a belt destroyed out of vision:
+    the ledger keeps a ghost belt forever, so nothing else re-checks a completed line
+    — but walking the line refreshes this unit's vision tile-by-tile and exposes the
+    gap (see relays.traceToCore). Detect only; the first break is handed to
+    reconnectOrphan (`_handoffVerify`). Best-effort: abandons on a blocked walk or a
+    vanished harvester rather than committing turns to it.
+
+    Armed by relays.relayDone (`_verifyHarvester`). Returns True only while actively
+    walking, so it owns the turn then; False the moment it finishes, hands off, or
+    gives up, letting the builder resume normal work at once."""
+    h = bot._verifyHarvester
+    if h is None:
+        return False
+
+    # Harvester gone or taken by the enemy — nothing left to verify.
+    th = ph.readTile(ct, bot.hivemind, h)
+    if not (th.etype == EntityType.HARVESTER and not th.enemy):
+        _clearVerify(bot)
+        return False
+
+    # First turn: trace the (possibly ghost) line to the core. A line we can't even
+    # trace — the belt beside the harvester is already gone, or the chain never
+    # reaches home — is itself a break; hand it straight to reconnect.
+    if bot._verifyLine is None:
+        traced = traceToCore(bot, ct, h)
+        if traced is None:
+            _handoffVerify(bot, ct)
+            return False
+        bot._verifyLine, bot._verifyAnchor = traced
+        belts = bot._verifyLine
+        # Start at whichever end is nearer and walk toward the other, so a delivery
+        # that finished at the core end (a laid line) and one that finished at the
+        # harvester end (planRelay -> CONNECTED, zero belts laid) both traverse once
+        # without backtracking.
+        pos = ct.get_position()
+        d_harv = abs(pos.x - belts[0].x) + abs(pos.y - belts[0].y)
+        d_core = abs(pos.x - belts[-1].x) + abs(pos.y - belts[-1].y)
+        near_harv = d_harv <= d_core
+        bot._verifyIdx = 0 if near_harv else len(belts) - 1
+        bot._verifyStep = 1 if near_harv else -1
+        # Bounded backstop: a walk that can't finish in this many rounds is abandoned.
+        # A launcher flinging us back onto the line loops walkTo forever otherwise
+        # (_handleFling doesn't fire mid-verify — inRelay is False). Generous; the
+        # vision-skip means a healthy line finishes in ~len/vision walked turns.
+        bot._verifyDeadline = ct.get_current_round() + 2 * len(belts) + 20
+
+    belts = bot._verifyLine
+    anchor = bot._verifyAnchor
+
+    # Consume every tile already in vision that reads intact; stop at the first tile
+    # out of vision (walk to it) or the first that's broken (hand off). Walking off
+    # either end (idx out of range) means the whole line checked out.
+    while 0 <= bot._verifyIdx < len(belts):
+        tile = belts[bot._verifyIdx]
+        nxt = belts[bot._verifyIdx + 1] if bot._verifyIdx + 1 < len(belts) else anchor
+        if not ct.is_in_vision(tile):
+            break
+        if beltCorrect(bot, ct, tile, nxt):
+            bot._verifyIdx += bot._verifyStep
+            continue
+        _handoffVerify(bot, ct)  # a ghost revealed as a real gap
+        return False
+
+    if not (0 <= bot._verifyIdx < len(belts)):
+        _clearVerify(bot)  # whole line confirmed intact
+        return False
+
+    # Past the deadline (a persistent launcher, a wall-locked approach): abandon.
+    # Maintenance is never worth pinning a builder off the economy.
+    if ct.get_current_round() > bot._verifyDeadline:
+        _clearVerify(bot)
+        return False
+
+    # Walk beside the first not-yet-seen tile; standing adjacent puts it (and a vision
+    # radius of neighbours) in view, so the loop above skips several tiles per tile
+    # walked. walkTo returns True while it still has route-patience and False once it
+    # has genuinely given up — abandon then rather than idle beside an unreachable tile.
+    target = belts[bot._verifyIdx]
+
+    def beside(p: Position) -> bool:
+        return abs(p.x - target.x) + abs(p.y - target.y) <= 1
+
+    if walkTo(bot, ct, beside, target, ("verify", target.x, target.y)):
+        return True
+    _clearVerify(bot)
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Orphan reconnection — re-relay an own harvester whose line was abandoned
 # ---------------------------------------------------------------------------
 
@@ -443,6 +579,94 @@ def _launcherGrabTiles(bot, ct: Controller) -> set[tuple[int, int]]:
         for n in ph.adjacentTiles(ct.get_position(bid)):
             out.add((n.x, n.y))
     return out
+
+
+def _clearFollow(bot) -> None:
+    bot._followLine = None
+    bot._followDeadline = 0
+    bot._followFor = None
+
+
+def _walkConfirmConnected(bot, ct: Controller, orphan: Position, ctx) -> str:
+    """Physically walk the belt line leaving `orphan`, refreshing vision tile by tile,
+    to learn whether it reaches the network. This is the one check that survives the
+    broadcast coverage gap: traceToCore reads the *ledger* and returns None on a line
+    another builder laid and never broadcast to us, but a walk sees ground truth
+    (readTile is own-eyes-first) even where the ledger is blank.
+
+    Returns 'walking' (turn consumed, keep going), 'connected' (clear the orphan, no
+    rebuild), or 'broken' (rebuild). Every ambiguous case — no outgoing belt, an
+    unreachable line, a facing loop, or a blown deadline — conservatively degrades to
+    'broken': never a worse *decision* than HEAD's blind rebuild, but a genuine orphan
+    can reconnect up to the deadline (plus the walk) later than HEAD would — the latency
+    the icefloe/yulerune self-play mirrors pay for."""
+    line = bot._followLine
+    if line is None:
+        start = None
+        for n in ph.orthogonalTiles(orphan):
+            if not ph.isAllyBelt(ct, bot.hivemind, n):
+                continue
+            tn = ph.readTile(ct, bot.hivemind, n)
+            if tn.facing is None:
+                continue
+            dx, dy = tn.facing.delta()
+            if (n.x + dx, n.y + dy) != (orphan.x, orphan.y):
+                start = n   # an *outgoing* belt, not one feeding back into the harvester
+                break
+        if start is None:
+            return "broken"   # nothing leaves the harvester — genuinely orphaned
+        bot._followLine = [start]
+        bot._followFor = orphan
+        # Bounded like verifyRelay's deadline: a walk that can't resolve in this many
+        # rounds degrades to a rebuild rather than pinning the builder off the economy.
+        bot._followDeadline = ct.get_current_round() + 40
+        line = bot._followLine
+
+    if ct.get_current_round() > bot._followDeadline:
+        _clearFollow(bot)
+        return "broken"
+
+    # Keep the launcher grab-ring hard-avoided on every follow step, not just the gate
+    # turn: walkAvoid is wiped on each successful move, so without this a launcher on
+    # the line would fling the follower repeatedly (and _handleFling is blind here —
+    # relayFrom/oreTarget are both unset mid-follow).
+    bot.walkAvoid |= _launcherGrabTiles(bot, ct)
+
+    cur = line[-1]
+    if ctx.isNetworkMember(cur):
+        _clearFollow(bot)
+        return "connected"
+    if not ct.is_in_vision(cur):
+        if walkTo(bot, ct, lambda p: abs(p.x - cur.x) + abs(p.y - cur.y) <= 1,
+                  cur, ("follow", cur.x, cur.y)):
+            return "walking"
+        _clearFollow(bot)
+        return "broken"   # can't reach the line — give up and rebuild
+
+    tc = ph.readTile(ct, bot.hivemind, cur)
+    if tc.etype not in ph.BELT_TYPES or tc.enemy or tc.facing is None:
+        _clearFollow(bot)
+        return "broken"   # the belt we were following is gone — a real, seen gap
+    dx, dy = tc.facing.delta()
+    nxt = Position(cur.x + dx, cur.y + dy)
+    if ctx.isNetworkMember(nxt):
+        _clearFollow(bot)
+        return "connected"
+    if not ct.is_in_vision(nxt):
+        if walkTo(bot, ct, lambda p: abs(p.x - nxt.x) + abs(p.y - nxt.y) <= 1,
+                  nxt, ("follow", nxt.x, nxt.y)):
+            return "walking"
+        _clearFollow(bot)
+        return "broken"
+    tn = ph.readTile(ct, bot.hivemind, nxt)
+    if tn.etype not in ph.BELT_TYPES or tn.enemy:
+        _clearFollow(bot)
+        return "broken"   # belt runs into a non-belt we can see — a real break
+    if any(p.x == nxt.x and p.y == nxt.y for p in line):
+        _clearFollow(bot)
+        return "broken"   # facing loop that never reached the core — degenerate
+    line.append(nxt)
+    return "walking"
 
 
 def reconnectOrphan(bot, ct: Controller) -> bool:
@@ -468,14 +692,46 @@ def reconnectOrphan(bot, ct: Controller) -> bool:
     t = ph.readTile(ct, bot.hivemind, orphan)
     if not (t.etype == EntityType.HARVESTER and not t.enemy):
         bot._orphanHarvester = None   # destroyed or taken by the enemy — forget it
+        _clearFollow(bot)
         return False
+
+    # A follow belongs to one harvester. Higher ladder rungs (verifyRelay, defendCore,
+    # repairCoreBelts) can pause us mid-follow, and verifyRelay's handoff overwrites the
+    # single _orphanHarvester slot — so if the orphan changed underneath a live follow,
+    # drop it rather than resume walking the old harvester's chain and rule on the wrong
+    # line (a false "connected" would strand the new orphan).
+    if bot._followLine is not None and bot._followFor != orphan:
+        _clearFollow(bot)
 
     ctx = ph.costContext(bot, ct, "relay")
     if any(ctx.isNetworkMember(n) for n in ph.orthogonalTiles(orphan)):
         bot._orphanHarvester = None   # reconnected by other means — nothing owed
+        _clearFollow(bot)
         return False
 
-    # Re-relay it, strict: merge only onto a proven network member. Without this
+    # An orphan can be reconnected by another builder's line that never reached this
+    # unit's ledger, so the isNetworkMember check above misses it and we would lay a
+    # redundant parallel line (the drakkarfjord-Team-B symptom). Walk out to the
+    # harvester and physically follow any belt leaving it before rebuilding — a walk
+    # sees ground truth where the ledger is blind. The vision gate only fires when a
+    # follow isn't already under way (the follow itself walks off the harvester tile,
+    # so re-gating would fight it).
+    if bot._followLine is None and not ct.is_in_vision(orphan):
+        bot.walkAvoid |= _launcherGrabTiles(bot, ct)
+        beside = lambda p: abs(p.x - orphan.x) + abs(p.y - orphan.y) <= 1
+        walking = walkTo(bot, ct, beside, orphan, ("orphanApproach", orphan.x, orphan.y))
+        if not walking:
+            bot._orphanNextTry = ct.get_current_round() + RECONNECT_RETRY_TURNS
+        return walking
+
+    res = _walkConfirmConnected(bot, ct, orphan, ctx)
+    if res == "walking":
+        return True
+    if res == "connected":
+        bot._orphanHarvester = None   # a walk proved the line reaches home — nothing owed
+        return False
+
+    # res == "broken": genuinely orphaned. Re-relay it, strict: merge only onto a proven
     # planRelay reads the orphan's own dead-ended partial line as intact from afar
     # (_chainVisiblyIntact trusts an out-of-vision chain) and reports it connected,
     # laying nothing. Any enemy launcher grab ring *in view* is hard-avoided so the
@@ -557,6 +813,29 @@ def buildHarvester(bot, ct: Controller) -> bool:
     # stale low from a previous grind (which would skip it immediately).
     stallForget(bot._oreGrindLow, (ore.x, ore.y))
 
+    # Plant only from a tile that can carry a belt home. Building from the far
+    # (ore/pocket) side orphans the harvester — no belt can reach it — and can seal
+    # the builder in behind its own harvesters, which are impassable
+    # (ph.coreBeltReach). seekOre walks us to a core-reachable neighbour; if we
+    # somehow arrived on the wrong side, defer to it rather than commit here.
+    if (pos.x, pos.y) not in ph.coreBeltReach(bot, ct):
+        return False
+
+    # Don't sit in a gun's firing line waiting for titanium to build one harvester —
+    # concede a threatened tile we have already been hit on (hp below max) and re-pick;
+    # oreSkip holds it off so we don't march straight back, and seekOre's seed pick
+    # prefers a safe tile when one exists. We still build outright when we can afford
+    # it now (below): that is one turn of exposure, not an open-ended vigil.
+    if (ct.get_global_resources() < ct.get_harvester_cost()
+            and (pos.x, pos.y) in ph.costContext(bot, ct, "walk").threat
+            and ct.get_hp() < ct.get_max_hp()):
+        _skipOre(bot, ore)
+        bot.oreTarget = None
+        if debug.ENABLED:
+            debug.log("ore", f"under fire at {pos} building {ore}; conceding "
+                             f"rnd={ct.get_current_round()}")
+        return False
+
     if waitTi(bot, ct, ct.get_harvester_cost()):
         return True
     if ct.get_global_resources() < ct.get_harvester_cost():
@@ -598,10 +877,47 @@ def seekOre(bot, ct: Controller) -> bool:
         return False
 
     pos = ct.get_position()
-    if abs(pos.x - ore.x) + abs(pos.y - ore.y) == 1:
-        # Already in position. Hold it: walkTo reports arrival as False, and
-        # falling through on that would send the builder off exploring on the
-        # exact turn it got where it was going.
+
+    # For a free node we build ourselves, approach the specific core-reachable
+    # neighbour that becomes the relay seed — never the ore/pocket side, which is how
+    # a builder seals itself in behind its own harvesters. Pick the seed nearest the
+    # core (stable as the builder moves, and the natural belt start) and, below, walk
+    # straight at it so A* stays directed — a bare "any adjacent" goal with the node
+    # as the heuristic target makes A* search the whole ring around it. Enemy
+    # harvesters (tapped) and barriers (grinded) keep the plain any-adjacent
+    # approach: their belt geometry is the relay/hijack planner's job, not the walk's.
+    seedGoal = None
+    onSeed = False
+    if ph.readTile(ct, bot.hivemind, ore).etype is None:
+        seeds = _relaySeeds(bot, ct, ore)
+        if not seeds:
+            # Sealed into a pocket since it was picked (a fresh wall/harvester). Concede.
+            _skipOre(bot, ore)
+            bot.oreTarget = None
+            _clearApproach(bot)
+            return False
+        onSeed = any(pos.x == n.x and pos.y == n.y for n in seeds)
+        # Prefer a seed out of an enemy gun's firing line first — parking the build on
+        # a shot tile is what leaves a waiting builder bleeding (soft: it still falls
+        # back to a threatened seed when that is the only one). Then nearest to the
+        # core (the natural belt start), then nearest to us — a second distance key
+        # that mirrors with the map, so the pick is symmetric where the bare N,E,S,W
+        # order would tie two lateral seeds and favour one side.
+        threat = ph.costContext(bot, ct, "walk").threat
+        seedGoal = min(seeds, key=lambda n: (
+            (n.x, n.y) in threat,
+            ph.manhattanToCore(n, bot.corePos),
+            abs(n.x - pos.x) + abs(n.y - pos.y),
+        ))
+
+    # Already in position: standing on a relay seed for free ore — ready to build from
+    # the relay side — or simply beside an enemy target. Hold it: walkTo reports
+    # arrival as False, and falling through would send the builder off exploring on
+    # the exact turn it got where it was going.
+    if seedGoal is not None:
+        if onSeed:
+            return True
+    elif abs(pos.x - ore.x) + abs(pos.y - ore.y) == 1:
         return True
 
     # Beside the core launcher with the ore still a walk away? Get flung toward
@@ -625,11 +941,21 @@ def seekOre(bot, ct: Controller) -> bool:
             )
         return False
 
-    def beside(p: Position) -> bool:
-        return abs(p.x - ore.x) + abs(p.y - ore.y) == 1
+    if seedGoal is not None:
+        def atSeed(p: Position) -> bool:
+            return p.x == seedGoal.x and p.y == seedGoal.y
 
-    if walkTo(bot, ct, beside, ore, ("ore", ore.x, ore.y)):
-        return True
+        # Seed coords in the goal key: if fog resolves a nearer seed, the cached path
+        # to the old one is dropped and replanned, not blindly followed to it.
+        if walkTo(bot, ct, atSeed, seedGoal,
+                  ("ore", ore.x, ore.y, seedGoal.x, seedGoal.y)):
+            return True
+    else:
+        def beside(p: Position) -> bool:
+            return abs(p.x - ore.x) + abs(p.y - ore.y) == 1
+
+        if walkTo(bot, ct, beside, ore, ("ore", ore.x, ore.y)):
+            return True
 
     # Out of patience getting there. Without this a builder commits to one
     # unreachable node for the rest of the match — four of them sat on the same
@@ -725,6 +1051,36 @@ def pickOre(bot, ct: Controller) -> Position | None:
     return chooseOre(bot, ct, distTo, bot.hivemind.my_index)
 
 
+def _relaySeeds(bot, ct: Controller, ore: Position) -> list[Position]:
+    """Orthogonal neighbours of `ore` a relay can actually start from: connected to
+    the core through open terrain (ph.coreBeltReach) AND a tile a belt can occupy and
+    the builder can stand on to build (ph.beltPassable). The `beltPassable` gate
+    matters because the flood ignores buildings, so `reach` also contains both cores'
+    footprints, walls-of-turrets, and enemy barriers — none of which can seed a relay
+    or be stood on; without it `min`-by-distance could pick the impassable core tile
+    beside a core-adjacent node and strand the builder on a walk it can never finish."""
+    reach = ph.coreBeltReach(bot, ct)
+    return [
+        n for n in ph.orthogonalTiles(ore)
+        if (n.x, n.y) in reach and ph.beltPassable(ct, bot.hivemind, n)
+    ]
+
+
+def _relayReachable(bot, ct: Controller, ore: Position) -> bool:
+    """A free ore node whose harvester can be carried home — it has an orthogonal
+    neighbour connected to the core through open terrain (ph.coreBeltReach). A node
+    walled off from the core by its own field has none, so we neither target it nor
+    let a builder step inside and seal itself in behind its own harvesters.
+
+    The cheap gate (bare set membership) for the per-node `rankOre` loop; `seekOre`
+    then re-checks the chosen approach with `_relaySeeds`, which also demands the seed
+    be stand-on/belt-able — a node that passes here but has every core-side neighbour
+    blocked is conceded there, not built. Splitting it keeps `beltPassable`'s reads
+    off the hot ranking loop (they pushed a builder turn from ~6ms to ~9ms)."""
+    reach = ph.coreBeltReach(bot, ct)
+    return any((n.x, n.y) in reach for n in ph.orthogonalTiles(ore))
+
+
 def rankOre(bot, ct: Controller, distTo) -> tuple[list[Position], list[Position]]:
     """(workable nodes best-first, stale sites nearest-first), measured by `distTo`.
 
@@ -745,6 +1101,8 @@ def rankOre(bot, ct: Controller, distTo) -> tuple[list[Position], list[Position]
             continue
         d = distTo(ore)
         if t.etype is None:
+            if not _relayReachable(bot, ct, ore):
+                continue  # pocketed — no belt can reach it home (see helper)
             ranked.append((d, ore))
         elif t.etype == EntityType.HARVESTER and t.enemy:
             if _withinHijackRange(bot, ore) and not _alreadyTapped(bot, ct, ore):
@@ -760,20 +1118,37 @@ def rankOre(bot, ct: Controller, distTo) -> tuple[list[Position], list[Position]
     return [ore for _d, ore in ranked], stale
 
 
-def chooseOre(bot, ct: Controller, distTo, index: int) -> Position | None:
-    """Pick out of `rankOre` by `index`, fanning consecutive builders across nodes.
+def _spreadPick(nodes: list[Position], distTo, index: int) -> Position:
+    """Fan `index` across the leading band of near-equidistant `nodes` (nearest
+    first), never skipping a node meaningfully closer than the band.
 
-    The spread is `index % min(len, ORE_SPREAD)` and not a claim — see observations.md
-    under Known gaps. For the pre-spawn guess, `index` is the one the builder about to
-    be spawned will be given (`built + _MYINDEX_OFFSET`, empirically +2 — see
-    observations.md); the guess only predicts where it will head and never reaches the
-    builder.
+    `nodes` is sorted by `distTo`, so the band is a prefix: grow it while the next
+    node is within SPREAD_BAND of the nearest and we are still under ORE_SPREAD. A
+    lone nearest node (everything else a real trek) collapses the band to one, and
+    everyone takes it — a brief race that self-resolves, since the first to build it
+    turns the tile into an own-harvester rankOre then skips."""
+    d0 = distTo(nodes[0])
+    band = 1
+    limit = min(len(nodes), ORE_SPREAD)
+    while band < limit and distTo(nodes[band]) - d0 <= SPREAD_BAND:
+        band += 1
+    return nodes[index % band]
+
+
+def chooseOre(bot, ct: Controller, distTo, index: int) -> Position | None:
+    """Pick out of `rankOre` by `index`, fanning consecutive builders across the
+    near-equidistant leading nodes (see `_spreadPick`) — not a claim, see
+    observations.md under Known gaps.
+
+    For the pre-spawn guess, `index` is the one the builder about to be spawned will
+    be given (`built + _MYINDEX_OFFSET`, empirically +2 — see observations.md); the
+    guess only predicts where it will head and never reaches the builder.
     """
     ranked, stale = rankOre(bot, ct, distTo)
     if ranked:
-        return ranked[index % min(len(ranked), ORE_SPREAD)]
+        return _spreadPick(ranked, distTo, index)
     if stale:
-        return stale[index % min(len(stale), ORE_SPREAD)]
+        return _spreadPick(stale, distTo, index)
     return None
 
 
@@ -805,7 +1180,7 @@ def _oreWorthGoing(bot, ct: Controller, ore: Position) -> bool:
     if not t.ore:
         return False
     if t.etype is None:
-        return True
+        return _relayReachable(bot, ct, ore)
     if t.etype == EntityType.HARVESTER and t.enemy:
         return _withinHijackRange(bot, ore) and not _alreadyTapped(bot, ct, ore)
     if t.etype == EntityType.BARRIER and t.enemy:

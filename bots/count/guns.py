@@ -156,27 +156,36 @@ def _bestCandidate(here, candidates, priority, reachable):
 
 # --- Live loops -------------------------------------------------------------
 
-# A gunner with an empty arc — no target worth shooting in range — for this many
-# rounds is on a dead position: the harvester it was placed to suppress is gone,
-# or nothing ever crossed its arc. It still holds a slot and draws ammo top-up
-# (topUpAmmo banks a reload per built turret), so recycle it rather than leave it
-# parked; the raider drops a fresh one when a new harvester is worth suppressing.
-# Keyed on target-in-range, not shots-fired, so an ammo-starved gunner sitting on
-# a live target is NOT recycled (see gunnerLoop). Measured in engine rounds via
-# get_current_round().
-IDLE_SELF_DESTRUCT_ROUNDS = 50
+# A gunner with an empty arc — no target it can actually bring a barrel to bear
+# on, from any facing — for this many rounds is on a dead position: the
+# harvester it was placed to suppress is gone, nothing ever crossed its arc, or
+# whatever's in vision is permanently blocked (a wall, or a builder bot of
+# either team parked on the firing line — see gunnerLoop). It still holds a
+# slot and draws ammo top-up (topUpAmmo banks a reload per built turret), so
+# recycle it rather than leave it parked; the raider drops a fresh one when a
+# new harvester is worth suppressing. A dead-arc gunner isn't bearing on
+# anything near the enemy core either, so — as with the sentinel clock below —
+# a short grace period beats compounding slot/ammo costs on a position that was
+# never going to pay for itself again. Keyed on reachability, not shots-fired,
+# so an ammo-starved gunner sitting on a live, unblocked target is NOT recycled
+# (see gunnerLoop). Measured in engine rounds via get_current_round().
+IDLE_SELF_DESTRUCT_ROUNDS = 15
 
-# The sentinel counterpart, on a longer clock. A sentinel is the long-range core-
-# siege investment (30 Ti vs a gunner's 20) and legitimately sits with an empty arc
-# for long stretches between waves, so it ages out later than a gunner. Same
-# rationale otherwise: a permanent turret holds a MAX_TEAM_UNITS slot and draws
-# ammo top-up whether or not it ever fires, so a sentinel on a genuinely dead
-# position (its target destroyed, or aimed at ground nothing crosses) is recycled.
-# Keyed on a target on its *fixed arc*, not merely in vision: a sentinel cannot
-# rotate, so a hostile it can never bear on must not keep it alive (this is the one
-# deliberate difference from gunnerLoop, whose visible-keyed clock is correct only
-# because a gunner rotates onto any visible target).
-SENTINEL_IDLE_SELF_DESTRUCT_ROUNDS = 150
+# The sentinel counterpart. Previously ran on a longer clock than the gunner's on
+# the theory that a core-siege investment (30 Ti vs a gunner's 20) legitimately
+# sits quiet between waves — but a sentinel with a dead arc is, by definition, not
+# bearing on anything near the enemy core (its one job), so a long grace period
+# just compounds ammo top-up and slot-holding costs on a position that was never
+# going to pay for itself. 10 rounds is enough to ride out a lull between waves
+# without carrying a dead position for the rest of the match. Same rationale
+# otherwise: a permanent turret holds a MAX_TEAM_UNITS slot and draws ammo top-up
+# whether or not it ever fires, so a sentinel on a genuinely dead position (its
+# target destroyed, or aimed at ground nothing crosses) is recycled. Keyed on a
+# target on its *fixed arc*, not merely in vision: a sentinel cannot rotate, so a
+# hostile it can never bear on must not keep it alive (this is the one deliberate
+# difference from gunnerLoop, whose visible-keyed clock is correct only because a
+# gunner rotates onto any visible target).
+SENTINEL_IDLE_SELF_DESTRUCT_ROUNDS = 10
 
 
 def gunnerLoop(bot, ct: Controller) -> None:
@@ -186,18 +195,39 @@ def gunnerLoop(bot, ct: Controller) -> None:
     here = ct.get_position()
     hostiles = visibleHostiles(ct, GUNNER_PRIORITY)
 
-    # Idle recycle, keyed on "a target worth shooting is in range" — NOT on
-    # "fired this turn". Any turn a hostile is visible the position is live, so
-    # the clock refreshes even if we can't shoot (empty ammo pool, or cooldown).
-    # This is the whole point: a bad economy empties the ammo pool (topUpAmmo
-    # converts nothing below AMMO_TI_RESERVE), muting every gunner at once — a
-    # clock-on-fire would then self-destruct the entire turret layer in a wave
-    # IDLE_SELF_DESTRUCT_ROUNDS later, exactly when we can least afford to lose
-    # it. Only a genuinely empty arc for that many rounds recycles now. Seeded at
-    # birth so a never-targeted gunner still ages out. Checked ahead of the
-    # cooldown gate — self_destruct needs no action and costs no cooldown, so a
-    # mute gunner ages out regardless.
-    if bot._gunnerLastActive is None or hostiles:
+    # Per-direction reachability, ignoring ammo and cooldown (can_fire_from's own
+    # contract — see fcode docs) but honouring real occupancy: a wall, a builder
+    # bot of *either* team, or a building all block and end the firing line same
+    # as a real shot would. Computed once, up front, and reused below for both
+    # the idle check and the rotate scan, so a blocked line only costs one
+    # can_fire_from pass per direction instead of two.
+    reach: dict = {}
+    for d in _DIRS:
+        reach[d] = _bestCandidate(
+            here, hostiles, GUNNER_PRIORITY,
+            lambda pos, d=d: ct.can_fire_from(here, d, EntityType.GUNNER, pos),
+        )
+
+    # Idle recycle, keyed on "a target this gunner could actually bring a barrel
+    # to bear on from some facing" — NOT "a hostile merely in vision", and NOT on
+    # "fired this turn". Raw vision (the old key) let a target sitting forever
+    # behind a blocker — most commonly our own builder bot mid-siege, since
+    # can_fire/can_fire_from treat a builder bot of either team as targetable
+    # *and* blocking, exactly like a building — keep a gunner "active" forever
+    # even though it could never fire on it from any direction, so it never aged
+    # out (confirmed: gunners parked beside a friendly builder working a target
+    # tile never self-destructed no matter how long they sat mute). Still
+    # ammo/cooldown-blind (can_fire_from's own contract), which is what keeps a
+    # bad economy from wave-destructing every gunner at once: a bad economy
+    # empties the ammo pool (topUpAmmo converts nothing below AMMO_TI_RESERVE),
+    # muting every gunner at once — a clock keyed on ammo/cooldown too would then
+    # self-destruct the entire turret layer in a wave IDLE_SELF_DESTRUCT_ROUNDS
+    # later, exactly when we can least afford to lose it. Only a genuinely dead
+    # (blocked or empty) arc for that many rounds recycles now. Seeded at birth
+    # so a never-targeted gunner still ages out. Checked ahead of the cooldown
+    # gate — self_destruct needs no action and costs no cooldown, so a mute
+    # gunner ages out regardless.
+    if bot._gunnerLastActive is None or any(reach.values()):
         bot._gunnerLastActive = round_
     elif round_ - bot._gunnerLastActive >= IDLE_SELF_DESTRUCT_ROUNDS:
         if debug.ENABLED:
@@ -230,10 +260,7 @@ def gunnerLoop(bot, ct: Controller) -> None:
     for d in _DIRS:
         if d == facing:
             continue  # already tried above, and it just failed
-        pick = _bestCandidate(
-            here, hostiles, GUNNER_PRIORITY,
-            lambda pos, d=d: ct.can_fire_from(here, d, EntityType.GUNNER, pos),
-        )
+        pick = reach[d]
         if pick is None:
             continue
         pos, etype = pick
@@ -442,6 +469,34 @@ def _coveredByAllySentinel(ct: Controller, myTeam, target: Position) -> bool:
     return False
 
 
+def _alreadyAnswered(ct: Controller, myTeam, target: Position, ttype: EntityType) -> bool:
+    """Cross-type de-dup for home defence: is `target` already covered by an ally
+    turret *adequate for this threat*, so defendCore should place nothing more.
+
+    The per-kind drop helpers only refuse to stack a *second of their own kind*
+    (`_coveredByAllyGunner` / `_coveredByAllySentinel`), so without this an enemy
+    gunner answered by our gunner still draws a sentinel too, and vice versa. This
+    closes that: a threat that already has an adequate answer gets no second turret.
+
+    Adequacy is asymmetric, and that asymmetry is the whole point:
+      * A bearing sentinel out-ranges and out-trades anything, so it answers *any*
+        threat — if one bears, we need nothing else.
+      * A gunner retracks and trades evenly only against a mobile, close-range threat
+        — an enemy gunner or a builder grinding our buildings. Against an enemy
+        sentinel or launcher a gunner is a stopgap that gets out-traded, so a gunner
+        in range there does NOT count as answered: we still want the real sentinel.
+
+    Vision-scoped like its two helpers (nearby buildings only), so two builders far
+    apart can still each answer the same threat — a separate gap, not this one."""
+    if _coveredByAllySentinel(ct, myTeam, target):
+        return True
+    if ttype in (EntityType.GUNNER, EntityType.BUILDER_BOT) and _coveredByAllyGunner(
+        ct, myTeam, target
+    ):
+        return True
+    return False
+
+
 def _dropSentinelOn(ct: Controller, target: Position) -> bool:
     """Build a sentinel on the first orthogonal pad of the calling unit whose
     permanent facing bears on `target`, unless an ally sentinel already covers it.
@@ -555,9 +610,19 @@ def placeGunner(bot, ct: Controller, enemyCore: Position | None) -> bool:
 # and fires the placed gunner after; the idle self-destruct recycles it once the
 # threat clears.
 
-# Mirrors ecoBot.CORE_DEFENSE_RADIUS by value, kept local so guns does not depend on
-# a role module (raidBot depends on guns, not the other way).
-CORE_THREAT_RADIUS = 8
+# How far from the core a visible enemy turret/launcher (or structure-grinding
+# builder) is answered by defendCore. Raised 8 -> 15 to extend the defensive
+# gun-placement response past the core footprint toward field harvesters, which at 8
+# were undefended (defendCore only ever looked within the core radius).
+#
+# Deliberately NO LONGER mirrors ecoBot.CORE_DEFENSE_RADIUS (belt-repair, still 8) or
+# guardianBot.GUARDIAN_LEASH (quiet-roam, still 8). The bait-out that a bare radius
+# bump would open — a mobile gunner walking the guardian 15 tiles off the core — is
+# closed by defendCore's `chase` flag: the guardian runs chase=False, so this radius
+# governs only how far it will *build* (a sentinel out-ranges the threat), never how
+# far it will walk. The eco path runs chase=True, so a farming builder still closes
+# in to defend within this radius.
+CORE_THREAT_RADIUS = 15
 
 # Enemy types that always threaten the core — turrets that shell it, and the
 # launcher that flings bodies at it. A harvester or the enemy core never comes to
@@ -663,7 +728,7 @@ def _defenceAnswers(ttype):
     return (gunner,)
 
 
-def defendCore(bot, ct: Controller) -> bool:
+def defendCore(bot, ct: Controller, chase: bool = True) -> bool:
     """Home defence: drop a turret on an enemy closing on our core, or move into
     range so a pad bears on it. True if it acted this turn. An enemy gunner or
     sentinel is answered with whichever of our own turrets bears this turn — a
@@ -679,6 +744,16 @@ def defendCore(bot, ct: Controller) -> bool:
     can't afford any answer, or we're at the unit cap, we bail rather than idle
     beside the threat: neither changes by walking closer, so better to go earn.
 
+    `chase` decouples build-reach from body-reach. When True (the eco path), a unit
+    with no bearing pad this turn walks toward the threat to get one — an eco-builder
+    can leave its spot to defend. When False (the guardian), it only *builds* from
+    where it can already bear and never walks out: the placement still reaches the
+    full CORE_THREAT_RADIUS (a sentinel out-ranges the threat, so a guardian answers a
+    far turret without relocating), but the standing body stays home instead of being
+    baited off the core by a mobile gunner. The guardian's own patrol repositions it
+    within its leash across turns, so a bearing that isn't there this turn often is
+    the next.
+
     Reactive: fires only for a threat the calling unit can already see, and it
     claims no priority of its own — where this sits relative to a caller's other
     work is that caller's ladder to order."""
@@ -688,6 +763,12 @@ def defendCore(bot, ct: Controller) -> bool:
     if found is None:
         return False
     threat, ttype = found
+
+    # Already handled by an adequate ally turret? Then add nothing — don't stack a
+    # second sentinel (or a redundant gunner) on a threat that's covered. Falls
+    # through to the caller's other work rather than idling beside it.
+    if _alreadyAnswered(ct, ct.get_team(), threat, ttype):
+        return False
 
     answers = _defenceAnswers(ttype)
 
@@ -705,6 +786,14 @@ def defendCore(bot, ct: Controller) -> bool:
         for cost_of, place in answers:
             if bank >= cost_of(ct) and place(ct, threat):
                 return True
+
+    # Build-only callers (the guardian) stop here: nothing bore from where we stand,
+    # and we will not walk the body out to chase — holding the core outranks
+    # answering a threat we can only reach by leaving it. Falls through to the
+    # caller's own leash/patrol, which repositions us within the leash for a bearing
+    # next turn.
+    if not chase:
+        return False
 
     # Affordable, under the cap, but nothing bore this turn (cooldown, or no pad
     # bears yet). Close in and hold station rather than fall through to seekOre and
