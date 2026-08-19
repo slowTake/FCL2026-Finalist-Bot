@@ -69,6 +69,15 @@ class Player:
         self.walkGoal = None
         self.walkAvoid: set[tuple[int, int]] = set()
 
+        # Core-reachable open-terrain set (ph.coreBeltReach). Cached across turns and
+        # only re-flooded when the ledger grows (new terrain) or the refresh window
+        # lapses — terrain is immutable, so this stays valid between. `_beltReachKnown`
+        # is the ledger tile-count it was built at; `_beltReachRound` the round.
+        # Drives pocket-ore rejection and the relay-seed approach in ecoBot.
+        self._beltReachKnown = -1
+        self._beltReachRound = -1
+        self._beltReachSet: set[tuple[int, int]] = set()
+
         # Economy state (ecoBot.py)
         self.oreTarget: Position | None = None
         self.oreSkip: dict[tuple[int, int], int] = {}
@@ -230,6 +239,16 @@ class Player:
         # round stamp can't either once two walks share a turn. Monotonic; only the
         # difference is ever read, so it never needs resetting.
         self.noRouteSeq = 0
+
+        # Memo of the last walk search that came up empty: the goal it was for, the
+        # tile we stood on, and the round. walkTo consults it to skip re-running a
+        # full A*+BFS every turn for a route that just wasn't there and can't have
+        # appeared while we haven't moved — the per-turn cost behind the stuck-unit
+        # TLEs (ore pocket, core press). Any of goal/tile/window changing forces a
+        # fresh search, so a blocker clearing or the unit shifting re-probes at once.
+        self._noRouteGoal = None
+        self._noRoutePos: tuple[int, int] | None = None
+        self._noRouteRound = -(10 ** 9)
 
         # Consecutive turns guns.defendCore has stood in range of a core threat that
         # none of our pads bear on. Its own counter and not patience.holdTask,

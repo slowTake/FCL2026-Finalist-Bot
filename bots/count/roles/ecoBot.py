@@ -18,6 +18,17 @@ from relays import hijackRelay, relayAbort, relayToHome
 # Not a claim — see observations.md.
 ORE_SPREAD = 4
 
+# The spread only fans across nodes that are near-*equidistant* — this is how much
+# farther than the nearest a node may be and still count as a peer to spread onto,
+# in the detour-aware step units `distTo` returns. A blind `index % ORE_SPREAD`
+# ignored distance and walked a builder 20-30 tiles past a free node because its
+# index landed on a farther rank — and once early builders became the guardian or
+# raiders, the surviving indices stopped covering the nearest ranks at all, so easy
+# close nodes went unworked. Bounding the fan-out to a distance band takes the
+# nearest node whenever the next one is meaningfully farther, while still splitting a
+# genuine spawn cluster. Small: a cluster is tight; anything past it is a real trek.
+SPREAD_BAND = 5
+
 # Manhattan is blind to walls: a node behind one reads as near as an open node at
 # the same beeline distance, but the walk around the wall is longer. Add an estimate
 # of that detour back — each wall tile on the straight line to a node costs a builder
@@ -557,6 +568,29 @@ def buildHarvester(bot, ct: Controller) -> bool:
     # stale low from a previous grind (which would skip it immediately).
     stallForget(bot._oreGrindLow, (ore.x, ore.y))
 
+    # Plant only from a tile that can carry a belt home. Building from the far
+    # (ore/pocket) side orphans the harvester — no belt can reach it — and can seal
+    # the builder in behind its own harvesters, which are impassable
+    # (ph.coreBeltReach). seekOre walks us to a core-reachable neighbour; if we
+    # somehow arrived on the wrong side, defer to it rather than commit here.
+    if (pos.x, pos.y) not in ph.coreBeltReach(bot, ct):
+        return False
+
+    # Don't sit in a gun's firing line waiting for titanium to build one harvester —
+    # concede a threatened tile we have already been hit on (hp below max) and re-pick;
+    # oreSkip holds it off so we don't march straight back, and seekOre's seed pick
+    # prefers a safe tile when one exists. We still build outright when we can afford
+    # it now (below): that is one turn of exposure, not an open-ended vigil.
+    if (ct.get_global_resources() < ct.get_harvester_cost()
+            and (pos.x, pos.y) in ph.costContext(bot, ct, "walk").threat
+            and ct.get_hp() < ct.get_max_hp()):
+        _skipOre(bot, ore)
+        bot.oreTarget = None
+        if debug.ENABLED:
+            debug.log("ore", f"under fire at {pos} building {ore}; conceding "
+                             f"rnd={ct.get_current_round()}")
+        return False
+
     if waitTi(bot, ct, ct.get_harvester_cost()):
         return True
     if ct.get_global_resources() < ct.get_harvester_cost():
@@ -598,10 +632,47 @@ def seekOre(bot, ct: Controller) -> bool:
         return False
 
     pos = ct.get_position()
-    if abs(pos.x - ore.x) + abs(pos.y - ore.y) == 1:
-        # Already in position. Hold it: walkTo reports arrival as False, and
-        # falling through on that would send the builder off exploring on the
-        # exact turn it got where it was going.
+
+    # For a free node we build ourselves, approach the specific core-reachable
+    # neighbour that becomes the relay seed — never the ore/pocket side, which is how
+    # a builder seals itself in behind its own harvesters. Pick the seed nearest the
+    # core (stable as the builder moves, and the natural belt start) and, below, walk
+    # straight at it so A* stays directed — a bare "any adjacent" goal with the node
+    # as the heuristic target makes A* search the whole ring around it. Enemy
+    # harvesters (tapped) and barriers (grinded) keep the plain any-adjacent
+    # approach: their belt geometry is the relay/hijack planner's job, not the walk's.
+    seedGoal = None
+    onSeed = False
+    if ph.readTile(ct, bot.hivemind, ore).etype is None:
+        seeds = _relaySeeds(bot, ct, ore)
+        if not seeds:
+            # Sealed into a pocket since it was picked (a fresh wall/harvester). Concede.
+            _skipOre(bot, ore)
+            bot.oreTarget = None
+            _clearApproach(bot)
+            return False
+        onSeed = any(pos.x == n.x and pos.y == n.y for n in seeds)
+        # Prefer a seed out of an enemy gun's firing line first — parking the build on
+        # a shot tile is what leaves a waiting builder bleeding (soft: it still falls
+        # back to a threatened seed when that is the only one). Then nearest to the
+        # core (the natural belt start), then nearest to us — a second distance key
+        # that mirrors with the map, so the pick is symmetric where the bare N,E,S,W
+        # order would tie two lateral seeds and favour one side.
+        threat = ph.costContext(bot, ct, "walk").threat
+        seedGoal = min(seeds, key=lambda n: (
+            (n.x, n.y) in threat,
+            ph.manhattanToCore(n, bot.corePos),
+            abs(n.x - pos.x) + abs(n.y - pos.y),
+        ))
+
+    # Already in position: standing on a relay seed for free ore — ready to build from
+    # the relay side — or simply beside an enemy target. Hold it: walkTo reports
+    # arrival as False, and falling through would send the builder off exploring on
+    # the exact turn it got where it was going.
+    if seedGoal is not None:
+        if onSeed:
+            return True
+    elif abs(pos.x - ore.x) + abs(pos.y - ore.y) == 1:
         return True
 
     # Beside the core launcher with the ore still a walk away? Get flung toward
@@ -625,11 +696,21 @@ def seekOre(bot, ct: Controller) -> bool:
             )
         return False
 
-    def beside(p: Position) -> bool:
-        return abs(p.x - ore.x) + abs(p.y - ore.y) == 1
+    if seedGoal is not None:
+        def atSeed(p: Position) -> bool:
+            return p.x == seedGoal.x and p.y == seedGoal.y
 
-    if walkTo(bot, ct, beside, ore, ("ore", ore.x, ore.y)):
-        return True
+        # Seed coords in the goal key: if fog resolves a nearer seed, the cached path
+        # to the old one is dropped and replanned, not blindly followed to it.
+        if walkTo(bot, ct, atSeed, seedGoal,
+                  ("ore", ore.x, ore.y, seedGoal.x, seedGoal.y)):
+            return True
+    else:
+        def beside(p: Position) -> bool:
+            return abs(p.x - ore.x) + abs(p.y - ore.y) == 1
+
+        if walkTo(bot, ct, beside, ore, ("ore", ore.x, ore.y)):
+            return True
 
     # Out of patience getting there. Without this a builder commits to one
     # unreachable node for the rest of the match — four of them sat on the same
@@ -725,6 +806,36 @@ def pickOre(bot, ct: Controller) -> Position | None:
     return chooseOre(bot, ct, distTo, bot.hivemind.my_index)
 
 
+def _relaySeeds(bot, ct: Controller, ore: Position) -> list[Position]:
+    """Orthogonal neighbours of `ore` a relay can actually start from: connected to
+    the core through open terrain (ph.coreBeltReach) AND a tile a belt can occupy and
+    the builder can stand on to build (ph.beltPassable). The `beltPassable` gate
+    matters because the flood ignores buildings, so `reach` also contains both cores'
+    footprints, walls-of-turrets, and enemy barriers — none of which can seed a relay
+    or be stood on; without it `min`-by-distance could pick the impassable core tile
+    beside a core-adjacent node and strand the builder on a walk it can never finish."""
+    reach = ph.coreBeltReach(bot, ct)
+    return [
+        n for n in ph.orthogonalTiles(ore)
+        if (n.x, n.y) in reach and ph.beltPassable(ct, bot.hivemind, n)
+    ]
+
+
+def _relayReachable(bot, ct: Controller, ore: Position) -> bool:
+    """A free ore node whose harvester can be carried home — it has an orthogonal
+    neighbour connected to the core through open terrain (ph.coreBeltReach). A node
+    walled off from the core by its own field has none, so we neither target it nor
+    let a builder step inside and seal itself in behind its own harvesters.
+
+    The cheap gate (bare set membership) for the per-node `rankOre` loop; `seekOre`
+    then re-checks the chosen approach with `_relaySeeds`, which also demands the seed
+    be stand-on/belt-able — a node that passes here but has every core-side neighbour
+    blocked is conceded there, not built. Splitting it keeps `beltPassable`'s reads
+    off the hot ranking loop (they pushed a builder turn from ~6ms to ~9ms)."""
+    reach = ph.coreBeltReach(bot, ct)
+    return any((n.x, n.y) in reach for n in ph.orthogonalTiles(ore))
+
+
 def rankOre(bot, ct: Controller, distTo) -> tuple[list[Position], list[Position]]:
     """(workable nodes best-first, stale sites nearest-first), measured by `distTo`.
 
@@ -745,6 +856,8 @@ def rankOre(bot, ct: Controller, distTo) -> tuple[list[Position], list[Position]
             continue
         d = distTo(ore)
         if t.etype is None:
+            if not _relayReachable(bot, ct, ore):
+                continue  # pocketed — no belt can reach it home (see helper)
             ranked.append((d, ore))
         elif t.etype == EntityType.HARVESTER and t.enemy:
             if _withinHijackRange(bot, ore) and not _alreadyTapped(bot, ct, ore):
@@ -760,20 +873,37 @@ def rankOre(bot, ct: Controller, distTo) -> tuple[list[Position], list[Position]
     return [ore for _d, ore in ranked], stale
 
 
-def chooseOre(bot, ct: Controller, distTo, index: int) -> Position | None:
-    """Pick out of `rankOre` by `index`, fanning consecutive builders across nodes.
+def _spreadPick(nodes: list[Position], distTo, index: int) -> Position:
+    """Fan `index` across the leading band of near-equidistant `nodes` (nearest
+    first), never skipping a node meaningfully closer than the band.
 
-    The spread is `index % min(len, ORE_SPREAD)` and not a claim — see observations.md
-    under Known gaps. For the pre-spawn guess, `index` is the one the builder about to
-    be spawned will be given (`built + _MYINDEX_OFFSET`, empirically +2 — see
-    observations.md); the guess only predicts where it will head and never reaches the
-    builder.
+    `nodes` is sorted by `distTo`, so the band is a prefix: grow it while the next
+    node is within SPREAD_BAND of the nearest and we are still under ORE_SPREAD. A
+    lone nearest node (everything else a real trek) collapses the band to one, and
+    everyone takes it — a brief race that self-resolves, since the first to build it
+    turns the tile into an own-harvester rankOre then skips."""
+    d0 = distTo(nodes[0])
+    band = 1
+    limit = min(len(nodes), ORE_SPREAD)
+    while band < limit and distTo(nodes[band]) - d0 <= SPREAD_BAND:
+        band += 1
+    return nodes[index % band]
+
+
+def chooseOre(bot, ct: Controller, distTo, index: int) -> Position | None:
+    """Pick out of `rankOre` by `index`, fanning consecutive builders across the
+    near-equidistant leading nodes (see `_spreadPick`) — not a claim, see
+    observations.md under Known gaps.
+
+    For the pre-spawn guess, `index` is the one the builder about to be spawned will
+    be given (`built + _MYINDEX_OFFSET`, empirically +2 — see observations.md); the
+    guess only predicts where it will head and never reaches the builder.
     """
     ranked, stale = rankOre(bot, ct, distTo)
     if ranked:
-        return ranked[index % min(len(ranked), ORE_SPREAD)]
+        return _spreadPick(ranked, distTo, index)
     if stale:
-        return stale[index % min(len(stale), ORE_SPREAD)]
+        return _spreadPick(stale, distTo, index)
     return None
 
 
@@ -805,7 +935,7 @@ def _oreWorthGoing(bot, ct: Controller, ore: Position) -> bool:
     if not t.ore:
         return False
     if t.etype is None:
-        return True
+        return _relayReachable(bot, ct, ore)
     if t.etype == EntityType.HARVESTER and t.enemy:
         return _withinHijackRange(bot, ore) and not _alreadyTapped(bot, ct, ore)
     if t.etype == EntityType.BARRIER and t.enemy:
