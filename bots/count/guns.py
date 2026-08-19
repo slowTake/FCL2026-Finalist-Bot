@@ -582,9 +582,16 @@ def placeGunner(bot, ct: Controller, enemyCore: Position | None) -> bool:
 # and fires the placed gunner after; the idle self-destruct recycles it once the
 # threat clears.
 
-# Mirrors ecoBot.CORE_DEFENSE_RADIUS by value, kept local so guns does not depend on
-# a role module (raidBot depends on guns, not the other way).
-CORE_THREAT_RADIUS = 8
+# How far from the core a visible enemy turret/launcher (or structure-grinding
+# builder) is answered by defendCore. Raised 8 -> 15 to extend the defensive
+# gun-placement response past the core footprint toward field harvesters, which at 8
+# were undefended (defendCore only ever looked within the core radius).
+#
+# No longer mirrors ecoBot.CORE_DEFENSE_RADIUS (belt-repair) or GUARDIAN_LEASH
+# (quiet-roam), both still 8. Trade-off at this radius: defendCore's walk-toward can
+# now pull the guardian up to 15 tiles off the core chasing a mobile threat — a
+# bait-out risk addressed next.
+CORE_THREAT_RADIUS = 15
 
 # Enemy types that always threaten the core — turrets that shell it, and the
 # launcher that flings bodies at it. A harvester or the enemy core never comes to
