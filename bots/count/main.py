@@ -124,6 +124,19 @@ class Player:
         self._verifyStep: int = -1   # +1 walk harvester->core, -1 core->harvester
         self._verifyDeadline: int = 0  # round by which the walk must finish or abandon
 
+        # Orphan walk-confirm (ecoBot._walkConfirmConnected). Before rebuilding an
+        # orphan's line, the builder walks any belt leaving it to learn — from ground
+        # truth, tile by tile — whether it already reaches home; a line another builder
+        # laid may never have entered this unit's ledger, so isNetworkMember can't see
+        # it. _followLine is the belt chain discovered so far; _followDeadline bounds
+        # the walk; _followFor is the harvester it belongs to, so a follow paused by
+        # higher ladder rungs is dropped rather than resumed on a different orphan if
+        # the single _orphanHarvester slot was swapped underneath it. None when no
+        # confirm is in progress.
+        self._followLine: list[Position] | None = None
+        self._followDeadline: int = 0
+        self._followFor: Position | None = None
+
         # Guardian role (roles/guardianBot.py). Set True in relays.relayDone once
         # this builder has delivered a harvester end-to-end — the eligibility gate
         # for claiming guardian duty. The patrol cursor is this guardian's place

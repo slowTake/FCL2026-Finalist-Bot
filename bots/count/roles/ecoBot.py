@@ -581,6 +581,94 @@ def _launcherGrabTiles(bot, ct: Controller) -> set[tuple[int, int]]:
     return out
 
 
+def _clearFollow(bot) -> None:
+    bot._followLine = None
+    bot._followDeadline = 0
+    bot._followFor = None
+
+
+def _walkConfirmConnected(bot, ct: Controller, orphan: Position, ctx) -> str:
+    """Physically walk the belt line leaving `orphan`, refreshing vision tile by tile,
+    to learn whether it reaches the network. This is the one check that survives the
+    broadcast coverage gap: traceToCore reads the *ledger* and returns None on a line
+    another builder laid and never broadcast to us, but a walk sees ground truth
+    (readTile is own-eyes-first) even where the ledger is blank.
+
+    Returns 'walking' (turn consumed, keep going), 'connected' (clear the orphan, no
+    rebuild), or 'broken' (rebuild). Every ambiguous case — no outgoing belt, an
+    unreachable line, a facing loop, or a blown deadline — conservatively degrades to
+    'broken': never a worse *decision* than HEAD's blind rebuild, but a genuine orphan
+    can reconnect up to the deadline (plus the walk) later than HEAD would — the latency
+    the icefloe/yulerune self-play mirrors pay for."""
+    line = bot._followLine
+    if line is None:
+        start = None
+        for n in ph.orthogonalTiles(orphan):
+            if not ph.isAllyBelt(ct, bot.hivemind, n):
+                continue
+            tn = ph.readTile(ct, bot.hivemind, n)
+            if tn.facing is None:
+                continue
+            dx, dy = tn.facing.delta()
+            if (n.x + dx, n.y + dy) != (orphan.x, orphan.y):
+                start = n   # an *outgoing* belt, not one feeding back into the harvester
+                break
+        if start is None:
+            return "broken"   # nothing leaves the harvester — genuinely orphaned
+        bot._followLine = [start]
+        bot._followFor = orphan
+        # Bounded like verifyRelay's deadline: a walk that can't resolve in this many
+        # rounds degrades to a rebuild rather than pinning the builder off the economy.
+        bot._followDeadline = ct.get_current_round() + 40
+        line = bot._followLine
+
+    if ct.get_current_round() > bot._followDeadline:
+        _clearFollow(bot)
+        return "broken"
+
+    # Keep the launcher grab-ring hard-avoided on every follow step, not just the gate
+    # turn: walkAvoid is wiped on each successful move, so without this a launcher on
+    # the line would fling the follower repeatedly (and _handleFling is blind here —
+    # relayFrom/oreTarget are both unset mid-follow).
+    bot.walkAvoid |= _launcherGrabTiles(bot, ct)
+
+    cur = line[-1]
+    if ctx.isNetworkMember(cur):
+        _clearFollow(bot)
+        return "connected"
+    if not ct.is_in_vision(cur):
+        if walkTo(bot, ct, lambda p: abs(p.x - cur.x) + abs(p.y - cur.y) <= 1,
+                  cur, ("follow", cur.x, cur.y)):
+            return "walking"
+        _clearFollow(bot)
+        return "broken"   # can't reach the line — give up and rebuild
+
+    tc = ph.readTile(ct, bot.hivemind, cur)
+    if tc.etype not in ph.BELT_TYPES or tc.enemy or tc.facing is None:
+        _clearFollow(bot)
+        return "broken"   # the belt we were following is gone — a real, seen gap
+    dx, dy = tc.facing.delta()
+    nxt = Position(cur.x + dx, cur.y + dy)
+    if ctx.isNetworkMember(nxt):
+        _clearFollow(bot)
+        return "connected"
+    if not ct.is_in_vision(nxt):
+        if walkTo(bot, ct, lambda p: abs(p.x - nxt.x) + abs(p.y - nxt.y) <= 1,
+                  nxt, ("follow", nxt.x, nxt.y)):
+            return "walking"
+        _clearFollow(bot)
+        return "broken"
+    tn = ph.readTile(ct, bot.hivemind, nxt)
+    if tn.etype not in ph.BELT_TYPES or tn.enemy:
+        _clearFollow(bot)
+        return "broken"   # belt runs into a non-belt we can see — a real break
+    if any(p.x == nxt.x and p.y == nxt.y for p in line):
+        _clearFollow(bot)
+        return "broken"   # facing loop that never reached the core — degenerate
+    line.append(nxt)
+    return "walking"
+
+
 def reconnectOrphan(bot, ct: Controller) -> bool:
     """Re-relay the harvester this builder was flung off before its line reached the
     core. Conceding a flung relay (via `_handleFling`) leaves the harvester feeding
@@ -604,14 +692,46 @@ def reconnectOrphan(bot, ct: Controller) -> bool:
     t = ph.readTile(ct, bot.hivemind, orphan)
     if not (t.etype == EntityType.HARVESTER and not t.enemy):
         bot._orphanHarvester = None   # destroyed or taken by the enemy — forget it
+        _clearFollow(bot)
         return False
+
+    # A follow belongs to one harvester. Higher ladder rungs (verifyRelay, defendCore,
+    # repairCoreBelts) can pause us mid-follow, and verifyRelay's handoff overwrites the
+    # single _orphanHarvester slot — so if the orphan changed underneath a live follow,
+    # drop it rather than resume walking the old harvester's chain and rule on the wrong
+    # line (a false "connected" would strand the new orphan).
+    if bot._followLine is not None and bot._followFor != orphan:
+        _clearFollow(bot)
 
     ctx = ph.costContext(bot, ct, "relay")
     if any(ctx.isNetworkMember(n) for n in ph.orthogonalTiles(orphan)):
         bot._orphanHarvester = None   # reconnected by other means — nothing owed
+        _clearFollow(bot)
         return False
 
-    # Re-relay it, strict: merge only onto a proven network member. Without this
+    # An orphan can be reconnected by another builder's line that never reached this
+    # unit's ledger, so the isNetworkMember check above misses it and we would lay a
+    # redundant parallel line (the drakkarfjord-Team-B symptom). Walk out to the
+    # harvester and physically follow any belt leaving it before rebuilding — a walk
+    # sees ground truth where the ledger is blind. The vision gate only fires when a
+    # follow isn't already under way (the follow itself walks off the harvester tile,
+    # so re-gating would fight it).
+    if bot._followLine is None and not ct.is_in_vision(orphan):
+        bot.walkAvoid |= _launcherGrabTiles(bot, ct)
+        beside = lambda p: abs(p.x - orphan.x) + abs(p.y - orphan.y) <= 1
+        walking = walkTo(bot, ct, beside, orphan, ("orphanApproach", orphan.x, orphan.y))
+        if not walking:
+            bot._orphanNextTry = ct.get_current_round() + RECONNECT_RETRY_TURNS
+        return walking
+
+    res = _walkConfirmConnected(bot, ct, orphan, ctx)
+    if res == "walking":
+        return True
+    if res == "connected":
+        bot._orphanHarvester = None   # a walk proved the line reaches home — nothing owed
+        return False
+
+    # res == "broken": genuinely orphaned. Re-relay it, strict: merge only onto a proven
     # planRelay reads the orphan's own dead-ended partial line as intact from afar
     # (_chainVisiblyIntact trusts an out-of-vision chain) and reports it connected,
     # laying nothing. Any enemy launcher grab ring *in view* is hard-avoided so the
