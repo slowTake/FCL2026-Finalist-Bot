@@ -109,6 +109,21 @@ class Player:
         self._orphanHarvester: Position | None = None
         self._orphanNextTry: int = 0
 
+        # Relay verification (ecoBot.verifyRelay). Every 2nd harvester this builder
+        # delivers, it walks that line back to the core to catch a belt destroyed out
+        # of vision — the shared ledger never expires a ghost belt, so nothing else
+        # re-checks a completed line. _relaysConnected is the per-builder delivery
+        # counter (own harvesters only); _verifyHarvester/_verifyLine/_verifyAnchor/
+        # _verifyIdx hold the in-progress walk. A break found on the walk is handed to
+        # reconnectOrphan, which owns the actual repair.
+        self._relaysConnected: int = 0
+        self._verifyHarvester: Position | None = None
+        self._verifyLine: list[Position] | None = None
+        self._verifyAnchor: Position | None = None
+        self._verifyIdx: int = 0
+        self._verifyStep: int = -1   # +1 walk harvester->core, -1 core->harvester
+        self._verifyDeadline: int = 0  # round by which the walk must finish or abandon
+
         # Guardian role (roles/guardianBot.py). Set True in relays.relayDone once
         # this builder has delivered a harvester end-to-end — the eligibility gate
         # for claiming guardian duty. The patrol cursor is this guardian's place

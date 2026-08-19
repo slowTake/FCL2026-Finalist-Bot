@@ -84,13 +84,19 @@ def claimIfOpen(bot, ct: Controller) -> None:
     which is exactly the case this guard exists for. Waiting a few rounds for the
     line to finish costs nothing against a TTL the design already tolerates.
 
-    Also never claims with a pending orphan. The guardian ladder never runs
-    reconnectOrphan, so a builder holding `_orphanHarvester` (a line that aborted
-    or was flung, awaiting re-relay) would strand that harvester the same way a
-    mid-relay switch does. Defer until it reconnects — the pre-existing orphan
-    machinery clears the flag once the line is restored or the harvester is gone,
-    and the guardian TTL absorbs the wait."""
-    if not eligible(bot) or bot.inRelay or getattr(bot, "_orphanHarvester", None) is not None:
+    Also never claims with a pending orphan or an in-progress verification walk. The
+    guardian ladder runs neither reconnectOrphan nor verifyRelay, so a builder holding
+    `_orphanHarvester` (a line awaiting re-relay) or `_verifyHarvester` (a line it is
+    walking to check) would strand that work the same way a mid-relay switch does — and
+    the verify case is worst by timing, since a builder becomes guardian-eligible on the
+    very delivery that arms the walk. Defer until both clear; the guardian TTL absorbs
+    the wait and the pre-existing machinery clears the flags on its own."""
+    if (
+        not eligible(bot)
+        or bot.inRelay
+        or getattr(bot, "_orphanHarvester", None) is not None
+        or getattr(bot, "_verifyHarvester", None) is not None
+    ):
         return
     idx = bot.hivemind.my_index
     if idx <= 0:

@@ -267,11 +267,7 @@ def _nextUncovered(bot, ct: Controller, belts, anchor) -> int | None:
     """First belt tile, harvester end first, that isn't already a correct belt."""
     for i, tile in enumerate(belts):
         nxt = belts[i + 1] if i + 1 < len(belts) else anchor
-        facing = ph.beltFacing(tile, nxt)
-        if facing is None:
-            continue
-        t = ph.readTile(ct, bot.hivemind, tile)
-        if t.etype in ph.BELT_TYPES and not t.enemy and t.facing == facing:
+        if beltCorrect(bot, ct, tile, nxt):
             continue
         return i
     return None
@@ -476,6 +472,7 @@ def relayAbort(bot, ct: Controller) -> bool:
 
 
 def relayDone(bot, ct: Controller) -> bool:
+    delivered = bot.relayFrom   # captured before teardown clears it (verify trigger)
     _teardownRelay(bot)
     # This builder has now delivered a harvester end-to-end (income flowing), so it
     # is eligible to take guardian duty. Reached only on a genuine completion: every
@@ -483,5 +480,79 @@ def relayDone(bot, ct: Controller) -> bool:
     # the network (planRelay -> CONNECTED). A failed plan goes to relayAbort instead,
     # which leaves this flag untouched. See roles/guardianBot, which reads the flag.
     bot._harvesterDelivered = True
+
+    # Every 2nd own-harvester delivery, arm a verification walk of the line we just
+    # connected (ecoBot.verifyRelay): a ghost belt destroyed out of vision reads as
+    # connected forever, so the only way to catch it is to walk the line and refresh
+    # vision. Own harvesters only — a tapped enemy harvester (hijackRelay leaves an
+    # enemy relayFrom) can't be repaired through reconnectOrphan, so verifying it is
+    # pointless; the same guard reconnectOrphan and relayAbort use.
+    if delivered is not None:
+        t = ph.readTile(ct, bot.hivemind, delivered)
+        if t.etype == EntityType.HARVESTER and not t.enemy:
+            bot._relaysConnected += 1
+            # Only arm when no orphan is already pending: verifyRelay's own handoff
+            # writes the single _orphanHarvester slot, so arming over a pending orphan
+            # (e.g. a harvester flung earlier and not yet reconnected) would clobber
+            # and strand it — the exact bug cf549c0 fixed. Keep the count; once the
+            # orphan clears, the next delivery arms.
+            if bot._relaysConnected >= 2 and bot._orphanHarvester is None:
+                bot._verifyHarvester = delivered
+                bot._relaysConnected = 0
+
     clearHold(bot)
     return False
+
+
+def beltCorrect(bot, ct: Controller, tile: Position, nxt: Position) -> bool:
+    """True if `tile` already carries a correct ally belt facing `nxt`. Shared by
+    _nextUncovered (what to (re)lay) and ecoBot.verifyRelay (what's intact). A tile
+    not orthogonally adjacent to `nxt` returns True — there is nothing to judge, and
+    _nextUncovered skipped it the same way."""
+    facing = ph.beltFacing(tile, nxt)
+    if facing is None:
+        return True
+    t = ph.readTile(ct, bot.hivemind, tile)
+    return t.etype in ph.BELT_TYPES and not t.enemy and t.facing == facing
+
+
+def traceToCore(bot, ct: Controller, harvester: Position):
+    """Follow the belt line feeding `harvester` toward the core, returning
+    `(belts, anchor)`: the ordered belt tiles from the harvester's adjacent belt to
+    the last belt before the core, and the core-footprint tile that last belt points
+    into. None if no ally belt is adjacent to the harvester or the facing chain never
+    reaches the core (a break we can't even trace — handed straight to reconnect).
+
+    Reads the ledger like _chainVisiblyIntact — so it follows a *ghost* chain to the
+    core, which is the point: the walk that consumes this line is what reveals which
+    of those ledger belts no longer exist. A seen-set and a W*H cap bound it against a
+    facing cycle in stale ledger data (an uncapped follow would TLE — a silent unit)."""
+    if bot.corePos is None:
+        return None
+    core = {(p.x, p.y) for p in ph.coreFootprint(bot.corePos)}
+    start = next(
+        (n for n in ph.orthogonalTiles(harvester) if ph.isAllyBelt(ct, bot.hivemind, n)),
+        None,
+    )
+    if start is None:
+        return None
+    belts: list[Position] = []
+    seen: set[tuple[int, int]] = set()
+    cur = start
+    cap = ct.get_map_width() * ct.get_map_height()
+    for _ in range(cap):
+        if (cur.x, cur.y) in core or (cur.x, cur.y) in seen:
+            return None  # a belt on the core, or a facing cycle — untraceable
+        seen.add((cur.x, cur.y))
+        belts.append(cur)
+        t = ph.readTile(ct, bot.hivemind, cur)
+        if t.facing is None:
+            return None
+        dx, dy = t.facing.delta()
+        nxt = Position(cur.x + dx, cur.y + dy)
+        if (nxt.x, nxt.y) in core:
+            return (belts, nxt)  # this belt points into the core — the line is home
+        if not ph.isAllyBelt(ct, bot.hivemind, nxt):
+            return None  # chain leaves our belts (a visible break or foreign facing)
+        cur = nxt
+    return None

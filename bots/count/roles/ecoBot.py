@@ -11,7 +11,7 @@ import pathfindingHelpers as ph
 from movement import exploreStep, walkTo
 from patience import BLOCKED_WAIT_TURNS, clearHold, holdTask, stallCheck, stallForget, waitTi
 import store
-from relays import hijackRelay, relayAbort, relayToHome
+from relays import beltCorrect, hijackRelay, relayAbort, relayToHome, traceToCore
 
 # How many of the nearest ore nodes builders fan out across. Deterministic off
 # my_index, so two builders with different indices rarely pick the same node.
@@ -170,6 +170,14 @@ def runEcoBot(bot, ct: Controller) -> None:
     # before seeking new ore — a severed line loses a whole harvester's output,
     # worth more than another node. Below build so it never interrupts one.
     if repairCoreBelts(bot, ct):
+        return
+
+    # Periodic maintenance: every 2nd delivery, walk the just-connected line back to
+    # the core and confirm it's intact (catches a belt destroyed out of vision — the
+    # ledger never expires a ghost). Below the urgent work above so a threat or a
+    # core-cut pre-empts it, but above reconnectOrphan (a break found hands off there
+    # this same turn) and seekOre (so it runs before the builder leaves for new ore).
+    if verifyRelay(bot, ct):
         return
 
     # Re-relay one of our own harvesters whose line was abandoned mid-build (a
@@ -432,6 +440,121 @@ def _finishRepair(bot, ct: Controller) -> bool:
         return holdTask(bot, "repairBuild", BLOCKED_WAIT_TURNS)
 
     _clearRepair(bot)  # already filled (ally belt), or the enemy replaced it — done
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Relay verification — every 2nd delivery, walk the line to the core to catch a
+# belt destroyed out of vision (the ledger never expires a ghost). Detect only:
+# the fix is delegated to reconnectOrphan.
+# ---------------------------------------------------------------------------
+
+
+def _clearVerify(bot) -> None:
+    bot._verifyHarvester = None
+    bot._verifyLine = None
+    bot._verifyAnchor = None
+    bot._verifyIdx = 0
+
+
+def _handoffVerify(bot, ct: Controller) -> None:
+    """A break was found on the walk: hand the harvester to reconnectOrphan, which
+    owns the actual repair (strict re-relay, grab-ring avoidance, obstruction
+    grinding, delivery accounting). `_orphanNextTry = now` so it fires this same turn
+    — relayAbort deliberately leaves that field untouched, and a stale future value
+    from an earlier fling would otherwise defer the fix for the cooldown."""
+    bot._orphanHarvester = bot._verifyHarvester
+    bot._orphanNextTry = ct.get_current_round()
+    _clearVerify(bot)
+
+
+def verifyRelay(bot, ct: Controller) -> bool:
+    """Walk the line of a just-connected harvester back to the core, confirming each
+    belt still exists. This is the one way to catch a belt destroyed out of vision:
+    the ledger keeps a ghost belt forever, so nothing else re-checks a completed line
+    — but walking the line refreshes this unit's vision tile-by-tile and exposes the
+    gap (see relays.traceToCore). Detect only; the first break is handed to
+    reconnectOrphan (`_handoffVerify`). Best-effort: abandons on a blocked walk or a
+    vanished harvester rather than committing turns to it.
+
+    Armed by relays.relayDone (`_verifyHarvester`). Returns True only while actively
+    walking, so it owns the turn then; False the moment it finishes, hands off, or
+    gives up, letting the builder resume normal work at once."""
+    h = bot._verifyHarvester
+    if h is None:
+        return False
+
+    # Harvester gone or taken by the enemy — nothing left to verify.
+    th = ph.readTile(ct, bot.hivemind, h)
+    if not (th.etype == EntityType.HARVESTER and not th.enemy):
+        _clearVerify(bot)
+        return False
+
+    # First turn: trace the (possibly ghost) line to the core. A line we can't even
+    # trace — the belt beside the harvester is already gone, or the chain never
+    # reaches home — is itself a break; hand it straight to reconnect.
+    if bot._verifyLine is None:
+        traced = traceToCore(bot, ct, h)
+        if traced is None:
+            _handoffVerify(bot, ct)
+            return False
+        bot._verifyLine, bot._verifyAnchor = traced
+        belts = bot._verifyLine
+        # Start at whichever end is nearer and walk toward the other, so a delivery
+        # that finished at the core end (a laid line) and one that finished at the
+        # harvester end (planRelay -> CONNECTED, zero belts laid) both traverse once
+        # without backtracking.
+        pos = ct.get_position()
+        d_harv = abs(pos.x - belts[0].x) + abs(pos.y - belts[0].y)
+        d_core = abs(pos.x - belts[-1].x) + abs(pos.y - belts[-1].y)
+        near_harv = d_harv <= d_core
+        bot._verifyIdx = 0 if near_harv else len(belts) - 1
+        bot._verifyStep = 1 if near_harv else -1
+        # Bounded backstop: a walk that can't finish in this many rounds is abandoned.
+        # A launcher flinging us back onto the line loops walkTo forever otherwise
+        # (_handleFling doesn't fire mid-verify — inRelay is False). Generous; the
+        # vision-skip means a healthy line finishes in ~len/vision walked turns.
+        bot._verifyDeadline = ct.get_current_round() + 2 * len(belts) + 20
+
+    belts = bot._verifyLine
+    anchor = bot._verifyAnchor
+
+    # Consume every tile already in vision that reads intact; stop at the first tile
+    # out of vision (walk to it) or the first that's broken (hand off). Walking off
+    # either end (idx out of range) means the whole line checked out.
+    while 0 <= bot._verifyIdx < len(belts):
+        tile = belts[bot._verifyIdx]
+        nxt = belts[bot._verifyIdx + 1] if bot._verifyIdx + 1 < len(belts) else anchor
+        if not ct.is_in_vision(tile):
+            break
+        if beltCorrect(bot, ct, tile, nxt):
+            bot._verifyIdx += bot._verifyStep
+            continue
+        _handoffVerify(bot, ct)  # a ghost revealed as a real gap
+        return False
+
+    if not (0 <= bot._verifyIdx < len(belts)):
+        _clearVerify(bot)  # whole line confirmed intact
+        return False
+
+    # Past the deadline (a persistent launcher, a wall-locked approach): abandon.
+    # Maintenance is never worth pinning a builder off the economy.
+    if ct.get_current_round() > bot._verifyDeadline:
+        _clearVerify(bot)
+        return False
+
+    # Walk beside the first not-yet-seen tile; standing adjacent puts it (and a vision
+    # radius of neighbours) in view, so the loop above skips several tiles per tile
+    # walked. walkTo returns True while it still has route-patience and False once it
+    # has genuinely given up — abandon then rather than idle beside an unreachable tile.
+    target = belts[bot._verifyIdx]
+
+    def beside(p: Position) -> bool:
+        return abs(p.x - target.x) + abs(p.y - target.y) <= 1
+
+    if walkTo(bot, ct, beside, target, ("verify", target.x, target.y)):
+        return True
+    _clearVerify(bot)
     return False
 
 
