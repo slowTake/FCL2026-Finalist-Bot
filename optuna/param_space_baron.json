@@ -1,0 +1,8 @@
+{
+  "policy.GUARDIAN_LEASH_HOLD_TURNS": ["int", 5, 40, 5],
+  "policy.BUILDER_GROWTH_DELAY_TURNS": ["int", 20, 150, 10],
+  "guns.SENTINEL_PLACE_COOLDOWN_TURNS": ["int", 2, 30, 2],
+  "policy.GUARDIAN_LEASH_TIGHT": ["int", 2, 8, 1],
+  "policy.GUARDIAN_LEASH_WIDE": ["int", 3, 10, 1],
+  "policy.HARASS_LEASH_CHEBYSHEV": ["int", 2, 10, 1]
+}

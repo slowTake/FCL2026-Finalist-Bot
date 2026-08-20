@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 
-REPO_ROOT = Path(__file__).resolve().parent
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 VENV_PYTHON = REPO_ROOT / ".venv" / "bin" / "python3"
 
 # Prefer the repository environment, but do not loop if it is already active.
@@ -67,7 +67,7 @@ COMPETITIVE_MAPS = [
 ]
 DEFAULT_SEEDS = [1, 2]
 DEFAULT_TIMEOUT = 360
-DEFAULT_DB = f"sqlite:///{REPO_ROOT / 'baron_optuna.db'}"
+DEFAULT_DB = f"sqlite:///{Path(__file__).resolve().parent / 'baron_optuna.db'}"
 DEFAULT_STUDY_NAME = "baron_policy_tuning_v3"
 
 

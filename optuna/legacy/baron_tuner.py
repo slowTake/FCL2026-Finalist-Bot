@@ -43,11 +43,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger("optuna_tuner")
 
-REPO_ROOT = Path(__file__).resolve().parent
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 SOURCE_BOT_DIR = REPO_ROOT / "bots" / "baron"
 DEFAULT_BASELINE_BOT = "bots/baron_hybrid"
 DEFAULT_TIMEOUT = 720
-DEFAULT_DB = f"sqlite:///{REPO_ROOT / 'baron_optuna.db'}"
+DEFAULT_DB = f"sqlite:///{Path(__file__).resolve().parent / 'baron_optuna.db'}"
 DEFAULT_STUDY_NAME = "baron_policy_tuning_v3"
 
 # Active 15-map competition ladder pool
