@@ -651,6 +651,24 @@ def pressCore(bot, ct: Controller) -> None:
     if enemyCore is None:
         return  # designated raiders always know the core; nothing to press
 
+    # Unverified core (mirror guess on an unfingerprinted map): the two opening
+    # raiders probe *different* candidates so the pair splits the point/y-flip/
+    # x-flip ambiguity instead of both walking to the same wrong point-mirror. The
+    # second raider takes the second live candidate; whichever lays eyes on the
+    # real core first broadcasts it (tier 1) and both — plus the core — converge.
+    if not raid.enemyCoreVerified(bot, ct):
+        live = raid.enemyCoreCandidatesAlive(bot, ct)
+        if (len(live) >= 2
+                and store.readRole(ct, store.ROLE_RAIDER_2) == bot.hivemind.my_index):
+            enemyCore = live[1]
+
+    # A target that *changes* (a candidate was disproven and the guess advanced)
+    # must re-probe now, not sit out a stale no-route back-off keyed to the old
+    # tile — the route to the new candidate is a different problem.
+    if bot._lastPressTarget != (enemyCore.x, enemyCore.y):
+        bot._pressCoreBackoffUntil = 0
+        bot._lastPressTarget = (enemyCore.x, enemyCore.y)
+
     if _siege(bot, ct, enemyCore):
         bot._pressCoreBackoffUntil = 0  # in siege range: the travel problem is solved
         return
@@ -801,6 +819,10 @@ def buildLocalSentinel(bot, ct: Controller) -> bool:
 
     enemyCore = raid.enemyCorePos(bot, ct)
     if enemyCore is None:
+        return False
+    # Don't densify a sentinel ring around an unverified mirror guess — same
+    # reason as publishTarget's gate; wait until vision or the fingerprint confirms.
+    if not raid.enemyCoreVerified(bot, ct):
         return False
     if ph.manhattanToCore(ct.get_position(), enemyCore) > _LOCAL_SENTINEL_RADIUS:
         return False

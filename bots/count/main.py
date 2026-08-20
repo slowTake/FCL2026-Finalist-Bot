@@ -159,6 +159,16 @@ class Player:
         # on every enemyCorePos call, several times a turn on a raider. This bounds
         # it to one scan per unit per round. -1 so round 0 still scans.
         self._seenEnemyCoreRound: int = -1
+        # Mirror-fallback eliminations (raid.py tier 3). On an unfingerprinted map
+        # the enemy core is one of three reflections of ours; this unit crosses off
+        # any candidate whose full 2x2 footprint it has seen empty, so enemyCorePos
+        # advances its guess as the raider presses in. Per-unit and permanent —
+        # cores never move, so the set only grows, to at most 3.
+        self._deadMirror: set = set()
+        # Last enemy-core tile this unit pressed (raidBot.pressCore). When the mirror
+        # guess advances to a new candidate, clear the no-route back-off so the raider
+        # re-searches to the new tile instead of idling on the old target's back-off.
+        self._lastPressTarget = None
 
         # Core-line repair (ecoBot.repairCoreBelts). The enemy barrier this builder
         # committed to clearing and the connected tile to re-lay the belt toward —

@@ -116,13 +116,22 @@ def _predictTarget(bot, ct: Controller) -> Position | None:
     the front — that's where the first raider plants the launcher (behind the core
     is useless defensively) and where both are headed anyway.
     """
-    if bot.corePos is None or bot.hivemind.map_id == 0:
+    if bot.corePos is None:
         return None
 
-    core = bot.corePos
+    # Raiders first, before the fingerprint gate. They don't steer off the static
+    # ore field (the reason for the map_id==0 gate below — off-vision ore steering
+    # measured worse), they steer at the enemy core, which raid.enemyCorePos
+    # supplies from the mirror even at map_id 0. Gating them out left opening
+    # raiders on an unfingerprinted map born on an arbitrary ring face for no
+    # reason tied to that gate's actual rationale.
     myIndex = ct.read_store(store.BUILDERS) + _MYINDEX_OFFSET
     if myIndex in _OPENING_RAIDERS or isReplenishmentRaider(myIndex):
         return raid.enemyCorePos(bot, ct)
+
+    if bot.hivemind.map_id == 0:
+        return None
+    core = bot.corePos
 
     def distTo(ore: Position) -> int:
         return ph.manhattanToCore(ore, core)
