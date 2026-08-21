@@ -46,8 +46,102 @@ _LOCAL_SENTINEL_RADIUS = 10
 # so replenishment raiders spawned long after are always past it.
 _TURRET_BUILD_DELAY_ROUNDS = 10
 
+# A primary-raider claim whose heartbeat is older than this many rounds is
+# treated as dead. Matches guardianBot.GUARDIAN_ALIVE_TTL — same reasoning:
+# small on purpose, since a live raider re-stamps every turn and a large TTL
+# only delays recovering offense after a death.
+_RAIDER_ALIVE_TTL = 15
+
+# Team-wide harvester count required before an eco-builder may claim a dead
+# primary raider's slot. respawn.py's REPLENISH_TI mechanism already keeps
+# adding fresh raiders once the bank is deep (650 Ti); this floor exists for
+# the gap before that — recovering pressure without gutting an economy that
+# hasn't gotten off the ground yet. Same order of magnitude as the guardian's
+# own proposed floor (roadmap.md's deferred "store.HARVESTERS >= 2" idea).
+_RAIDER_RECLAIM_HARVESTER_FLOOR = 2
+
+
+def _raiderStale(ct: Controller, ts: int) -> bool:
+    """Is the primary raider's heartbeat, stamped at masked round `ts`, older
+    than the TTL? Same wrap-aware shape as guardianBot._stale."""
+    mask = store.raiderHeartbeatMask()
+    now = ct.get_current_round() & mask
+    age = (now - ts) & mask
+    return age > _RAIDER_ALIVE_TTL
+
+
+def claimIfOpen(bot, ct: Controller) -> None:
+    """An eligible eco-builder takes over the primary raider role (ROLE_RAIDER
+    only) if it's unheld or its holder has died. A no-op otherwise.
+
+    Mirrors guardianBot.claimIfOpen closely, including its guards: never
+    mid-relay, never with a pending orphan or in-progress verification walk —
+    abandoning any of those stands to lose more than the claim gains. Also
+    skips a builder that already holds (or just claimed) guardian this turn,
+    so one body doesn't grab both standing roles.
+
+    Additionally gated on eligibility carrying real income (this builder has
+    delivered a harvester, same trigger as guardian) *and* on the team
+    already running _RAIDER_RECLAIM_HARVESTER_FLOOR harvesters — see the
+    constant's comment. Only ROLE_RAIDER is recoverable this way:
+    ROLE_RAIDER_2 has no heartbeat (store.py's HARVESTERS repack only has
+    room for one) and stays unrecoverable — a smaller, documented follow-up,
+    not silent scope creep.
+    """
+    if (
+        not getattr(bot, "_harvesterDelivered", False)
+        or bot.inRelay
+        or getattr(bot, "_orphanHarvester", None) is not None
+        or getattr(bot, "_verifyHarvester", None) is not None
+    ):
+        return
+    idx = bot.hivemind.my_index
+    if idx <= 0:
+        return
+    guardianIdx, _ = store.readGuardian(ct)
+    if idx == guardianIdx:
+        return  # already holding the other standing role
+
+    held = store.readRole(ct, store.ROLE_RAIDER)
+    if held == idx:
+        return  # already ours
+    if held != 0 and not _raiderStale(ct, store.readRaiderHeartbeat(ct)):
+        return  # a live raider holds it
+    if store.harvesterCount(ct) < _RAIDER_RECLAIM_HARVESTER_FLOOR:
+        return  # economy too thin to spare this body yet
+
+    store.assignRole(ct, store.ROLE_RAIDER, idx)
+    store.stampRaider(ct, ct.get_current_round())
+    bot._raiderReclaimed = True
+    if debug.ENABLED:
+        debug.log("raidBot", f"idx={idx} CLAIMED primary raider (prev={held}) rnd={ct.get_current_round()}")
+
 
 def runRaidBot(bot, ct: Controller) -> None:
+    """Stamp the primary raider's liveness heartbeat for the *previous*
+    completed turn, then run the ladder.
+
+    Mirrors guardianBot.runGuardian exactly: the stamp is conditional on
+    `_raiderTurnOk`, set only by `_ladder` running to completion, so a
+    persistently faulting raider stops stamping and is replaced within the
+    TTL instead of holding the role while doing nothing (see mistakes.md's
+    "except Exception: return hides your bug" — the same silent-failure
+    shape this guards against).
+
+    Only ROLE_RAIDER carries a heartbeat — ROLE_RAIDER_2 and any
+    replenishment raider (main.isReplenishmentRaider) don't, since store.py
+    has no spare bits for a second one. `store.readRole` is cheap enough to
+    call every turn just to check which one this unit is.
+    """
+    if store.readRole(ct, store.ROLE_RAIDER) == bot.hivemind.my_index and bot._raiderTurnOk:
+        store.stampRaider(ct, ct.get_current_round())
+
+    bot._raiderTurnOk = False
+    _ladder(bot, ct)
+    bot._raiderTurnOk = True
+
+
+def _ladder(bot, ct: Controller) -> None:
     # A raider is a harasser, not an eco bot. It never builds harvesters, never
     # relays, never hijacks for economy — those divert the opening pressure into
     # farming (the bug this chain was rewritten to kill). Its whole job is to

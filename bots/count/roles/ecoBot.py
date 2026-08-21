@@ -126,6 +126,13 @@ def runEcoBot(bot, ct: Controller) -> None:
     import guardianBot
     guardianBot.claimIfOpen(bot, ct)
 
+    # Same shape, for the primary raider: an eligible eco-builder takes over
+    # ROLE_RAIDER if it's open or dead (raidBot.claimIfOpen — see its
+    # docstring for the eligibility/economy-floor gating). Checked after the
+    # guardian claim above so a builder never grabs both roles in one turn.
+    import raidBot
+    raidBot.claimIfOpen(bot, ct)
+
     # Concede a node the enemy just flung us off, before re-driving the relay:
     # otherwise we march the harvester end straight back into the launch lane and
     # get thrown again. Pure state cleanup — it never consumes the turn, so the
@@ -846,7 +853,7 @@ def buildHarvester(bot, ct: Controller) -> bool:
         return False
 
     ct.build_harvester(ore)
-    store.put(ct, store.HARVESTERS, ct.read_store(store.HARVESTERS) + 1)
+    store.incrementHarvesters(ct)
 
     bot.relayFrom = ore
     bot.inRelay = True

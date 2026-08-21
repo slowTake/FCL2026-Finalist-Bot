@@ -159,6 +159,18 @@ class Player:
         # nothing (guardianBot.runGuardian). True initially so the first turn stamps.
         self._guardianTurnOk = True
 
+        # Primary raider (roles/raidBot.py), mirroring the guardian's pattern above:
+        # _raiderTurnOk gates ROLE_RAIDER's liveness heartbeat the same way, so a
+        # faulting raider is replaced instead of holding the role forever. Only the
+        # primary raider carries a heartbeat (store.py has no spare bits for a
+        # second one — see its HARVESTERS repack), so only it is recoverable via
+        # raidBot.claimIfOpen; ROLE_RAIDER_2 and replenishment raiders don't set
+        # this. _raiderReclaimed marks a builder that claimed the role at runtime
+        # rather than being named it at spawn, so it skips re-planting a core
+        # launcher the original raider already placed (or gave up on).
+        self._raiderTurnOk = True
+        self._raiderReclaimed = False
+
         # Enemy core, once this unit (via the shared ledger) has actually seen it
         # (raid.enemyCorePos). Ground truth that overrides a wrong/absent
         # fingerprint; cached because the core never moves.
@@ -420,8 +432,17 @@ class Player:
 
         # The first raider's one-off: plant the launcher beside the core before it
         # leaves to raid. placeCoreLauncher holds the turn while it's still placing
-        # and returns False once the launcher exists (or it gave up).
-        if index and index == raider1 and launcher.placeCoreLauncher(self, ct):
+        # and returns False once the launcher exists (or it gave up). Skipped for a
+        # builder that claimed ROLE_RAIDER at runtime (raidBot.claimIfOpen) rather
+        # than being named it at spawn — the original raider already placed one (or
+        # never got the chance to, which the codebase already treats as accepted,
+        # not recovered — see launcher.placeCoreLauncher's docstring).
+        if (
+            index
+            and index == raider1
+            and not self._raiderReclaimed
+            and launcher.placeCoreLauncher(self, ct)
+        ):
             return
 
         if index and (index in (raider1, raider2) or isReplenishmentRaider(index)):

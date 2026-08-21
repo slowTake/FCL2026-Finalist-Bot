@@ -739,3 +739,78 @@ drop; and the 150-Ti surplus gate leaving it inert → `_divertAffordable`. One 
 self-healing item is left open: while a published sentinel emplacement preempts the
 divert higher in `runRaidBot`, the wall-clock give-up clock keeps ticking, so a valid
 harvester can occasionally be barred without 15 turns of real driving.)
+
+---
+
+## 2026-08-21 — primary-raider death recovery
+
+Closes the 2026-08-15 deferred item #1 ("raider death is unrecoverable") for
+`ROLE_RAIDER` specifically. `store.py`'s `HARVESTERS` slot was a bare running
+count with no reader anywhere in the codebase (confirmed by grep) — repacked
+to also carry the primary raider's liveness heartbeat (12 bits, same width
+and same never-wraps-in-a-real-match reasoning as the guardian's), since
+there is no free store slot and no spare room left inside `ROLES` for a
+second full-width heartbeat. `raidBot.runRaidBot` now stamps it every turn
+it runs to completion, mirroring `guardianBot.runGuardian`'s
+stamp-only-after-a-good-turn pattern exactly (same rationale: a faulting
+raider shouldn't hold the claim forever by doing nothing). A dead claim
+(stale past `_RAIDER_ALIVE_TTL=15`, matching the guardian's TTL) can be
+reclaimed by an eligible eco-builder via the new `raidBot.claimIfOpen`,
+called from `runEcoBot` right after the guardian's own claim check.
+
+Reclaim eligibility mirrors the guardian's guards exactly (never mid-relay,
+never with a pending orphan or verification walk — abandoning any of those
+costs more than the delay), plus a `store.harvesterCount(ct) >=
+_RAIDER_RECLAIM_HARVESTER_FLOOR (2)` team-wide floor: `respawn.py`'s
+`REPLENISH_TI` mechanism already adds fresh raiders once the bank is deep
+(650 Ti), so this floor exists specifically for the gap before that,
+without gutting an economy that hasn't gotten off the ground. A builder that
+already holds (or just claimed) guardian this turn is skipped, so one body
+never grabs both standing roles.
+
+**Deliberately scoped down from the full deferred item:**
+
+1. **Only `ROLE_RAIDER` is recoverable.** `ROLE_RAIDER_2` and any
+   replenishment raider (`respawn.isReplenishmentRaider`) carry no
+   heartbeat — there was only room in `HARVESTERS` for one. `ROLE_RAIDER_2`
+   dying still ends that raider's pressure for the match, same as before
+   this change. A second heartbeat needs its own store-budget decision, not
+   silent scope creep onto this one; left as a smaller, explicit follow-up.
+2. **A reclaimed raider never re-plants the core launcher.**
+   `launcher.placeCoreLauncher` is skipped for a builder that claimed the
+   role at runtime (`bot._raiderReclaimed`) rather than being named it at
+   spawn — the original raider already placed one, or never got the chance
+   to, which the codebase already treats as accepted and not recovered (see
+   that function's own docstring). Avoids re-planting risk entirely rather
+   than reasoning about whether a second launcher near the core is ever
+   correct.
+3. **`ROLES`'s write-ordering-safety comment (store.py) needed rewriting,
+   not just extending.** It previously proved no same-round collision was
+   possible because raider and guardian writes never overlapped in time.
+   That's no longer true — `claimIfOpen` can now write `ROLES` in the same
+   rounds the guardian is stamping it. The replacement argument: every
+   writer left on that word is either a repeating heartbeat or a
+   check-then-write that retries every turn until it sees its own claim
+   land, so a same-round collision just loses one write for one round,
+   self-correcting exactly like an occasional missed guardian heartbeat —
+   never corrupting, since each writer only touches its own bits. Flagged
+   explicitly in the module for the next person adding a writer to that
+   word.
+
+Verified: `mirror_gauntlet` CLEAN (15 maps, no crashes), `bot_gauntlet`
+15/15 vs `starter`, three-way `head_to_head` checks (this change vs. a
+pristine pre-change snapshot, and both vs. `baron`) with no regression —
+see `count_improvement.md` for the full methodology. Separately, since
+raider death is rare enough in the sampled games that those runs mostly
+exercise the non-triggering path (heartbeat stamps, no reclaim fires),
+`claimIfOpen` and the heartbeat/staleness arithmetic were also driven
+directly with a fake `Controller`/`Player`, bypassing the engine: confirmed
+a fresh heartbeat blocks reclaim, a stale one (age > `_RAIDER_ALIVE_TTL`)
+triggers it, a freshly-reclaimed slot isn't immediately stolen by a second
+claimant, and each of the four guards (mid-relay, below the harvester
+floor, already holding guardian, already ours) independently blocks a
+claim that would otherwise succeed. The store repack's bit isolation
+(count vs. heartbeat, and `ROLES`' raider/raider_2/guardian fields) was
+checked the same way. Not a substitute for seeing it fire in a real replay,
+but it does confirm the logic itself is correct, not just plausible by
+construction.
