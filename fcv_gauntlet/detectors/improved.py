@@ -20,6 +20,12 @@ UNIT_BASE_COSTS = {
     "core": 1000,
 }
 
+TURRET_KIND_LABELS = {
+    "gunner": "Turret",
+    "sentinel": "Sentinel",
+    "launcher": "Launcher",
+}
+
 
 class ImprovedCrashDetector:
     """Detects unit removals without lethal damage, classifying CRASH_TLE vs CRASH_EXCEPTION.
@@ -221,13 +227,17 @@ class ImprovedShotDetector:
     def analyze_replay(self, replay: Any, map_name: str = "", side: str = "") -> list[DiagnosticEvent]:
         events: list[DiagnosticEvent] = []
         turret_last_fire: dict[int, int] = {}
-        turret_spawn: dict[int, tuple[int, str, tuple[int, int]]] = {}  # id -> (spawn_t, team, pos)
+        turret_spawn: dict[int, tuple[int, str, tuple[int, int], str]] = {}  # id -> (spawn_t, team, pos, kind)
+        turret_last_seen: dict[int, int] = {}
+        last_turn = 0
 
         for t, before, after in replay.iter_worlds():
+            last_turn = t
             # Track active turrets
             for e in after.entities.values():
                 if e.kind in ("gunner", "sentinel", "launcher"):
-                    turret_spawn.setdefault(e.id, (t, e.team, (e.x, e.y)))
+                    turret_spawn.setdefault(e.id, (t, e.team, (e.x, e.y), e.kind))
+                    turret_last_seen[e.id] = t
 
             for step in replay.substeps(t):
                 fires = [a for a in step.actions if a.kind == "fireTurret"]
@@ -294,11 +304,16 @@ class ImprovedShotDetector:
                             )
                         )
 
-        # Check for turrets with BAD_FACING (never fired for 100+ turns)
-        last_turn = len(list(replay.iter_worlds()))
-        for tid, (spawn_t, team, pos) in turret_spawn.items():
+        # Check for turrets with BAD_FACING (never fired for 100+ turns).
+        # Only flag units still alive at the final turn — a unit that was
+        # destroyed mid-game isn't "idle", it's dead, and reporting it as
+        # inactive points investigators at a building that's no longer there.
+        for tid, (spawn_t, team, pos, kind) in turret_spawn.items():
+            if turret_last_seen.get(tid) != last_turn:
+                continue
             last_f = turret_last_fire.get(tid, spawn_t)
             if (last_turn - last_f) >= 100 and (last_turn - spawn_t) >= 100:
+                label = TURRET_KIND_LABELS.get(kind, "Turret")
                 events.append(
                     DiagnosticEvent(
                         detector="friendly_fire",
@@ -314,8 +329,8 @@ class ImprovedShotDetector:
                         estimated_ti_loss=60.0,
                         likely_cause="SHOT_BAD_FACING_NEVER_FIRED",
                         suggested_module="guns",
-                        message=f"Turret #{tid} at {pos} remained inactive for {last_turn - spawn_t} turns (possible bad facing)",
-                        metadata={"subtype": "SHOT_BAD_FACING", "idle_turns": last_turn - spawn_t},
+                        message=f"{label} #{tid} at {pos} remained inactive for {last_turn - spawn_t} turns (possible bad facing)",
+                        metadata={"subtype": "SHOT_BAD_FACING", "idle_turns": last_turn - spawn_t, "kind": kind},
                     )
                 )
 

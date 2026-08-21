@@ -1,0 +1,8 @@
+{
+  "guns.TI_SURPLUS_THRESHOLD": ["int", 60, 400, 20],
+  "guardianBot.GUARDIAN_LEASH": ["int", 4, 12, 1],
+  "respawn.REPLENISH_TI": ["int", 400, 1200, 50],
+  "respawn.MAX_BUILDERS": ["int", 4, 8, 1],
+  "respawn.BUILDER_RESERVE": ["int", 20, 150, 10],
+  "raidBot._TURRET_BUILD_DELAY_ROUNDS": ["int", 0, 30, 5]
+}

@@ -10,3 +10,21 @@ docs/superpowers/
 *.log
 .cursor/
 .DS_Store
+
+# Optuna tuning + ladder tooling (optuna/, scripts/ladder/) — generated,
+# per-run artifacts the README already describes as gitignored. Two of these
+# land inside the tracked bots/ tree, so without these entries a routine
+# `git add -A` after running the tooling sweeps auto-downloaded historical
+# submission code or a materialized tuned variant into version control.
+optuna/*_trial/
+optuna/*_baseline/
+optuna/**/*.db
+optuna/discovered_*.json
+bots/*_tuned/
+bots/_milestones/
+submission_cache/
+ladder_replay_cache/
+# legacy/ tuners (optuna/legacy/) predate the disposable-copy design and can
+# still write into these paths if run directly.
+bots/tmp_*_trial_*/
+test_results/
