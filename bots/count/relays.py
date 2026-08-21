@@ -271,7 +271,19 @@ def _replanAvoiding(bot, ct: Controller, tile: Position) -> bool:
         return False  # never blacklist the thing we are trying to reach
     bot.relayAvoid.add((tile.x, tile.y))
     bot.relayPath = None
-    if planRelay(bot, ct) is not _Plan.ROUTED:
+    plan = planRelay(bot, ct)
+    if plan is _Plan.CONNECTED:
+        # The replan found the harvester already merged into the network — a
+        # genuine delivery, the same case relayToHome's own top-level dispatch
+        # credits (line ~78-79). Every caller here treats a False return as
+        # "genuinely failed, fall through to relayAbort" — doing that on a
+        # replan that just succeeded would tear down a delivered line and drop
+        # its credit (guardian eligibility, _relaysConnected) for nothing.
+        # True still means what it always has at every call site: something
+        # happened this turn, stop here — relayDone's own teardown covers it.
+        relayDone(bot, ct)
+        return True
+    if plan is not _Plan.ROUTED:
         return False
     clearHold(bot)  # new route, fresh patience — otherwise the spent counter
     return True     # would abandon it again immediately
