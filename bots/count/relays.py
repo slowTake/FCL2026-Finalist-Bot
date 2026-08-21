@@ -429,12 +429,14 @@ def _walkBeside(bot, ct: Controller, tile: Position) -> bool:
 
 
 def clearRelayObstruction(bot, ct: Controller, target: Position, *, hostile: bool) -> bool:
-    """A* already priced this obstruction and picked the route through it, so the
-    question here is only *how*, not *whether*.
+    """Route around this obstruction if a detour is worth it, else remove it.
 
-    Hostile: grind it down (2 Ti for 2 damage, one per turn). Friendly: path
-    around by default — the cost isn't the free destroy(), it's losing our own
-    building.
+    Hostile: a barrier the enemy *dropped onto an already-planned line* was never
+    priced — the plan predates it, so A*'s "picked the route through it" premise is
+    false. Re-plan so the barrier is priced now (ENEMY_BARRIER, ~6-7 open tiles of
+    detour); take the detour if the fresh route drops this tile, else grind it down
+    (2 Ti for 2 damage, one per turn). Friendly: path around by default — the cost
+    isn't the free destroy(), it's losing our own building.
     """
     t = ph.readTile(ct, bot.hivemind, target)
 
@@ -442,12 +444,27 @@ def clearRelayObstruction(bot, ct: Controller, target: Position, *, hostile: boo
         return _replanAvoiding(bot, ct, target)  # ours, on ore. never.
 
     if hostile:
+        # Re-price the barrier by re-planning (costContext rebuilds every round, so
+        # it sees the now-present barrier). A cheaper detour drops this tile from the
+        # fresh route; if the route still runs through it the detour costs more than
+        # the ~15-turn grind. Re-plan (priced), not _replanAvoiding (infinite cost) —
+        # the tuned barrier weight, not an absolute preference, decides detour-vs-grind.
+        bot.relayPath = None
+        plan = planRelay(bot, ct)
+        if plan is _Plan.CONNECTED:
+            return relayDone(bot, ct)  # a rival line grafted on — a real delivery
+        if plan is _Plan.ROUTED and (target.x, target.y) not in {
+            (p.x, p.y) for p in bot.relayPath
+        }:
+            clearHold(bot)  # detour found — fresh route, fresh patience
+            return True
+        # Fresh plan still routes through the barrier (or FAILED): grind it down. The
+        # through-route stays in relayPath, so next turn re-enters here and grinds on;
+        # no relayAvoid mutation, so a genuine chokepoint never spuriously aborts.
         if ct.get_action_cooldown() == 0 and ct.can_fire(target):
             ct.fire(target)
             return True
-        return holdTask(bot, "clear", CLEAR_WAIT_TURNS) or _replanAvoiding(
-            bot, ct, target
-        )
+        return holdTask(bot, "clear", CLEAR_WAIT_TURNS)
 
     if _replanAvoiding(bot, ct, target):
         return True

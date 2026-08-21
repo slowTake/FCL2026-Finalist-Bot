@@ -61,6 +61,20 @@ and would be expensive to relearn.
   walk profile still prices it normally. Planning otherwise uses `isImpassable` +
   `tileCost`; the per-turn move uses `canStandNow`. Conflating the two forces a
   replan every time anything is in the way.
+- **A barrier dropped onto a live relay must be re-priced, not ground on sight.**
+  A* prices an enemy barrier as passable (`ENEMY_BARRIER`, ~6-7 open tiles of
+  detour) and picks the route — but a barrier the enemy places *after* the line
+  was planned was never on the board when A* ran, so the plan predates it. The
+  old `clearRelayObstruction` grind-first hostile branch then pinned the builder
+  firing 2 dmg/turn for ~15 turns even when a one-tile detour existed. Fix:
+  re-plan (`planRelay`, which re-prices via the freshly rebuilt `costContext`) and
+  take the detour if the new route drops the barrier tile; grind only when the
+  route still runs through it (a true chokepoint). Re-plan, *not* `_replanAvoiding`
+  — blacklisting makes the tile infinite-cost so any-length detour beats a 30-Ti
+  grind, contradicting the tuned weight. A genuine grind is sustainable because the
+  through-route stays in `relayPath` with no avoid-set mutation. Gap: no relay-side
+  stall detector, so an enemy repairing a sole-door barrier ≥2 HP/turn grinds
+  forever (the ore path has `ORE_BARRIER_STALL_TURNS`; the relay path does not).
 - **Hold, don't abandon.** A builder that can't act this turn usually can in two
   or three. `patience.holdTask` is the single place that judgement lives.
 - **The relay goal is a tile *beside* the network, not on it.** The anchor the
