@@ -181,6 +181,24 @@ class Player:
         # core launcher, so it never plants a second after walking out of sight.
         self._placedLauncher = False
 
+        # Pocket self-rescue (launcher.rescueFromPocket). Consecutive turns this
+        # builder has read as sealed in a walled pocket; at POCKET_STUCK_TURNS it
+        # buys a throwaway launcher to fling itself out. Its own int, not
+        # patience.holdTask, for the same reason _defendStuckTurns is (below): the
+        # pocketed builder's role keeps calling walkTo every turn, and walkTo clears
+        # the shared hold on arrival, which would make this patience infinite.
+        # `_rescueSite` holds the adopted/built launcher's tile while a rescue is in
+        # flight (None otherwise). Both stay at their defaults on any builder that
+        # never gets sealed.
+        self._pocketStuckTurns = 0
+        self._rescueSite: Position | None = None
+
+        # Rescue launcher's one-shot detonation latch (launcher.runLauncher). Set the
+        # turn a rescue launcher throws its builder out; the next turn it reads this
+        # and self_destructs, so the launch and the detonation never share a turn.
+        # Stays False on every unit that isn't a throwaway rescue launcher.
+        self._rescueThrown = False
+
         # Raider replenishment clock (respawn.runCoreSpawn). Round the core last
         # spawned a replenishment raider (see respawn.REPLENISH_TI), so the next
         # waits out the interval. None until the first one; only ever set on the core.
@@ -352,6 +370,14 @@ class Player:
             if ally[0] != CoreState.UNKNOWN:
                 self.corePos = Position(ally[1], ally[2])
         if self.corePos is None:
+            return
+
+        # A builder sealed in a walled pocket can do nothing any role asks of it —
+        # every role funnels through walkTo and no route out exists — so the
+        # self-rescue check sits above role dispatch and covers raiders, the
+        # guardian and eco alike. Cheap on the common (unsealed) path: one bounded
+        # flood that stops at ESCAPE_MIN_TILES.
+        if launcher.rescueFromPocket(self, ct):
             return
 
         # Roles are named by index rather than by anything a builder can see, so
