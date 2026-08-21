@@ -222,8 +222,12 @@ def runCoreSpawn(bot, ct: Controller) -> None:
     sites = spawnSites(ct, bot.hivemind, bot.corePos)
     if not sites:
         # Every ring tile is a pocket or off-map. Better a boxed-in builder than no
-        # builder — the filter is a preference, not a licence to stop spawning.
-        sites = ph.coreRing(bot.corePos)
+        # builder — the filter is a preference, not a licence to stop spawning. Still
+        # apply inBounds: coreRing does no bounds checking of its own, and an
+        # out-of-bounds Position handed to can_spawn risks the engine raising, which
+        # would abort this whole core turn (publishTarget/topUpAmmo included) through
+        # Player.run's blanket exception guard.
+        sites = [t for t in ph.coreRing(bot.corePos) if ph.inBounds(ct, t)]
 
     target = _predictTarget(bot, ct)
     if target is not None:
