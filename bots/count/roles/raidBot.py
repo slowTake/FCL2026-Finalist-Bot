@@ -235,6 +235,35 @@ def _coreClear(bot, ct: Controller, enemyCore: Position) -> bool:
     return True
 
 
+def _beltRepairGuardTiles(ct: Controller) -> set[tuple[int, int]]:
+    """Tiles a visible enemy builder could repair this turn: each builder's own
+    tile plus its 4 orthogonal neighbours. Build/fire/repair are adjacent-only and
+    diagonals don't qualify, so orthogonal adjacency is the stand-in for "is it
+    repairing" — the engine exposes no enemy action state (no target/order getter),
+    so we read position, not intent. Same adjacency rule guns._builderThreatening
+    Structure used before it was removed.
+
+    An entity scan on purpose, not readTile().builderEnemy: the tile read falls back
+    to the shared ledger outside current vision and tracks a mobile builder
+    unreliably, and this set must mean *right now* — the guard that consumes it
+    re-decides every single turn (skip, never bar).
+
+    Built once per siege action turn and shared across the whole ring, never per
+    candidate belt — the raider runs near the 10ms budget (module header)."""
+    myTeam = ct.get_team()
+    guarded: set[tuple[int, int]] = set()
+    for eid in ct.get_nearby_entities():
+        if ct.get_team(eid) == myTeam:
+            continue
+        if ct.get_entity_type(eid) != EntityType.BUILDER_BOT:
+            continue
+        epos = ct.get_position(eid)
+        guarded.add((epos.x, epos.y))
+        for n in ph.orthogonalTiles(epos):
+            guarded.add((n.x, n.y))
+    return guarded
+
+
 def _nextSiegeTile(bot, ct: Controller, ringTiles, gunners, cache) -> Position | None:
     """Nearest core-ring tile that still needs cutting or walling, or None once
     the ring is fully severed and sealed.
@@ -457,6 +486,10 @@ def _siege(bot, ct: Controller, enemyCore: Position) -> bool:
     # skip the cut/wall this turn and reposition below — a supply cut is never
     # worth handing the gun a free shot.
     if ct.get_action_cooldown() == 0 and canSpend and not exposed:
+        # Enemy builders in repair position, gathered once for the whole ring — not
+        # per candidate belt, and not up in the every-turn prep block above: only the
+        # cut loop consumes it, so only action turns pay the scan.
+        repairGuard = _beltRepairGuardTiles(ct)
         # 1) Sever an adjacent incoming belt — supply denial first.
         for t in ringTiles:
             if manhattan(pos, t) != 1:
@@ -476,6 +509,28 @@ def _siege(bot, ct: Controller, enemyCore: Position) -> bool:
             # the trade. Skip it as a cut target — _siegeTileNeedsWork also treats
             # it as done, so the reposition step below won't park beside it either.
             if key in bot._beltGaveUp:
+                continue
+            # Repairer guard: a visible enemy builder standing on or orthogonally
+            # adjacent to this belt is almost certainly repairing it, and repair
+            # keeps pace with our cut (2 Ti/shot both ways — docs/observations.md), so
+            # firing now is a guaranteed losing trade. Skip THIS TURN only —
+            # deliberately no bot._beltGaveUp entry: the builder is mobile, this
+            # re-checks from fresh vision every turn, and the cut resumes the instant
+            # it steps away (a give-up bar would waste that window).
+            #
+            # Leave _beltGrindLow untouched — do NOT stallForget here. A skipped turn
+            # is an absence to stallCheck (its entry is left as-is), so the stale count
+            # survives a *flickering* repairer that steps on and off, and the ~22-Ti
+            # out-repair backstop below still fires against it. Forgetting instead would
+            # reset that count on every unguarded resumption, so an alternating repairer
+            # would bleed us ~1 Ti/turn forever without ever barring — worse than the
+            # capped path this guard is meant to beat. Not forgetting can't cause a
+            # false give-up either: a fully repaired 20-HP belt is at most ~10
+            # no-new-low looks from setting a fresh low, under _BELT_STALL_TURNS (11).
+            if key in repairGuard:
+                if debug.ENABLED:
+                    debug.log("raidBot", f"siege-cut-guarded {t} "
+                                         f"rnd={ct.get_current_round()}")
                 continue
             # Give-up check: only bleed Ti into a belt we're actually grinding
             # down. If HP is unreadable (no building id), fall through and fire as

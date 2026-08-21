@@ -698,3 +698,27 @@ SOUND-WITH-NITS. Two of its four nits were fixed in the same pass:
 Verified: mirror_gauntlet CLEAN across 15 maps both before this pass (baseline on
 the unmodified feature commits) and after (with the fix applied), byte-compiled
 clean throughout.
+
+---
+
+## 2026-08-21 — siege repairer guard (user-requested), one follow-up deferred
+
+`raidBot._siege` now skips grinding a core-ring belt on any turn a visible enemy
+builder stands on it or orthogonally adjacent to it (`_beltRepairGuardTiles`): an
+adjacent builder is almost certainly repairing, and repair keeps pace with our
+2 Ti/shot cut, so grinding is a guaranteed losing trade. Skip-this-turn, never a
+`_beltGaveUp` bar — the builder is mobile, so the cut resumes the instant it steps
+away. `_beltGrindLow` is left untouched on the skip so the ~22-Ti out-repair
+`stallCheck` still fires against a *flickering* repairer (forgetting it there would
+reset the stale count every unguarded turn and bleed ~1 Ti/turn forever). The old
+stallCheck path stays as the backstop for out-repair the vision test can't see.
+
+**Deferred follow-up (Fable finding, accepted):** `_siegeTileNeedsWork` /
+`_nextSiegeTile` are unchanged, so a guarded belt still reads as "needs work" and a
+builder *permanently* camping one keeps the raider parked adjacent to it — zero Ti,
+still pins the builder and walls local gaps, but it won't circle to cut a belt on
+the far side of the ring the way the old ~22-Ti-then-bar path did. Fix shape when it
+matters: deprioritize (not exclude) guarded belts in `_nextSiegeTile`, mirroring its
+existing `_beltGaveUp` tie-break, so a camped belt yields to real work elsewhere on
+the ring while still being retried once the camper leaves. Severity low: bounded in
+Ti (zero), unbounded only in time-parked, and only when other ring tiles need work.
