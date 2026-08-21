@@ -82,6 +82,18 @@ SENTINEL_PRIORITY: dict[EntityType, int] = {
 # on whatever it found.
 GUNNER_ROTATE_MIN_TI = 50
 
+# After a gunner spends a rotation to aim at an enemy builder, it will not rotate to
+# a builder again for this many rounds. A builder is mobile: left ungated, a gunner
+# re-aims after it every turn it jinks, paying GUNNER_ROTATE_COST (10 Ti) a turn to
+# track a body that keeps stepping out of the new arc — bank churn for a shot or two.
+# The gate suppresses only *rotation* toward builders, and only builders: an
+# on-facing builder is still fired on for free, a stationary turret is still chased
+# every turn, and once the window lapses a builder that is still the best target is
+# aimed at again. Three rounds is long enough for a passing builder to clear the
+# arc — so the re-aim is spent on where it went, not where it was — without blinding
+# the gunner to one that genuinely parks in range.
+GUNNER_BUILDER_ROTATE_COOLDOWN = 3
+
 
 # --- Targeting ----------------------------------------------------------
 
@@ -254,22 +266,52 @@ def gunnerLoop(bot, ct: Controller) -> None:
     if ct.get_global_ammo() < GameConstants.GUNNER_AMMO_COST:
         return
 
+    # Within the cooldown after a builder rotation, re-scan reachability against a
+    # builder-free hostile set for the rotate step only. Filtering reach[d] in place
+    # is not enough: a builder outranks a turret (priority 2 vs 3), so a direction
+    # whose reach[d] is a builder may still have a turret farther down its line that
+    # we *do* want to turn to — dropping the builder here lets that turret surface,
+    # instead of skipping the whole direction. The idle/fire paths above keep the
+    # full set (a builder still counts as a live arc and is still shot for free
+    # on-facing); only spending a rotation to chase one is gated.
+    inBuilderCooldown = (
+        bot._gunnerBuilderRotateRound is not None
+        and round_ - bot._gunnerBuilderRotateRound < GUNNER_BUILDER_ROTATE_COOLDOWN
+    )
+    if inBuilderCooldown:
+        rotateHostiles = [h for h in hostiles if h[1] != EntityType.BUILDER_BOT]
+        rotateReach = {
+            d: _bestCandidate(
+                here, rotateHostiles, GUNNER_PRIORITY,
+                lambda pos, d=d: ct.can_fire_from(here, d, EntityType.GUNNER, pos),
+            )
+            for d in _DIRS
+        }
+    else:
+        rotateReach = reach
+
     facing = ct.get_direction()
     bestDir = None
     bestKey = None
+    bestType = None
     for d in _DIRS:
         if d == facing:
             continue  # already tried above, and it just failed
-        pick = reach[d]
+        pick = rotateReach[d]
         if pick is None:
             continue
         pos, etype = pick
         key = (GUNNER_PRIORITY[etype], manhattan(here, pos))
         if bestKey is None or key < bestKey:
-            bestDir, bestKey = d, key
+            bestDir, bestKey, bestType = d, key, etype
 
     if bestDir is not None and ct.can_rotate(bestDir):
         ct.rotate(bestDir)
+        # Start the cooldown only on a rotation actually spent to aim at a builder.
+        # (In-cooldown the rotate set has no builders, so this can only re-arm from a
+        # fresh, out-of-cooldown builder rotation — never extend an active window.)
+        if bestType == EntityType.BUILDER_BOT:
+            bot._gunnerBuilderRotateRound = round_
 
 
 def sentinelLoop(bot, ct: Controller) -> None:

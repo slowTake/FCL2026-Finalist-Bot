@@ -213,6 +213,15 @@ class Player:
         # a never-targeted gunner still ages out. Stays None on non-gunner units.
         self._gunnerLastActive: int | None = None
 
+        # Round this gunner last spent a rotation to bring a barrel onto an enemy
+        # builder (guns.gunnerLoop). A builder is mobile, so re-aiming to track one
+        # burns GUNNER_ROTATE_COST every turn it jinks; this stamps the last such
+        # turn so the loop won't rotate to a builder again for
+        # guns.GUNNER_BUILDER_ROTATE_COOLDOWN rounds (firing at one already on-facing
+        # stays free and is unaffected). None until the first builder rotation; stays
+        # None on any gunner that never chases one, and on non-gunner units.
+        self._gunnerBuilderRotateRound: int | None = None
+
         # Sentinel idle timer (guns.sentinelLoop). Round this sentinel last had a
         # target on its fixed arc — a sentinel can't rotate, so this is keyed on an
         # on-arc target (can_fire_from), not merely a visible one. It self-destructs
