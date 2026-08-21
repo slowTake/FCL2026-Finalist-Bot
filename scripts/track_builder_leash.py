@@ -4,8 +4,13 @@ excursions past a leash radius.
 
 Ground-truth (no fog of war), same technique as find_dead_relays.py: replay
 PlaceEntity/MoveBuilderBot/RemoveEntity events to reconstruct every builder's
-position on every turn, then compute Chebyshev distance to the nearest tile
-of that team's core footprint (2x2) each turn.
+position on every turn, then compute Manhattan distance to the nearest tile
+of that team's core footprint (2x2) each turn. Manhattan, not Chebyshev:
+builders move cardinal-only and count's own guardian leash (GUARDIAN_LEASH,
+guardianBot.py) is measured the same way — see docs/observations.md's "the
+distance metric is Manhattan, everywhere" note. An earlier version of this
+script measured Chebyshev, which under-reads diagonals and systematically
+missed 45°-direction leash violations.
 
 Built to debug "guardians not staying close to core" — a guardian is supposed
 to stay within GUARDIAN_LEASH_WIDE(8, wide/quiet) or GUARDIAN_LEASH_TIGHT(4,
@@ -36,8 +41,8 @@ def core_footprint(pos: tuple[int, int]) -> set[tuple[int, int]]:
     return {(x, y), (x + 1, y), (x, y + 1), (x + 1, y + 1)}
 
 
-def chebyshev_to_footprint(pos: tuple[int, int], footprint: set[tuple[int, int]]) -> int:
-    return min(max(abs(pos[0] - fx), abs(pos[1] - fy)) for fx, fy in footprint)
+def manhattan_to_footprint(pos: tuple[int, int], footprint: set[tuple[int, int]]) -> int:
+    return min(abs(pos[0] - fx) + abs(pos[1] - fy) for fx, fy in footprint)
 
 
 def load(path: str) -> pb.Replay:
@@ -110,10 +115,10 @@ def track(path: str, team_letter: str, leash: int, min_turns: int):
         for eid in list(alive):
             if unit_team.get(eid) != team or kind.get(eid) != "builderBot":
                 continue
-            d = chebyshev_to_footprint(pos[eid], core_fp)
+            d = manhattan_to_footprint(pos[eid], core_fp)
             if d > leash:
                 enemy_d = (
-                    chebyshev_to_footprint(pos[eid], enemy_core_fp)
+                    manhattan_to_footprint(pos[eid], enemy_core_fp)
                     if enemy_core_fp is not None
                     else None
                 )
@@ -141,14 +146,14 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("replay")
     ap.add_argument("--team", choices=["A", "B"], default="A")
-    ap.add_argument("--leash", type=int, default=8, help="Chebyshev radius (default: GUARDIAN_LEASH_WIDE=8)")
+    ap.add_argument("--leash", type=int, default=8, help="Manhattan radius (default: count's GUARDIAN_LEASH=8)")
     ap.add_argument("--min-turns", type=int, default=15, help="only report runs at least this long")
     args = ap.parse_args()
 
     runs, tled = track(args.replay, args.team, args.leash, args.min_turns)
 
     if not runs:
-        print(f"No ally builder stayed beyond Chebyshev {args.leash} of the core for >= {args.min_turns} turns.")
+        print(f"No ally builder stayed beyond Manhattan {args.leash} of the core for >= {args.min_turns} turns.")
         return
 
     print(
