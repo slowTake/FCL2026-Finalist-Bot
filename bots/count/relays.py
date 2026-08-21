@@ -23,6 +23,8 @@ from patience import (
     CLEAR_WAIT_TURNS,
     clearHold,
     holdTask,
+    stallCheck,
+    stallForget,
     waitTi,
 )
 from pathing import astarFromSeeds, bfsFromSeeds
@@ -49,6 +51,18 @@ BELT_CONTEST_LIMIT = 2
 # *visible* break before giving up and trusting it. A cut the builder can see sits
 # within a few tiles; past that we're out of vision and won't reject on a guess.
 _CHAIN_MAX_HOPS = 8
+
+# How many consecutive *engaged* looks (patience.stallCheck — a count of checks, not
+# elapsed rounds, so a builder flung or retargeted off its lane mid-grind doesn't
+# resume into an instant give-up) at an obstruction whose HP fails to set a new low
+# before we rule it out-repaired and stop grinding it. Without this, clearRelay
+# Obstruction's re-plan-first branch re-selects a true chokepoint every turn and
+# grinds it forever — an enemy repairing the barrier >=2 HP/turn bleeds us 2 Ti/shot
+# with no end (the gap docs/observations.md flagged). Matches ORE_BARRIER_STALL_TURNS
+# and raidBot._BELT_STALL_TURNS (both 11): long enough never to trip on a grind we're
+# winning (a falling HP zeroes the stale count every look; a 30 HP barrier is 15
+# unopposed 2-dmg shots), short enough to cap the wasted Ti at ~22 before we concede.
+CLEAR_STALL_CHECKS = 11
 
 
 def relayToHome(bot, ct: Controller) -> bool:
@@ -350,6 +364,14 @@ def layBelt(bot, ct: Controller, tile: Position, nextTile: Position) -> bool:
         # occupied tile as an obstruction is what made a builder blacklist it and
         # re-path across a neighbour's relay.
         return clearRelayObstruction(bot, ct, tile, hostile=t.enemy)
+    else:
+        # Tile reads clear: any grind memory here belongs to a building that no longer
+        # exists (we ground it down, or someone else cleared it). Forget it so an
+        # obstruction later rebuilt on this tile is judged fresh — a carried-over
+        # (low, stale) pair would trip stallCheck near-instantly on the new building,
+        # the stale-low trap its docstring warns about. Mirrors ecoBot's stallForget
+        # on a cleared ore node.
+        stallForget(bot._relayGrindLow, (tile.x, tile.y))
 
     if ct.get_action_cooldown() != 0:
         return holdTask(bot, "cooldown", BLOCKED_WAIT_TURNS)
@@ -429,12 +451,17 @@ def _walkBeside(bot, ct: Controller, tile: Position) -> bool:
 
 
 def clearRelayObstruction(bot, ct: Controller, target: Position, *, hostile: bool) -> bool:
-    """A* already priced this obstruction and picked the route through it, so the
-    question here is only *how*, not *whether*.
+    """Route around this obstruction if a detour is worth it, else remove it.
 
-    Hostile: grind it down (2 Ti for 2 damage, one per turn). Friendly: path
-    around by default — the cost isn't the free destroy(), it's losing our own
-    building.
+    Hostile: a barrier the enemy *dropped onto an already-planned line* was never
+    priced — the plan predates it, so A*'s "picked the route through it" premise is
+    false. Re-plan so the barrier is priced now (ENEMY_BARRIER, ~6-7 open tiles of
+    detour); take the detour if the fresh route drops this tile, else grind it down
+    (2 Ti for 2 damage, one per turn). The grind is additionally bounded by a per-tile
+    out-repair check (stallCheck / CLEAR_STALL_CHECKS): a chokepoint barrier repaired
+    as fast as we cut it is conceded — blacklist-detour or clean abort — rather than
+    ground forever. Friendly: path around by default — the cost isn't the free
+    destroy(), it's losing our own building.
     """
     t = ph.readTile(ct, bot.hivemind, target)
 
@@ -442,11 +469,86 @@ def clearRelayObstruction(bot, ct: Controller, target: Position, *, hostile: boo
         return _replanAvoiding(bot, ct, target)  # ours, on ore. never.
 
     if hostile:
+        # Re-price the barrier by re-planning (costContext rebuilds every round, so
+        # it sees the now-present barrier). A cheaper detour drops this tile from the
+        # fresh route; if the route still runs through it the detour costs more than
+        # the ~15-turn grind. Re-plan (priced), not _replanAvoiding (infinite cost) —
+        # the tuned barrier weight, not an absolute preference, decides detour-vs-grind.
+        #
+        # Snapshot the live route before nulling it. Guaranteed non-None and to contain
+        # `target`: this function's only caller is layBelt, reached from relayToHome
+        # with `target` a tile of the path being laid. Restored below on FAILED.
+        prevPath, prevAnchor = bot.relayPath, bot.relayAnchor
+        bot.relayPath = None
+        plan = planRelay(bot, ct)
+        if plan is _Plan.CONNECTED:
+            return relayDone(bot, ct)  # a rival line grafted on — a real delivery
+        if plan is _Plan.ROUTED and (target.x, target.y) not in {
+            (p.x, p.y) for p in bot.relayPath
+        }:
+            clearHold(bot)  # detour found — fresh route, fresh patience
+            return True
+        if plan is _Plan.FAILED:
+            # No route at all this turn. For a hostile obstruction the usual cause is
+            # the barrier sitting on the harvester's *sole* open exit: planRelay seeds
+            # only beltPassable neighbours, a barrier tile is not one, so seeds come up
+            # empty — there is nothing to detour onto, and the pre-barrier route (which
+            # runs through `target`) is still the right route home; grinding this
+            # barrier is precisely what reopens it. Restore the old path so relayToHome
+            # re-follows it next turn and re-enters this grind — the pre-bb6ad66
+            # grind-through for the no-detour case. Without the restore, the null
+            # relayPath survives the single fire below and relayToHome's next-turn
+            # replan (FAILED again) aborts the relay, stranding the harvester after one
+            # shot — reconnectOrphan's strict re-relay then fails the same seed check
+            # for as long as the barrier stands. This can neither resurrect the
+            # forever-grind nor defeat the concedes below: the stallCheck give-up runs
+            # _replanAvoiding (which re-nulls relayPath) or relayAbort (which tears it
+            # down), and the spent "clear" hold ends in that same ladder, so a restored
+            # path never survives an abort. planRelay leaves relayAnchor untouched on
+            # FAILED, but restore the pair together so path/anchor coherence is visible
+            # here rather than resting on that detail.
+            bot.relayPath, bot.relayAnchor = prevPath, prevAnchor
+        # Fresh plan still routes through the barrier (ROUTED with target on the path),
+        # or FAILED with the pre-barrier route restored above: grind it down. Either
+        # way relayPath holds a route through `target`, so next turn re-enters here and
+        # grinds on; no relayAvoid mutation, so a genuine chokepoint never spuriously
+        # aborts.
+        key = (target.x, target.y)
         if ct.get_action_cooldown() == 0 and ct.can_fire(target):
+            # But bound the grind by an out-repair check, mirrored from
+            # ecoBot._barrierRepaired: read HP only on a turn we are actually about to
+            # shoot (an engaged look — a held/broke turn must not advance the stall
+            # clock), and give up once it hasn't set a new low for CLEAR_STALL_CHECKS
+            # looks. HP unreadable (no building id) falls through and fires, same as
+            # the raider belt-cut. This is the one bound the re-plan-first branch lacks:
+            # a chokepoint priced cheaper than its detour is re-chosen every turn, so
+            # without it the grind never ends.
+            bid = ct.get_tile_building_id(target)
+            hp = ct.get_hp(bid) if bid is not None else None
+            if hp is not None and stallCheck(bot._relayGrindLow, key, hp, CLEAR_STALL_CHECKS):
+                # Proven out-repaired: the grind is unwinnable, so the priced re-plan
+                # above will keep choosing it forever. *Only now* is an infinite-cost
+                # blacklist right — the tile's real cost is infinite, so it no longer
+                # contradicts bb6ad66's tuned-weight detour-vs-grind call. Detour at any
+                # length if one exists, else abort the relay cleanly (relayAbort tears
+                # down inRelay/relayPath and hands the harvester to reconnectOrphan).
+                stallForget(bot._relayGrindLow, key)
+                return _replanAvoiding(bot, ct, target) or relayAbort(bot, ct)
             ct.fire(target)
             return True
-        return holdTask(bot, "clear", CLEAR_WAIT_TURNS) or _replanAvoiding(
-            bot, ct, target
+        # Can't fire this turn (cooldown, or broke below the shot cost). Hold, but never
+        # end on a bare False: patience expiry used to return one straight up, leaving
+        # inRelay/relayPath live for ecoBot to re-enter the identical grind next turn
+        # (the bb6ad66 regression). Restore the detour escape and add an explicit abort
+        # so a spent "clear" budget tears the relay down instead — one turn sooner than
+        # the old planRelay->FAILED->relayAbort route, and no longer dependent on the
+        # replan failing again. The shared "clear" counter is non-monotone (lower ladder
+        # rungs reset it with other reasons), which is fine: the forever-grind is bounded
+        # by the per-tile stallCheck above, not by this hold.
+        return (
+            holdTask(bot, "clear", CLEAR_WAIT_TURNS)
+            or _replanAvoiding(bot, ct, target)
+            or relayAbort(bot, ct)
         )
 
     if _replanAvoiding(bot, ct, target):
@@ -465,6 +567,10 @@ def _teardownRelay(bot) -> None:
     bot.relayFrom = None
     bot.relayAvoid.clear()
     bot.relayRebuilds.clear()
+    # Per-relay grind memory (clearRelayObstruction's out-repair stallCheck). Cleared
+    # here so both relayDone and relayAbort satisfy stallCheck's caller-owns-cleanup
+    # contract in one place — a stale (low, stale) pair must never outlive its relay.
+    bot._relayGrindLow.clear()
     bot.inRelay = False
     bot._strictRelay = False
 

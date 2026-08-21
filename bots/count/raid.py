@@ -33,6 +33,11 @@ from hivemind import CoreState, unpack_cores
 _DIRS = emplace.DIRS
 _DIR_INDEX = {d: i for i, d in enumerate(_DIRS)}
 
+# Half-width of the vision-ingest box _update_local_vision fills local_map from
+# (dx,dy in -6..6, Chebyshev <=6). _eliminateVisibleCandidates clamps to it so it
+# only crosses off candidates the sighting scan could actually have examined.
+_VISION_INGEST_RADIUS = 6
+
 
 def packTarget(pos: Position, facing: Direction) -> int:
     """valid(1) | dir(3) | x(7) | y(7). Map is 30x30 at most, so 7 bits is ample.
@@ -82,6 +87,119 @@ def _seenEnemyCore(bot, ct: Controller) -> Position | None:
     return None
 
 
+def _mirrorCandidates(w: int, h: int, ax: int, ay: int) -> list[Position]:
+    """The tiles the enemy core could occupy on a symmetric map we can't
+    fingerprint, best-first. Given our own anchor `(ax, ay)`, the enemy core is
+    one of exactly three reflections — verified against all 44 maps in
+    features.KNOWN_MAPS, the real core is always in this set:
+
+      point-mirror  `(w-2-ax, h-2-ay)`  — both axes flip
+      y-flip        `(ax,     h-2-ay)`  — vertical  reflection
+      x-flip        `(w-2-ax, ay)`      — horizontal reflection
+
+    Ordered point → y-flip → x-flip: point is right on 36/44 known maps
+    (including every map in LIVE_MAP_POOL, so the current ladder never leaves the
+    first candidate), and of the 8 counterexamples 5 are y-flips (meander, pinch,
+    strait, sweden) and 3 are x-flips (bridge, longship, vase). We cannot tell
+    which type a map is before seeing the real core, so callers walk the list and
+    `_eliminateVisibleCandidates` crosses off ones proven empty by vision.
+
+    Deduped, and our own anchor is never a candidate — on an axis-centred core two
+    reflections coincide (e.g. a core on the vertical mid-line has point == y-flip).
+    """
+    raw = [(w - 2 - ax, h - 2 - ay), (ax, h - 2 - ay), (w - 2 - ax, ay)]
+    out: list[Position] = []
+    seen = {(ax, ay)}
+    for c in raw:
+        if c not in seen:
+            seen.add(c)
+            out.append(Position(c[0], c[1]))
+    return out
+
+
+def _ownAnchor(bot, ct: Controller):
+    """Our own core's top-left anchor, or None if not yet resolved. Prefer the
+    packed-cores slot (every unit reads it); fall back to bot.corePos when that
+    slot is still UNKNOWN — this matters on the core's own turn 0, when it spawns
+    the first raider before its buffered PACKED_CORES write has landed (see the
+    detailed note this replaced, still true: without the fallback the first raider,
+    and the launcher it plants, are never created on an unfingerprinted map)."""
+    ally, _ = unpack_cores(ct.read_store(store.PACKED_CORES))
+    if ally[0] != CoreState.UNKNOWN:
+        return ally[1], ally[2]
+    core = getattr(bot, "corePos", None)
+    if core is not None:
+        return core.x, core.y
+    return None
+
+
+def _enemyCoreCandidates(bot, ct: Controller) -> list[Position]:
+    """All mirror candidates for the enemy core, best-first, or [] if our own
+    anchor is unknown. Not filtered by eliminations — see enemyCoreCandidatesAlive."""
+    anchor = _ownAnchor(bot, ct)
+    if anchor is None:
+        return []
+    return _mirrorCandidates(ct.get_map_width(), ct.get_map_height(), *anchor)
+
+
+def _eliminateVisibleCandidates(bot, ct: Controller) -> None:
+    """Cross off any mirror candidate whose full 2x2 footprint this unit can see —
+    the sighting scan just ran this round and found no enemy core, so a fully
+    visible footprint is confirmed empty. Permanent (cores never move), so
+    `bot._deadMirror` only grows, to at most 3. Candidate footprints are always in
+    bounds (anchor <= w-2 ⇒ x+1 <= w-1), so is_in_vision is never asked off-map.
+
+    Per-unit, not shared: only the raiders actually visit candidates, and every
+    other reader is fine with a one-round-stale guess — sharing this would cost
+    scarce store bits for no real gain. The cost is that raider 2 may re-clear what
+    raider 1 already cleared; pressCore splits their probe order to cut that."""
+    dead = getattr(bot, "_deadMirror", None)
+    if dead is None:
+        return
+    # Only trust tiles the sighting scan could actually have examined: _seenEnemyCore
+    # reads local_map, which _update_local_vision fills from a Chebyshev-<=6 box
+    # around this unit's own position. A tile can read is_in_vision True yet sit
+    # outside that box for a 2x2 unit (is_in_vision may key off any footprint tile,
+    # get_position returns the anchor) — trusting it there would let the core
+    # *permanently* cross off a true candidate the scan never ingested. Clamp to the
+    # ingest box so "visible + not seen by the scan ⇒ empty" is sound.
+    px, py = ct.get_position().x, ct.get_position().y
+    for c in _enemyCoreCandidates(bot, ct):
+        if (c.x, c.y) in dead:
+            continue
+        tiles = ((c.x, c.y), (c.x + 1, c.y), (c.x, c.y + 1), (c.x + 1, c.y + 1))
+        if all(abs(x - px) <= _VISION_INGEST_RADIUS
+               and abs(y - py) <= _VISION_INGEST_RADIUS
+               and ct.is_in_vision(Position(x, y))
+               for x, y in tiles):
+            dead.add((c.x, c.y))
+
+
+def enemyCoreVerified(bot, ct: Controller) -> bool:
+    """True when the enemy core position is ground truth (tier 1 sighting) or the
+    fingerprint (tier 2) — i.e. NOT a mirror guess. Cheap: no map scan. Gates the
+    two places that spend titanium aimed at the enemy core (publishTarget,
+    buildLocalSentinel): fine to *walk* toward a guess, never to build turrets at
+    one. Always true on any fingerprinted map, so ladder behaviour is unchanged."""
+    if getattr(bot, "_seenEnemyCore", None) is not None:
+        return True
+    if getattr(bot.hivemind, "enemy_core_pos", None) is not None:
+        return True
+    _, enemy = unpack_cores(ct.read_store(store.PACKED_CORES))
+    return enemy[0] != CoreState.UNKNOWN
+
+
+def enemyCoreCandidatesAlive(bot, ct: Controller) -> list[Position]:
+    """Mirror candidates not yet disproven by vision, best-first. Empty once the
+    core is verified (tier 1/2) — callers use enemyCorePos directly then. Lets the
+    two opening raiders probe *different* candidates so the pair splits the mirror
+    ambiguity instead of both walking to the same wrong point-mirror guess."""
+    if enemyCoreVerified(bot, ct):
+        return []
+    dead = getattr(bot, "_deadMirror", ())
+    return [c for c in _enemyCoreCandidates(bot, ct) if (c.x, c.y) not in dead]
+
+
 def enemyCorePos(bot, ct: Controller) -> Position | None:
     """The enemy core, for any unit. Three tiers, most-authoritative first:
 
@@ -91,10 +209,19 @@ def enemyCorePos(bot, ct: Controller) -> Position | None:
        never moves, and the ledger propagates it to everyone.
     2. **The fingerprint** (`hm.enemy_core_pos` on the core, else the packed-cores
        slot every unit reads). Correct on every map in features.KNOWN_MAPS.
-    3. **Mirror fallback.** Maps are point-symmetric, so on an unfingerprinted map
-       the enemy core is the reflection of ours (always in packed-cores):
-       `((w-2)-x, (h-2)-y)`. Gives raiders/launcher a target from turn 0 even on
-       a map we've never seen. Corrected by tier 1 once the real core is sighted.
+    3. **Mirror fallback.** On an unfingerprinted symmetric map the enemy core is
+       one of three reflections of ours (`_mirrorCandidates`): point, y-flip, or
+       x-flip. We return the best *not-yet-disproven* candidate; a raider's press
+       walk clears each empty guess (`_eliminateVisibleCandidates`) and advances to
+       the next, until tier 1 locks the real core. The old code assumed pure point
+       symmetry and was wrong on 8 of 44 known maps (bridge, longship, meander,
+       pinch, strait, sweden, twins, vase) — invisible today because LIVE_MAP_POOL
+       is all point-symmetric and fingerprinted, but a live hazard for a finals map
+       we can't fingerprint.
+
+    Note the tiny-map edge: on a small unfingerprinted map a candidate can land
+    within a launcher's apron of our own core (a pre-existing quirk of the point
+    mirror, not widened here — still exactly one guess returned at a time).
     """
     seen = getattr(bot, "_seenEnemyCore", None)
     if seen is None:
@@ -112,6 +239,11 @@ def enemyCorePos(bot, ct: Controller) -> Position | None:
             seen = _seenEnemyCore(bot, ct)
             if seen is not None:
                 bot._seenEnemyCore = seen
+            else:
+                # No sighting this round: advance mirror eliminations while the
+                # scan's fresh negative licenses "visible footprint ⇒ empty".
+                # Gated by the same once-per-round guard, so it never re-runs.
+                _eliminateVisibleCandidates(bot, ct)
     if seen is not None:
         return seen
 
@@ -119,31 +251,22 @@ def enemyCorePos(bot, ct: Controller) -> Position | None:
     if pos is not None:
         return pos
 
-    ally, enemy = unpack_cores(ct.read_store(store.PACKED_CORES))
+    _, enemy = unpack_cores(ct.read_store(store.PACKED_CORES))
     if enemy[0] != CoreState.UNKNOWN:
         return Position(enemy[1], enemy[2])
 
-    # Mirror fallback needs our own core. Prefer the packed-cores slot (every unit
-    # reads it), but fall back to bot.corePos when that slot is still UNKNOWN. This
-    # matters on exactly one turn that matters a lot: the core's own turn 0, when
-    # it spawns the first raider. The core's PACKED_CORES write is buffered a round
-    # (write_store), so the slot reads UNKNOWN on turn 0 — yet _runCore has already
-    # set bot.corePos from ct.get_position() this same turn. Without this fallback
-    # enemyCorePos returns None at that spawn, _raidReady is False, ROLE_RAIDER is
-    # never assigned, and on an *unfingerprinted* map (tier 2 absent) the first
-    # raider — and therefore the launcher it plants — is silently never created.
-    # A fingerprinted map is unaffected: tier 2 returns above before we get here.
-    ax = ay = None
-    if ally[0] != CoreState.UNKNOWN:
-        ax, ay = ally[1], ally[2]
-    else:
-        core = getattr(bot, "corePos", None)
-        if core is not None:
-            ax, ay = core.x, core.y
-    if ax is not None:
-        w, h = ct.get_map_width(), ct.get_map_height()
-        return Position(w - 2 - ax, h - 2 - ay)
-    return None
+    # Tier 3: mirror fallback. Best live (not-yet-disproven) candidate, else — if
+    # every candidate has somehow been crossed off — fall back to the raw best
+    # rather than None: a None here would flip _raidReady false and un-designate
+    # raiders mid-match. A fingerprinted map never reaches this (tier 2 returns).
+    dead = getattr(bot, "_deadMirror", ())
+    cands = _enemyCoreCandidates(bot, ct)
+    if not cands:
+        return None
+    for c in cands:
+        if (c.x, c.y) not in dead:
+            return c
+    return cands[0]
 
 
 def _buildable(ct: Controller, hm, pos: Position, enemyFootprint) -> bool:
@@ -266,6 +389,11 @@ def publishTarget(bot, ct: Controller) -> None:
         return
     enemyCore = enemyCorePos(bot, ct)
     if enemyCore is None:
+        return
+    # Never publish a sentinel emplacement aimed at a mirror guess — an unverified
+    # core is fine to besiege on foot, but building the whole ring at a phantom
+    # footprint burns titanium re-densifying turrets that self-destruct empty.
+    if not enemyCoreVerified(bot, ct):
         return
     choice = chooseEmplacement(bot, ct, enemyCore)
     if choice is None:

@@ -196,6 +196,25 @@ _SIEGE_UNREACHABLE_MEMORY_TURNS = 20
 _BELT_STALL_TURNS = 11
 _BELT_GIVEUP_MEMORY_TURNS = 25
 
+# Manhattan-to-footprint radius (ph.manhattanToCore) within which an enemy harvester
+# counts as core-relevant for the siege divert (_divertStart). Wider than
+# guns._CORE_SNIPE_RADIUS (5) on purpose: that constant is a *ranking tier* for a
+# zero-cost opportunistic drop from wherever the raider already stands, while the
+# divert spends real turns walking, so it merits a wider net — 8 covers the harvesters
+# feeding the core's belt network a hop or two out — but not an unbounded one: past
+# this a harvester is ordinary economic denial, not worth leaving a half-sieged ring
+# for. In practice the vision-scoped entity scan caps the pick tighter than this.
+_HARVESTER_DIVERT_RADIUS = 8
+
+# Max rounds a divert latch may live before the target is barred and the raider goes
+# back to the ring. Sized for the worst honest case — a walk of up to
+# _HARVESTER_DIVERT_RADIUS + _SIEGE_RADIUS tiles plus a few turns of placement
+# attempts — so a pad-blocked or turret-covered harvester the gunner can never
+# actually be dropped on can't park the raider beside it forever. The bar goes in
+# _siegeUnreachable, so it self-heals on _SIEGE_UNREACHABLE_MEMORY_TURNS like every
+# other bar.
+_DIVERT_GIVEUP_ROUNDS = 15
+
 
 def _siegeTileNeedsWork(bot, ct: Controller, tile: Position) -> bool:
     """True if this core-ring tile is either an enemy belt to cut or an open gap
@@ -235,17 +254,53 @@ def _coreClear(bot, ct: Controller, enemyCore: Position) -> bool:
     return True
 
 
-def _nextSiegeTile(bot, ct: Controller, ringTiles, gunners, cache) -> Position | None:
-    """Nearest core-ring tile that still needs cutting or walling, or None once
-    the ring is fully severed and sealed.
+def _beltRepairGuardTiles(ct: Controller) -> set[tuple[int, int]]:
+    """Tiles a visible enemy builder could repair this turn: each builder's own
+    tile plus its 4 orthogonal neighbours. Build/fire/repair are adjacent-only and
+    diagonals don't qualify, so orthogonal adjacency is the stand-in for "is it
+    repairing" — the engine exposes no enemy action state (no target/order getter),
+    so we read position, not intent. Same adjacency rule guns._builderThreatening
+    Structure used before it was removed.
+
+    An entity scan on purpose, not readTile().builderEnemy: the tile read falls back
+    to the shared ledger outside current vision and tracks a mobile builder
+    unreliably, and this set must mean *right now* — the guard that consumes it
+    re-decides every single turn (skip, never bar).
+
+    Built once per siege turn (hoisted to _siege's prep block) and shared by the cut
+    loop and _nextSiegeTile alike, never per candidate belt — the raider runs near the
+    10ms budget (module header)."""
+    myTeam = ct.get_team()
+    guarded: set[tuple[int, int]] = set()
+    for eid in ct.get_nearby_entities():
+        if ct.get_team(eid) == myTeam:
+            continue
+        if ct.get_entity_type(eid) != EntityType.BUILDER_BOT:
+            continue
+        epos = ct.get_position(eid)
+        guarded.add((epos.x, epos.y))
+        for n in ph.orthogonalTiles(epos):
+            guarded.add((n.x, n.y))
+    return guarded
+
+
+def _nextSiegeTile(bot, ct: Controller, ringTiles, gunners, cache, repairGuard) -> tuple[Position | None, bool]:
+    """Nearest core-ring tile that still needs cutting or walling as
+    `(tile, productive)`, or `(None, False)` once the ring is fully severed and
+    sealed. `productive` is False when the pick is a repairer-guarded belt (a losing
+    trade the cut loop skips) — the divert caller reads it to decide the ring offers
+    nothing worth staying for.
 
     With gunners in sight, a tile whose every approach is in a live line is
-    deprioritised so the raider circles to a safe side of the core. With none,
-    this is byte-for-byte the original nearest-by-manhattan pick — `noSafe` is a
-    constant False, and strict `<` keeps the first tile at the min distance in
-    ring order, exactly as before. Keeping the no-gunner path identical matters:
-    perturbing tie-breaks or the walk target here (an earlier version did) shifts
-    which belt is cut turn to turn and stalls the siege even with no threat.
+    deprioritised so the raider circles to a safe side of the core; a repairer-guarded
+    belt is deprioritised the same way — sorted after real work, never excluded, so a
+    camped belt yields to a cuttable belt or an open gap elsewhere but is still
+    approached (and re-tried the instant the camper leaves) when it is all that's left.
+    With no gunners and no guard this is byte-for-byte the original nearest-by-manhattan
+    pick — `noSafe` and `guarded` are both constant False, and strict `<` keeps the
+    first tile at the min distance in ring order, exactly as before. Keeping that path
+    identical matters: perturbing tie-breaks or the walk target here (an earlier version
+    did) shifts which belt is cut turn to turn and stalls the siege even with no threat.
 
     Tiles the walk already proved unreachable are skipped (_markIfNoRoute). That
     skip is what turns a dead search into a retarget instead of a per-turn TLE,
@@ -262,11 +317,19 @@ def _nextSiegeTile(bot, ct: Controller, ringTiles, gunners, cache) -> Position |
             continue
         if not _siegeTileNeedsWork(bot, ct, t):
             continue
+        # A guarded BELT sorts last (after noSafe). Membership is tested before the
+        # tile re-read so the common empty-guard case costs nothing; the belt check
+        # keeps the semantics "guarded belt" — an open gap beside a passing enemy
+        # builder is still perfectly wallable and must not be demoted.
+        guarded = False
+        if (t.x, t.y) in repairGuard:
+            tt = ph.readTile(ct, bot.hivemind, t)
+            guarded = bool(tt.enemy and tt.etype in ph.BELT_TYPES)
         noSafe = bool(gunners) and _safeStandTile(bot, ct, t, gunners, cache) is None
-        key = (noSafe, manhattan(pos, t))
+        key = (noSafe, guarded, manhattan(pos, t))
         if bestKey is None or key < bestKey:
             best, bestKey = t, key
-    return best
+    return best, (best is not None and not bestKey[1])
 
 
 def _pruneDodge(bot, ct: Controller) -> dict[tuple[int, int], int]:
@@ -451,6 +514,13 @@ def _siege(bot, ct: Controller, enemyCore: Position) -> bool:
     dodge = _pruneDodge(bot, ct)
     _pruneUnreachable(bot, ct)
     _pruneBeltGaveUp(bot, ct)
+    # Enemy builders in repair position, gathered once for the whole ring. Built in
+    # the prep block (not lazily inside the action block) because _nextSiegeTile now
+    # consumes it too — it deprioritises a guarded belt so the raider circles to real
+    # work — and that runs on every siege turn, action or not. Cost: one vision-scoped
+    # entity scan on the non-action turns as well, bounded and measured against the
+    # same budget note as _beltRepairGuardTiles.
+    repairGuard = _beltRepairGuardTiles(ct)
     exposed = bool(gunners) and emplace.tileUnderGunnerFire(ct, pos, gunners, cache=fireCache)
 
     # Act only from a tile outside every gunner's live line. Standing in one, we
@@ -476,6 +546,28 @@ def _siege(bot, ct: Controller, enemyCore: Position) -> bool:
             # the trade. Skip it as a cut target — _siegeTileNeedsWork also treats
             # it as done, so the reposition step below won't park beside it either.
             if key in bot._beltGaveUp:
+                continue
+            # Repairer guard: a visible enemy builder standing on or orthogonally
+            # adjacent to this belt is almost certainly repairing it, and repair
+            # keeps pace with our cut (2 Ti/shot both ways — docs/observations.md), so
+            # firing now is a guaranteed losing trade. Skip THIS TURN only —
+            # deliberately no bot._beltGaveUp entry: the builder is mobile, this
+            # re-checks from fresh vision every turn, and the cut resumes the instant
+            # it steps away (a give-up bar would waste that window).
+            #
+            # Leave _beltGrindLow untouched — do NOT stallForget here. A skipped turn
+            # is an absence to stallCheck (its entry is left as-is), so the stale count
+            # survives a *flickering* repairer that steps on and off, and the ~22-Ti
+            # out-repair backstop below still fires against it. Forgetting instead would
+            # reset that count on every unguarded resumption, so an alternating repairer
+            # would bleed us ~1 Ti/turn forever without ever barring — worse than the
+            # capped path this guard is meant to beat. Not forgetting can't cause a
+            # false give-up either: a fully repaired 20-HP belt is at most ~10
+            # no-new-low looks from setting a fresh low, under _BELT_STALL_TURNS (11).
+            if key in repairGuard:
+                if debug.ENABLED:
+                    debug.log("raidBot", f"siege-cut-guarded {t} "
+                                         f"rnd={ct.get_current_round()}")
                 continue
             # Give-up check: only bleed Ti into a belt we're actually grinding
             # down. If HP is unreadable (no building id), fall through and fire as
@@ -531,7 +623,22 @@ def _siege(bot, ct: Controller, enemyCore: Position) -> bool:
 
     # No adjacent work (done, broke, on cooldown, or this spot is exposed): move
     # toward the next ring tile that needs work.
-    nxt = _nextSiegeTile(bot, ct, ringTiles, gunners, fireCache)
+    nxt, productive = _nextSiegeTile(bot, ct, ringTiles, gunners, fireCache, repairGuard)
+
+    # No productive ring work this turn — the ring is sealed/barred, or the only
+    # remaining "work" is a repairer-guarded belt (a losing trade the cut loop skips;
+    # _nextSiegeTile sorts it last). Instead of parking, go snipe a core-feeding
+    # harvester: latch it and start the walk now (the latch is then driven by
+    # pressCore, before _siege, on every later turn — see _divertRun). Gated on
+    # `not exposed`: standing in a gunner's live line, stepping OFF it (the tail below)
+    # comes first; the divert can start next turn from cover. A productive siege never
+    # reaches this line, so a healthy siege — belts to cut, gaps to wall — is untouched,
+    # tie-breaks and all. If no harvester qualifies, behaviour falls through unchanged
+    # (walk to the guarded belt / park / dodge), so parking still pins the builder as a
+    # fallback rather than the default.
+    if not productive and not exposed and _divertStart(bot, ct, enemyCore) \
+            and _divertRun(bot, ct):
+        return True
 
     if not gunners:
         # No threat: the original walk, untouched — head for any tile beside nxt,
@@ -641,6 +748,149 @@ def _creepToward(bot, ct: Controller, target: Position) -> bool:
     return True
 
 
+def _divertAffordable(ct: Controller) -> bool:
+    """Ti floor for the divert: enough to actually drop the gunner it exists to place,
+    NOT the full offensive surplus (guns.surplusReady, 150 Ti). Mirrors the siege
+    gunner's own floor (gunner_cost + _SIEGE_MIN_TI, guns.buildSiegeGunner). Denying a
+    core-feeding harvester when the ring is dead is worth the same low bar as sealing
+    the ring; gating it at the general-offense surplus made it effectively never fire —
+    the bank is rarely >=150 mid-siege, so 0/91 otherwise-eligible turns qualified."""
+    return ct.get_global_resources() >= ct.get_gunner_cost() + _SIEGE_MIN_TI
+
+
+def _divertStart(bot, ct: Controller, enemyCore: Position) -> bool:
+    """Latch the best enemy harvester to divert to, if any. Called from _siege ONLY on
+    a turn with no productive ring work and not exposed — a healthy siege never reaches
+    it, which is the whole don't-perturb guarantee. True iff a target was latched.
+
+    Gated past the opening turret hold and on _divertAffordable — the divert drops the
+    gunner itself (_divertRun -> guns.dropGunnerOn), so it needs only the gunner's own
+    cost floor, not placeGunner's 150-Ti surplus gate; walking to a harvester we can't
+    afford to gun is pure wasted ring time.
+
+    Nearest to the RAIDER, not to the core: the radius filter already made every
+    candidate core-relevant, so distance-to-core buys nothing more, while
+    distance-to-raider is exactly the time spent off the ring. (x, y) tie-break for
+    determinism; the latch itself prevents re-ranking, so two equidistant harvesters
+    can never flip-flop the walk."""
+    if ct.get_current_round() < _TURRET_BUILD_DELAY_ROUNDS:
+        return False
+    if not _divertAffordable(ct):
+        return False
+    myTeam = ct.get_team()
+    pos = ct.get_position()
+    best = None
+    bestKey = None
+    for eid in ct.get_nearby_entities():
+        if ct.get_team(eid) == myTeam:
+            continue
+        if ct.get_entity_type(eid) != EntityType.HARVESTER:
+            continue
+        epos = ct.get_position(eid)
+        if ph.manhattanToCore(epos, enemyCore) > _HARVESTER_DIVERT_RADIUS:
+            continue
+        if (epos.x, epos.y) in bot._siegeUnreachable:
+            continue  # proved routeless / recently given up on — skip until it heals
+        if guns.coveredByAllyGunner(ct, myTeam, epos):
+            continue  # already being sniped — never stack a second
+        key = (manhattan(pos, epos), epos.x, epos.y)
+        if bestKey is None or key < bestKey:
+            best, bestKey = epos, key
+    if best is None:
+        return False
+    bot._divertHarvester = best
+    bot._divertStartRound = ct.get_current_round()
+    if debug.ENABLED:
+        debug.log("raidBot", f"divert-start {best} rnd={ct.get_current_round()}")
+    return True
+
+
+def _divertRun(bot, ct: Controller) -> bool:
+    """Drive a latched divert one turn: validate the latch, walk to a pad beside the
+    harvester, and drop a gunner on it once adjacent. True iff the divert consumed the
+    turn; False means the latch is unset/just cleared and the caller (pressCore) should
+    fall straight through to the normal siege/press, same turn — a cleared latch never
+    costs a wasted turn.
+
+    Runs BEFORE _siege in pressCore, which is the anti-oscillation mechanism: outside
+    _SIEGE_RADIUS pressCore would otherwise close back in on the core
+    (requestLaunch/approach/advance/creep), so the divert must own the turn for as long
+    as the latch lives. Every clear condition below is also the return-to-ring path:
+    latch to None -> pressCore resumes -> siege re-runs."""
+    tgt = bot._divertHarvester
+    if tgt is None:
+        return False
+    rnd = ct.get_current_round()
+    key = (tgt.x, tgt.y)
+    # Give-up: the latch aged out (walk too long, or parked beside a harvester no pad
+    # can bear on). Bar the tile so the next no-work turn doesn't re-latch the same dead
+    # target; the bar self-heals like every other _siegeUnreachable entry.
+    if rnd - bot._divertStartRound >= _DIVERT_GIVEUP_ROUNDS:
+        bot._siegeUnreachable[key] = rnd
+        bot._divertHarvester = None
+        if debug.ENABLED:
+            debug.log("raidBot", f"divert-giveup {tgt} rnd={rnd}")
+        return False
+    # Bank fell below the gunner floor mid-walk: we can no longer drop the gunner the
+    # divert exists to place, so the walk buys nothing — go back to the (cheap) grind.
+    if not _divertAffordable(ct):
+        bot._divertHarvester = None
+        return False
+    # Harvester dead / replaced. Current vision only — out of vision we keep walking on
+    # the memory that latched it (harvesters don't move), and the re-check fires as we
+    # get close.
+    if ct.is_in_vision(tgt):
+        t = ph.readTile(ct, bot.hivemind, tgt)
+        if not (t.enemy and t.etype == EntityType.HARVESTER):
+            bot._divertHarvester = None
+            return False
+    # Sniped — ours or another raider's gunner covers it. Mission accomplished.
+    if guns.coveredByAllyGunner(ct, ct.get_team(), tgt):
+        bot._divertHarvester = None
+        return False
+    pos = ct.get_position()
+    # Never divert through a gunner's live line. If we're exposed where we stand, bar
+    # this harvester (self-healing, like every _siegeUnreachable entry) and hand the
+    # turn back to _siege, which steps us off the line: the approach is contested, not
+    # worth dying for, and re-probed once the bar expires. Barring — not merely clearing
+    # — is what stops us re-latching it every turn and dancing in and out of the fire.
+    gunners = emplace.enemyGunners(ct)
+    if gunners and emplace.tileUnderGunnerFire(ct, pos, gunners):
+        bot._siegeUnreachable[key] = rnd
+        bot._divertHarvester = None
+        return False
+    if ph.beltFacing(pos, tgt) is not None:
+        # Adjacent — drop the gunner ourselves. The divert does NOT wait on placeGunner,
+        # whose 150-Ti surplus gate would block it; we already cleared the lower gunner
+        # floor (_divertAffordable). dropGunnerOn scans our pads for one bearing on the
+        # harvester that isn't in an enemy turret's line and builds there. On success the
+        # harvester is now covered -> clear the latch, done; on failure (cooldown, or no
+        # clear bearing pad) hold and retry, the give-up stamp bounding a harvester we
+        # can never bear on. Dropping directly (not via placeGunner's tiered scan) also
+        # sidesteps the radius-vs-_CORE_SNIPE_RADIUS tier mismatch: the target we walked
+        # all this way for is gunned regardless of how placeGunner would have ranked it.
+        if guns.dropGunnerOn(ct, tgt):
+            bot._divertHarvester = None
+            if debug.ENABLED:
+                debug.log("raidBot", f"divert-snipe {tgt} rnd={rnd}")
+        return True
+    _pruneUnreachable(bot, ct)
+    if key in bot._siegeUnreachable:
+        bot._divertHarvester = None
+        return False
+    seq = bot.noRouteSeq
+    walkTo(bot, ct, lambda p, h=tgt: ph.beltFacing(p, h) is not None, tgt,
+           ("divert", tgt.x, tgt.y))
+    _markIfNoRoute(bot, ct, tgt, seq)
+    if key in bot._siegeUnreachable:
+        # The walk just proved there's no route. _markIfNoRoute already barred the tile
+        # and cleaned the path/hold; drop the latch and let this same turn fall through
+        # to the normal press.
+        bot._divertHarvester = None
+        return False
+    return True
+
+
 def pressCore(bot, ct: Controller) -> None:
     """The raider's default when it has nothing to build: besiege the core.
 
@@ -650,6 +900,33 @@ def pressCore(bot, ct: Controller) -> None:
     enemyCore = raid.enemyCorePos(bot, ct)
     if enemyCore is None:
         return  # designated raiders always know the core; nothing to press
+
+    # Unverified core (mirror guess on an unfingerprinted map): the two opening
+    # raiders probe *different* candidates so the pair splits the point/y-flip/
+    # x-flip ambiguity instead of both walking to the same wrong point-mirror. The
+    # second raider takes the second live candidate; whichever lays eyes on the
+    # real core first broadcasts it (tier 1) and both — plus the core — converge.
+    if not raid.enemyCoreVerified(bot, ct):
+        live = raid.enemyCoreCandidatesAlive(bot, ct)
+        if (len(live) >= 2
+                and store.readRole(ct, store.ROLE_RAIDER_2) == bot.hivemind.my_index):
+            enemyCore = live[1]
+
+    # A target that *changes* (a candidate was disproven and the guess advanced)
+    # must re-probe now, not sit out a stale no-route back-off keyed to the old
+    # tile — the route to the new candidate is a different problem.
+    if bot._lastPressTarget != (enemyCore.x, enemyCore.y):
+        bot._pressCoreBackoffUntil = 0
+        bot._lastPressTarget = (enemyCore.x, enemyCore.y)
+
+    # Live harvester divert (latched by _siege on a no-productive-work turn): while it
+    # holds, it owns the turn — _siege parks instead of walking out, and everything
+    # below this line actively drags the raider back toward the core (requestLaunch /
+    # approach / advance / _creepToward), which is exactly the oscillation the latch
+    # exists to prevent. A False return means the latch is unset or just cleared, and
+    # costs nothing: we fall through to the normal siege/press this same turn.
+    if _divertRun(bot, ct):
+        return
 
     if _siege(bot, ct, enemyCore):
         bot._pressCoreBackoffUntil = 0  # in siege range: the travel problem is solved
@@ -801,6 +1078,10 @@ def buildLocalSentinel(bot, ct: Controller) -> bool:
 
     enemyCore = raid.enemyCorePos(bot, ct)
     if enemyCore is None:
+        return False
+    # Don't densify a sentinel ring around an unverified mirror guess — same
+    # reason as publishTarget's gate; wait until vision or the fingerprint confirms.
+    if not raid.enemyCoreVerified(bot, ct):
         return False
     if ph.manhattanToCore(ct.get_position(), enemyCore) > _LOCAL_SENTINEL_RADIUS:
         return False

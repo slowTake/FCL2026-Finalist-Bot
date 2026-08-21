@@ -61,6 +61,37 @@ and would be expensive to relearn.
   walk profile still prices it normally. Planning otherwise uses `isImpassable` +
   `tileCost`; the per-turn move uses `canStandNow`. Conflating the two forces a
   replan every time anything is in the way.
+- **A barrier dropped onto a live relay must be re-priced, not ground on sight.**
+  A* prices an enemy barrier as passable (`ENEMY_BARRIER`, ~6-7 open tiles of
+  detour) and picks the route — but a barrier the enemy places *after* the line
+  was planned was never on the board when A* ran, so the plan predates it. The
+  old `clearRelayObstruction` grind-first hostile branch then pinned the builder
+  firing 2 dmg/turn for ~15 turns even when a one-tile detour existed. Fix:
+  re-plan (`planRelay`, which re-prices via the freshly rebuilt `costContext`) and
+  take the detour if the new route drops the barrier tile; grind only when the
+  route still runs through it (a true chokepoint). Re-plan, *not* `_replanAvoiding`
+  — blacklisting makes the tile infinite-cost so any-length detour beats a 30-Ti
+  grind, contradicting the tuned weight — *until* the grind is proven unwinnable.
+  Gap now closed: the grind is bounded by a per-tile out-repair check (`stallCheck`
+  on `bot._relayGrindLow`, `CLEAR_STALL_CHECKS = 11`, mirroring the ore path's
+  `ORE_BARRIER_STALL_TURNS`). A chokepoint the enemy repairs as fast as we cut it
+  hits the stall window, and *only then* is `_replanAvoiding`'s infinite-cost
+  blacklist correct — the tile's real cost is infinite — so it detours at any length
+  or aborts cleanly (`relayAbort` → orphan retry via `reconnectOrphan`). The
+  can't-even-fire hold also ends in `relayAbort` now, not a bare `False` that left
+  `inRelay`/`relayPath` live for the ladder to re-enter the same grind next turn (the
+  regression that shipped when the grind-first branch was replaced by re-plan-first).
+  One more gap closed: `planRelay` seeds only `beltPassable` neighbours of the
+  harvester, so a barrier on its *sole* open exit returns FAILED (no seeds), not
+  ROUTED-through — and the re-plan-first null of `relayPath` then survived into the
+  grind, so the next turn's replan-FAILED aborted the relay after a single shot,
+  stranding the harvester (strict reconnects fail the same seed check while the
+  barrier stands). Fix: snapshot the pre-barrier path before the replan and restore
+  it on FAILED, so the no-detour case grinds across turns exactly like the
+  ROUTED-through chokepoint, still bounded by the same per-tile `stallCheck`.
+  Trade-off accepted: a static multi-barrier wall on the sole route is ground
+  barrier-by-barrier (~15 turns / 30 Ti each, matching pre-bb6ad66), each bounded by
+  its own out-repair check.
 - **Hold, don't abandon.** A builder that can't act this turn usually can in two
   or three. `patience.holdTask` is the single place that judgement lives.
 - **The relay goal is a tile *beside* the network, not on it.** The anchor the

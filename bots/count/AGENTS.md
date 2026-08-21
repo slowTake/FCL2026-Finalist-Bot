@@ -22,7 +22,7 @@ known gaps) and [docs/roadmap.md](docs/roadmap.md) (what's next and why).
 | `raid.py` | Core-side sentinel emplacement selection (geometry-driven), plus the raider's local fallback when the published site goes stale. |
 | `guns.py` | Turret target priorities, the shared hostile gatherer, gunner/sentinel fire+rotate loops, core-side ammo conversion, the `TI_SURPLUS_THRESHOLD` combat gate (`surplusReady`), and `placeGunner` — the raider's opportunistic gunner drop on an adjacent pad bearing on an enemy harvester/belt. |
 | `store.py` | The communication-store layout: which slot holds what, and the only writer for the ones we own. |
-| `launcher.py` | All launcher logic: the first raider plants one beside the core; builders post their own goal to `store.LAUNCH_REQUEST` and hold; the LAUNCHER loop defends first (flings a grabbable enemy builder back toward the enemy core) then throws a requesting ally toward its goal. |
+| `launcher.py` | All launcher logic: the first raider plants one beside the core; builders post their own goal to `store.LAUNCH_REQUEST` and hold; the LAUNCHER loop defends first (flings a grabbable enemy builder back toward the enemy core) then throws a requesting ally toward its goal. A builder sealed in a pocket for `POCKET_STUCK_TURNS` (with >80 Ti) buys a throwaway launcher to fling itself out (`rescueFromPocket`, served by a rescue-flagged request in bit 29); that launcher self-detonates after the throw. |
 | `relays.py` | Belt-laying/relay logic: plan, lay, contested-tile concession, obstruction clearing. |
 | `respawn.py` | Core spawn logic: builder cap, spawn-tile selection, raider designation. |
 | `telemetry.py` | Optional (`COUNT_CPU=1`) per-unit CPU sampling to stderr. |

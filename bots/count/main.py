@@ -55,6 +55,16 @@ class Player:
         # tile -> times this relay has re-laid it, so a destroy/rebuild war with
         # another builder is detectable (see relays.BELT_CONTEST_LIMIT)
         self.relayRebuilds: dict[tuple[int, int], int] = {}
+        # Lowest HP this relay's grind has driven an obstructing enemy barrier to,
+        # tile -> (low HP, consecutive stalled checks), fed to patience.stallCheck by
+        # relays.clearRelayObstruction. The re-plan-first obstruction branch re-selects
+        # a chokepoint barrier priced cheaper than its detour every turn, so without a
+        # progress check it grinds one an enemy repairs in lockstep forever (2 Ti/shot);
+        # per-tile HP-low tracking is the only counter immune to the shared holdTask
+        # reason-resets from lower ladder rungs. Its own int-dict, not holdTask — the
+        # documented per-unit exception, same as _oreGrindLow / _beltGrindLow. Per-relay,
+        # cleared by relays._teardownRelay (not self-healing like _oreGrindLow's oreSkip).
+        self._relayGrindLow: dict[tuple[int, int], tuple[int, int]] = {}
         # Reconnection relays (ecoBot.reconnectOrphan) set this so planRelay merges
         # only onto a *proven* network member, not a belt chain it merely can't see to
         # be cut — the orphan's own dead-ended partial line reads intact from afar and
@@ -159,6 +169,16 @@ class Player:
         # on every enemyCorePos call, several times a turn on a raider. This bounds
         # it to one scan per unit per round. -1 so round 0 still scans.
         self._seenEnemyCoreRound: int = -1
+        # Mirror-fallback eliminations (raid.py tier 3). On an unfingerprinted map
+        # the enemy core is one of three reflections of ours; this unit crosses off
+        # any candidate whose full 2x2 footprint it has seen empty, so enemyCorePos
+        # advances its guess as the raider presses in. Per-unit and permanent —
+        # cores never move, so the set only grows, to at most 3.
+        self._deadMirror: set = set()
+        # Last enemy-core tile this unit pressed (raidBot.pressCore). When the mirror
+        # guess advances to a new candidate, clear the no-route back-off so the raider
+        # re-searches to the new tile instead of idling on the old target's back-off.
+        self._lastPressTarget = None
 
         # Core-line repair (ecoBot.repairCoreBelts). The enemy barrier this builder
         # committed to clearing and the connected tile to re-lay the belt toward —
@@ -170,6 +190,24 @@ class Player:
         # Launcher one-off (launcher.py). Set once the first raider plants the
         # core launcher, so it never plants a second after walking out of sight.
         self._placedLauncher = False
+
+        # Pocket self-rescue (launcher.rescueFromPocket). Consecutive turns this
+        # builder has read as sealed in a walled pocket; at POCKET_STUCK_TURNS it
+        # buys a throwaway launcher to fling itself out. Its own int, not
+        # patience.holdTask, for the same reason _defendStuckTurns is (below): the
+        # pocketed builder's role keeps calling walkTo every turn, and walkTo clears
+        # the shared hold on arrival, which would make this patience infinite.
+        # `_rescueSite` holds the adopted/built launcher's tile while a rescue is in
+        # flight (None otherwise). Both stay at their defaults on any builder that
+        # never gets sealed.
+        self._pocketStuckTurns = 0
+        self._rescueSite: Position | None = None
+
+        # Rescue launcher's one-shot detonation latch (launcher.runLauncher). Set the
+        # turn a rescue launcher throws its builder out; the next turn it reads this
+        # and self_destructs, so the launch and the detonation never share a turn.
+        # Stays False on every unit that isn't a throwaway rescue launcher.
+        self._rescueThrown = False
 
         # Raider replenishment clock (respawn.runCoreSpawn). Round the core last
         # spawned a replenishment raider (see respawn.REPLENISH_TI), so the next
@@ -184,6 +222,15 @@ class Player:
         # empty arc. None until its first loop, which seeds the clock at birth so
         # a never-targeted gunner still ages out. Stays None on non-gunner units.
         self._gunnerLastActive: int | None = None
+
+        # Round this gunner last spent a rotation to bring a barrel onto an enemy
+        # builder (guns.gunnerLoop). A builder is mobile, so re-aiming to track one
+        # burns GUNNER_ROTATE_COST every turn it jinks; this stamps the last such
+        # turn so the loop won't rotate to a builder again for
+        # guns.GUNNER_BUILDER_ROTATE_COOLDOWN rounds (firing at one already on-facing
+        # stays free and is unaffected). None until the first builder rotation; stays
+        # None on any gunner that never chases one, and on non-gunner units.
+        self._gunnerBuilderRotateRound: int | None = None
 
         # Sentinel idle timer (guns.sentinelLoop). Round this sentinel last had a
         # target on its fixed arc — a sentinel can't rotate, so this is keyed on an
@@ -260,6 +307,19 @@ class Player:
         # sieges.
         self._beltGrindLow: dict[tuple[int, int], tuple[int, int]] = {}
         self._beltGaveUp: dict[tuple[int, int], int] = {}
+
+        # Harvester-snipe divert latch (roles/raidBot._divertStart/_divertRun). When
+        # the siege has no productive ring work (ring sealed/barred, or only
+        # repairer-guarded belts left), the raider commits to one nearby core-feeding
+        # enemy harvester and walks to a pad beside it so placeGunner drops a gunner on
+        # it. A *latch*, not a per-turn pick, because pressCore actively closes back in
+        # on the core whenever the raider is outside _SIEGE_RADIUS — an unlatched divert
+        # steps out, gets dragged back, and oscillates forever. _divertStartRound is the
+        # round the latch was set; past _DIVERT_GIVEUP_ROUNDS the target is barred (in
+        # _siegeUnreachable, so the next pick skips it) and the raider returns to the
+        # ring. Both stay at their defaults on any unit that never sieges.
+        self._divertHarvester: Position | None = None
+        self._divertStartRound = 0
 
         # Count of dead searches this unit's walkTo has run (bumped in
         # movement.walkTo). Callers snapshot it before a walk and compare after, to
@@ -342,6 +402,14 @@ class Player:
             if ally[0] != CoreState.UNKNOWN:
                 self.corePos = Position(ally[1], ally[2])
         if self.corePos is None:
+            return
+
+        # A builder sealed in a walled pocket can do nothing any role asks of it —
+        # every role funnels through walkTo and no route out exists — so the
+        # self-rescue check sits above role dispatch and covers raiders, the
+        # guardian and eco alike. Cheap on the common (unsealed) path: one bounded
+        # flood that stops at ESCAPE_MIN_TILES.
+        if launcher.rescueFromPocket(self, ct):
             return
 
         # Roles are named by index rather than by anything a builder can see, so

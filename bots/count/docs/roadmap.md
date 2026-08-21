@@ -158,17 +158,18 @@ What it deliberately left for next increments, roughly ordered:
    gunner's line to the core — cheaper than fielding a turret, so it runs ahead
    of the turret responses) and `defSentinel` (answer an out-of-leash sentinel
    from inside the leash). The v1 ladder is defendCore + patrol only.
-2. ~~Point 2 — gunner spam on passing builders.~~ **Done (2026-08-17).**
-   `BUILDER_BOT` removed from `guns._CORE_THREAT_TYPES` and gated instead through
-   `_builderThreateningStructure` — a builder draws a gunner only when one of ours
-   is orthogonally adjacent (it is grinding it), never when merely passing. The
-   gate is universal (guardian *and* eco fallback), so an attacking builder is
-   answered even before the guardian is claimed. Note the sketch's
-   `get_action_cooldown(enemyId)` trigger was a dead end — that getter takes no
-   entity id and no enemy action/target getter exists, so adjacency (build/fire
-   are adjacent-only) is the usable proxy. A future refinement could add
-   cross-turn stationarity tracking for builders that threaten from a tile with no
-   ally building beside it yet, but adjacency covers the attacking case cleanly.
+2. ~~Point 2 — gunner spam on passing builders.~~ **Done (2026-08-17), then
+   superseded (2026-08-21): builders dropped as `defendCore` targets entirely.**
+   The 2026-08-17 cut kept a grinding builder as a target via
+   `_builderThreateningStructure` (adjacency proxy). Measured Ti told the fuller
+   story — a gunner spent on any builder, grinding or not, rarely earns back its
+   cost against a mobile body — so `_builderThreateningStructure` was removed and
+   `defendCore`/`_nearestCoreThreat` now answer only the turrets in
+   `_CORE_THREAT_TYPES`. Accepted cost: a builder grinding a core belt to a *gap*
+   (not a barrier) now draws no placed response — `repairCoreBelts` is barrier-only
+   and does not cover it (see open item on established-line gap recovery). Separately,
+   `GUNNER_BUILDER_ROTATE_COOLDOWN` stops an existing gunner re-aiming after a builder
+   every turn it moves.
 3. **Leash-bounded ore-seeking for the quiet guardian.** v1 keeps it home doing
    belt repair + heal only; letting it build harvesters on ore *inside* the leash
    would make it more useful without pulling it into a long relay — but needs the
@@ -335,17 +336,17 @@ HEAD before acting on them; treat them as retracted pending that pass.
    dead search, the same way `pressCore` now does. Severity unchanged (medium,
    rare trigger). See 2026-08-18 §2 for the full re-check.
 
-4. **[RE-VERIFIED against `abcd54e`] Ring-walling siege invisible to the
-   builder gate — still open, untouched by the 10 new commits.**
-   `_builderThreateningStructure` (`guns.py:576-592`) still requires an
-   orthogonal ours-neighbour; a corner-ring tile's orthogonal neighbours are
-   never core footprint, so pure gap-walling from a corner still draws nothing.
-   The new defence work (launcher-draws-sentinel, the stuck-counter rework)
-   landed elsewhere in `guns.py` and didn't touch this gate. Our own siege now
-   *confirms* the attacker-side pattern — `_coreClear` (`raidBot.py:198-217`)
-   explicitly anticipates an enemy builder "on a diagonal corner too." The
-   2026-08-17 deferred-#1 fix (any enemy builder within 2-3 of the core is
-   unconditionally threatening) still reads right.
+4. ~~Ring-walling siege invisible to the builder gate.~~ **Moot as a gate bug
+   (2026-08-21), but reframed as a real open gap:** `_builderThreateningStructure` and
+   all builder-answering in `defendCore` were removed — chasing any builder with a gun
+   lost more Ti than it saved — so there is no longer a builder gate for corner
+   ring-walling to slip past. The flip side is now an accepted hole: a builder that
+   grinds an *established* core belt to a gap draws no response at all. A barrier over
+   a belt is still recovered by `repairCoreBelts`; a plain grind-to-gap on a mature
+   line is not (it reads like a relay under construction), and `verifyRelay`/
+   `reconnectOrphan` only cover freshly-laid or orphaned lines. Established-line gap
+   recovery is the real open item here — not a gun. (Attacker-side, `raidBot._coreClear`
+   still anticipates an enemy builder "on a diagonal corner too" — unaffected.)
 
 5. **[RE-VERIFIED against `abcd54e`, reframed] Surplus-gate flapping is real
    but was mis-described as "cross-map"; a bigger, now-fixed explanation for
@@ -697,3 +698,44 @@ SOUND-WITH-NITS. Two of its four nits were fixed in the same pass:
 Verified: mirror_gauntlet CLEAN across 15 maps both before this pass (baseline on
 the unmodified feature commits) and after (with the fix applied), byte-compiled
 clean throughout.
+
+---
+
+## 2026-08-21 — siege repairer guard (user-requested), one follow-up deferred
+
+`raidBot._siege` now skips grinding a core-ring belt on any turn a visible enemy
+builder stands on it or orthogonally adjacent to it (`_beltRepairGuardTiles`): an
+adjacent builder is almost certainly repairing, and repair keeps pace with our
+2 Ti/shot cut, so grinding is a guaranteed losing trade. Skip-this-turn, never a
+`_beltGaveUp` bar — the builder is mobile, so the cut resumes the instant it steps
+away. `_beltGrindLow` is left untouched on the skip so the ~22-Ti out-repair
+`stallCheck` still fires against a *flickering* repairer (forgetting it there would
+reset the stale count every unguarded turn and bleed ~1 Ti/turn forever). The old
+stallCheck path stays as the backstop for out-repair the vision test can't see.
+
+**Deferred follow-up — CLOSED (2026-08-21, user-requested, Fable-planned).**
+`_nextSiegeTile` now deprioritizes a repairer-guarded belt with a `(noSafe, guarded,
+dist)` sort key (the guarded belt sorts after real work, never excluded — the
+`noSafe`-style tie-break the finding proposed), and returns a `productive` flag that
+is False when the only pick left is a guarded belt. On a no-productive-work turn the
+raider no longer parks: `_siege` latches the nearest core-relevant enemy harvester
+(`_divertStart`, within `_HARVESTER_DIVERT_RADIUS = 8` of the core, uncovered) and
+walks to a pad beside it (`_divertRun`, driven from the top of `pressCore` so it
+overrides the close-in and can't oscillate), then drops a gunner on it directly via
+`guns.dropGunnerOn`. Dropping directly — not waiting on `placeGunner` — is deliberate:
+`placeGunner`'s 150-Ti `surplusReady` gate is almost never met mid-siege (a probe
+found 0/91 otherwise-eligible turns qualified), so the divert is gated instead on
+`_divertAffordable` (gunner cost + `_SIEGE_MIN_TI`, the siege gunner's own floor), and
+the direct drop also sidesteps `placeGunner`'s tier ranking (a harvester at core-dist
+6–8 sits below turrets in its 3-target probe cap). The divert refuses to walk/stand in
+an enemy gunner's live line (bars the target self-healingly and hands the turn to
+`_siege`'s step-off). The latch clears — returning to the ring — when the harvester is
+covered, dead, unaffordable, exposed, unreachable, or after `_DIVERT_GIVEUP_ROUNDS =
+15`. Parking beside a guarded belt stays the fallback only when no harvester qualifies.
+
+(Fable review of the first cut flagged three issues, all addressed here: walking into
+gunner fire → the exposed-bar guard above; the radius-vs-tier mismatch → the direct
+drop; and the 150-Ti surplus gate leaving it inert → `_divertAffordable`. One low,
+self-healing item is left open: while a published sentinel emplacement preempts the
+divert higher in `runRaidBot`, the wall-clock give-up clock keeps ticking, so a valid
+harvester can occasionally be barred without 15 turns of real driving.)

@@ -88,3 +88,27 @@ different win conditions — and so does `starter` against itself, so it is the
 engine, not us, and not the TLE. Per-map numbers are noise. What a run actually
 tells you is pass/fail, crashes, and TLE. Do not attribute an economy change to
 a diff on the strength of one run.
+
+## A give-up path must name the state it tears down
+
+bb6ad66 replaced `clearRelayObstruction`'s grind-first branch with re-plan-first
+and dropped the `or _replanAvoiding(...)` escape tail, leaving a bare
+`return holdTask("clear", ...)`. When that patience expired it returned a plain
+`False` — but `inRelay` and the through-route `relayPath` stayed live, so the
+ladder fell through and re-entered the identical grind next turn. Compounded by
+there being no per-tile stall detector on this path (unlike the ore grind), a
+barrier the enemy repaired in lockstep was ground forever. Two lessons: a give-up
+that returns `False` must also *clear* the state that would otherwise re-enter it
+(here `relayAbort`), and every grind needs a `stallCheck` bound, not just a
+`holdTask` one (the shared counter is reset by other ladder rungs anyway).
+
+## A "re-plan first" refactor must account for the replan failing outright
+
+bb6ad66's hostile-obstruction branch nulled `relayPath` before re-pricing the
+barrier. CONNECTED and ROUTED were handled, but FAILED fell through to the grind
+with the null still live — converting "no detour exists" into fire-one-shot-then-
+abort, stranding a harvester whose sole exit the barrier blocked (strict reconnects
+fail the same empty-seed check while it stands). When a refactor moves state-clearing
+ahead of a fallible call, trace *every* outcome of that call to the end of the turn
+AND into the next turn's re-entry path — not just the success ones. Fix: snapshot the
+route before nulling, restore on FAILED.

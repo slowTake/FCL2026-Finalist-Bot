@@ -23,7 +23,9 @@ from fcode import Controller
 HARVESTERS = 0        # running count of harvesters built (ecoBot)
 RAID_TARGET = 1       # packed sentinel emplacement, or 0 (raid.packTarget)
 ROLES = 2             # packed builder indices, one field per role
-LAUNCH_REQUEST = 3    # transient launch request: packed (requester, target) or 0
+LAUNCH_REQUEST = 3    # transient launch request: packed (requester, target) or 0,
+                      # with a rescue flag in bit 29 (a pocketed builder's self-rescue,
+                      # served only by the launcher adjacent to it — launcher.runLauncher).
 # See launcher.packRequest for the encoding. (The 2026-08-15 roadmap once reserved
 # this slot "free for defence" and warned a persistent defence signal could not
 # share a transient one; the guardian landed inside ROLES instead, so the conflict
