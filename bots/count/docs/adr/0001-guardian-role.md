@@ -47,11 +47,13 @@ A dedicated **guardian** role (`roles/guardianBot.py`), one per team for now.
   when a farming builder happens by.
 - `guns.defendCore` is unchanged and still runs in the eco ladder as the
   fallback for threats the guardian can't reach yet.
-- **Deferred, next increment:** baron's `blockGunLine` (a ~3-Ti barrier in a
-  gunner's line to the core, cheaper than a turret) and `defSentinel`
-  (out-of-leash sentinel answer); leash-bounded ore-seeking for the quiet
+- **Deferred, next increment:** leash-bounded ore-seeking for the quiet
   guardian; scaling to N guardians (add role fields). The v1 ladder ships
   without them.
+- **`blockGunLine`/`maintainGunLineBlock` and `defSentinel`: landed
+  2026-08-21 (2)**, re-derived from baron's `defence.py` — see
+  `docs/roadmap.md`'s entry for the design and the real bug testing caught
+  in `defSentinel`'s first cut.
 - **Point 2 of the originating request (shipped in the same change):** a gunner is
   no longer placed on an enemy builder merely passing the core (1–2 wasted shots).
   `defendCore` now answers a builder **only when it is grinding one of our

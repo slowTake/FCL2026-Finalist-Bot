@@ -22,13 +22,15 @@ sentinel). The v1 ladder below is shippable without them.
 
 from __future__ import annotations
 
-from fcode import Controller, Position
+from fcode import Controller, EntityType, Position
 
 import debug
+import emplace
 import store
 from movement import walkOrRetarget, walkTo
 from patience import BLOCKED_WAIT_TURNS, holdTask
 import pathfindingHelpers as ph
+from pathing import manhattan
 
 # How far, in Manhattan tiles from the core's edge, the guardian roams while the
 # core is quiet — wide enough to reach a belt the enemy cut on the perimeter and
@@ -109,6 +111,259 @@ def claimIfOpen(bot, ct: Controller) -> None:
     store.stampGuardian(ct, idx, ct.get_current_round())
     if debug.ENABLED:
         debug.log("guardian", f"idx={idx} CLAIMED (prev={held}) rnd={ct.get_current_round()}")
+
+
+# --- Combat depth ------------------------------------------------------------
+# Re-derived from baron's defence.py (docs/adr/0001-guardian-role.md's deferred
+# item), not ported: same two ideas, count's own helpers. blockGunLine answers a
+# gunner shelling the core with a ~3-Ti barrier in its line of fire instead of a
+# ~30-Ti turret — far cheaper, so it runs ahead of defendCore in the ladder.
+# defSentinel answers a sentinel/launcher parked beyond the leash, which
+# defendCore's own pad-scan (bound to wherever the guardian already stands)
+# structurally cannot reach without first repositioning.
+
+
+def _gunnerFiringAtCore(ct: Controller, core: Position):
+    """Nearest enemy gunner currently landing a shot on a core footprint tile,
+    as (gunner_pos, facing, core_tile), or None.
+
+    Engine ground truth only (`can_fire_from`) — this wants a shot that is
+    actually connecting right now, not merely a gunner somewhere in range."""
+    myTeam = ct.get_team()
+    here = ct.get_position()
+    footprint = ph.coreFootprint(core)
+    best = None
+    bestD = None
+    for eid in ct.get_nearby_units():
+        if ct.get_team(eid) == myTeam:
+            continue
+        if ct.get_entity_type(eid) != EntityType.GUNNER:
+            continue
+        gpos = ct.get_position(eid)
+        facing = ct.get_direction(eid)
+        for tile in footprint:
+            if not ct.can_fire_from(gpos, facing, EntityType.GUNNER, tile):
+                continue
+            d = manhattan(here, gpos)
+            if bestD is None or d < bestD:
+                best, bestD = (gpos, facing, tile), d
+            break  # one connecting tile is enough to know this gunner counts
+    return best
+
+
+def _gunLineBlocked(ct: Controller, hm, tile: Position, core: Position) -> bool:
+    """True if `tile` is already an ally barrier, or is part of the core footprint
+    (nothing to block — the core itself can't be stood on to fire past)."""
+    for foot in ph.coreFootprint(core):
+        if tile.x == foot.x and tile.y == foot.y:
+            return True
+    t = ph.readTile(ct, hm, tile)
+    return t.etype == EntityType.BARRIER and not t.enemy
+
+
+def _layableTile(ct: Controller, hm, tile: Position) -> bool:
+    """Can a barrier be placed on `tile` this turn: in vision (so the check is
+    trustworthy), empty, action-ready, and the engine agrees."""
+    if not ct.is_in_vision(tile):
+        return False
+    if ph.readTile(ct, hm, tile).etype is not None:
+        return False
+    if ct.get_action_cooldown() != 0:
+        return False
+    return ct.can_build_barrier(tile)
+
+
+def blockGunLine(bot, ct: Controller) -> bool:
+    """Barrier-cheap defence: drop a barrier in a gunner's current line of fire.
+
+    The engine's own `can_fire_from` already refuses to fire through an
+    occupied tile, so a ~3-Ti barrier square in the shot forces the gunner to
+    destroy it before landing another hit — far cheaper than fielding a ~30-Ti
+    gunner or sentinel to remove the threat outright, so this runs ahead of
+    `defendCore` in the ladder: a cheaper answer should always be tried first.
+
+    Gunners only, matching `_gunnerFiringAtCore` — sentinels/launchers aren't
+    modelled the same connecting-shot way here and fall through to `defendCore`.
+
+    Remembers the tile on `bot._gunLineBlockTile` so `maintainGunLineBlock` can
+    rebuild it once the gunner (or something else) destroys it — once blocked,
+    the shot stops connecting and this function alone would never notice it
+    again, since its own detection is "is a shot landing right now".
+    """
+    core = bot.corePos
+    if core is None or bot.inRelay:
+        return False
+    hit = _gunnerFiringAtCore(ct, core)
+    if hit is None:
+        return False
+    _gpos, facing, core_tile = hit
+    block = core_tile.add(facing.opposite())
+    if not ph.inBounds(ct, block):
+        return False
+    if _gunLineBlocked(ct, bot.hivemind, block, core):
+        return False  # already blocked
+    if not _layableTile(ct, bot.hivemind, block):
+        return False
+    ct.build_barrier(block)
+    bot._gunLineBlockTile = (block.x, block.y)
+    if debug.ENABLED:
+        debug.log("guardian", f"idx={bot.hivemind.my_index} blockGunLine at {block} rnd={ct.get_current_round()}")
+    return True
+
+
+def maintainGunLineBlock(bot, ct: Controller) -> bool:
+    """Rebuild this guardian's own gun-line barrier the moment it's gone.
+
+    Opportunistic: only acts when the remembered tile is already in vision and
+    actually needs rebuilding. No ownership handoff needed — if this guardian
+    dies, `_gunLineBlockTile` dies with it (it's a plain Player field, not
+    stored), and the next guardian's own `blockGunLine` re-detects the live
+    gunner and picks the gap back up from scratch.
+    """
+    core = bot.corePos
+    tile_xy = bot._gunLineBlockTile
+    if core is None or tile_xy is None or bot.inRelay:
+        return False
+    tile = Position(tile_xy[0], tile_xy[1])
+    if _gunLineBlocked(ct, bot.hivemind, tile, core):
+        return False  # still standing, nothing to do
+    if not ct.is_in_vision(tile):
+        return False  # can't confirm or act — wait for vision, don't chase it
+    if ph.readTile(ct, bot.hivemind, tile).etype is not None:
+        bot._gunLineBlockTile = None  # something else occupies it now
+        return False
+    if not _layableTile(ct, bot.hivemind, tile):
+        return False
+    ct.build_barrier(tile)
+    if debug.ENABLED:
+        debug.log("guardian", f"idx={bot.hivemind.my_index} rebuilt gun-line block at {tile} rnd={ct.get_current_round()}")
+    return True
+
+
+def _outOfLeashThreat(bot, ct: Controller) -> Position | None:
+    """Nearest enemy sentinel or launcher within guns.CORE_THREAT_RADIUS of the
+    core but beyond this guardian's own leash — the gap `defendCore`'s own
+    pad-scan (bound to wherever the guardian already stands) cannot answer
+    without first repositioning. Gunners excluded: their range (~3.6) means one
+    beyond the leash (8) essentially never actually bears on the core, so
+    answering it here would just spend Ti chasing a non-threat.
+    """
+    import guns
+
+    core = bot.corePos
+    if core is None:
+        return None
+    myTeam = ct.get_team()
+    best = None
+    bestD = None
+    for eid in ct.get_nearby_entities():
+        if ct.get_team(eid) == myTeam:
+            continue
+        if ct.get_entity_type(eid) not in (EntityType.SENTINEL, EntityType.LAUNCHER):
+            continue
+        p = ct.get_position(eid)
+        d = ph.manhattanToCore(p, core)
+        if d <= GUARDIAN_LEASH or d > guns.CORE_THREAT_RADIUS:
+            continue
+        if bestD is None or d < bestD:
+            best, bestD = p, d
+    return best
+
+
+def _standable(ct: Controller, hm, pos: Position) -> bool:
+    """Empty, in-bounds, non-ore tile a sentinel could occupy."""
+    if not ph.inBounds(ct, pos):
+        return False
+    if ph.isImpassable(ct, hm, pos):
+        return False
+    t = ph.readTile(ct, hm, pos)
+    return t.etype is None and not t.ore
+
+
+def _defSentinelSite(bot, ct: Controller, target: Position) -> Position | None:
+    """Best leash-bound tile from which a sentinel would bear on `target`,
+    nearest the core first, then nearest us. Geometry only — the actual
+    build-legality probe (LoS veto, can_build_sentinel) happens once we're
+    adjacent, via guns.dropSentinelOn, exactly like every other pad-drop
+    helper in this codebase requires. Same inversion raid._candidates uses
+    (aimed at the enemy core there, a single threat tile here) via
+    emplace.reachOffsets, but home-bound instead of enemy-bound: a candidate
+    outside the leash is dropped outright, not merely deprioritised, so this
+    can never walk the guardian off the leash it exists to hold.
+    """
+    core = bot.corePos
+    here = ct.get_position()
+    reach = emplace.reachOffsets(ct)
+    seen = set()
+    best = None
+    bestKey = None
+    for offsets in reach.values():
+        for ox, oy in offsets:
+            site = Position(target.x - ox, target.y - oy)
+            key = (site.x, site.y)
+            if key in seen:
+                continue
+            seen.add(key)
+            if ph.manhattanToCore(site, core) > GUARDIAN_LEASH:
+                continue
+            if not _standable(ct, bot.hivemind, site):
+                continue
+            rank = (ph.manhattanToCore(site, core), manhattan(here, site))
+            if bestKey is None or rank < bestKey:
+                best, bestKey = site, rank
+    return best
+
+
+def defSentinel(bot, ct: Controller) -> bool:
+    """Answer an out-of-leash sentinel/launcher with our own sentinel, built
+    from inside the leash.
+
+    Sits below `defendCore` in the ladder — anything `defendCore` can already
+    reach from where the guardian stands is cheaper to answer that way (no
+    walk needed). This exists specifically for the threat it structurally
+    can't: one beyond the guardian's wander radius that a sentinel's longer
+    reach could still hit from the leash edge, if the guardian were
+    positioned there. Tries building in place first (covers the case where
+    the guardian already happens to be well positioned), then walks toward
+    the best leash-bound site otherwise.
+
+    _defSentinelSite re-picks fresh every call rather than committing to a
+    waypoint, so the "nearest to us" tiebreak can shift the chosen site
+    between turns as the guardian moves, churning walkTo's goal key —
+    the same class of cost raidBot.advance was fixed for on cross-map travel
+    (docs/observations.md's Performance section). Left as-is here: the walk
+    is leash-bounded (≤ GUARDIAN_LEASH), a small search space compared to a
+    cross-map A*, and this is a first cut — worth revisiting only if measured.
+    """
+    import guns
+
+    core = bot.corePos
+    if core is None or bot.inRelay:
+        return False
+    target = _outOfLeashThreat(bot, ct)
+    if target is None:
+        return False
+    myTeam = ct.get_team()
+    if guns.coveredByAllySentinel(ct, myTeam, target):
+        return False
+    if guns.dropSentinelOn(ct, target):
+        return True
+    site = _defSentinelSite(bot, ct, target)
+    if site is None:
+        return False
+
+    # site is where the *sentinel* would stand, not a walk destination — build
+    # requires standing orthogonally adjacent to it, never on it (same reason
+    # heal.healAlly walks to be *beside* its target instead of onto it). Walk
+    # toward site but stop the moment we're adjacent; dropSentinelOn's own
+    # pad-scan (ph.orthogonalTiles(ct.get_position())) then finds site as one
+    # of its candidates and does the actual build-legality/facing probe.
+    def beside(p: Position) -> bool:
+        return ph.beltFacing(p, site) is not None
+
+    if walkTo(bot, ct, beside, site, ("defSentinel", site.x, site.y)):
+        return True
+    return holdTask(bot, "defSentinel", BLOCKED_WAIT_TURNS)
 
 
 def _withinLeash(bot, ct: Controller) -> bool:
@@ -208,18 +463,30 @@ def runGuardian(bot, ct: Controller) -> None:
 
 
 def _ladder(bot, ct: Controller) -> None:
-    """Defend -> return-to-leash -> quiet economy (belt repair / leash-bounded
-    heal) -> patrol.
+    """Gun-line block -> defend -> out-of-leash sentinel answer ->
+    return-to-leash -> quiet economy (belt repair / leash-bounded heal) ->
+    patrol.
 
-    defendCore leads and is bounded to CORE_THREAT_RADIUS of the core, so a
-    threat is answered immediately and the guardian never chases one far from
-    home. Everything below it only runs when the core is quiet. Ore-seeking is
+    blockGunLine leads: a ~3-Ti barrier in a connecting gunner's line of fire
+    is far cheaper than the ~30-Ti turret defendCore would spend on the same
+    threat, so the cheaper answer always gets first refusal. defendCore comes
+    next and is bounded to CORE_THREAT_RADIUS of the core, so a threat is
+    answered immediately and the guardian never chases one far from home.
+    defSentinel follows as the fallback for exactly what defendCore's own
+    pad-scan structurally can't reach — a sentinel/launcher beyond the leash.
+    Everything below it only runs when the core is quiet. Ore-seeking is
     deliberately *not* in the quiet economy: committing to a fresh harvester
     would pull the guardian into a relay away from the core, which is the one
     thing a guardian must not do. Restoring a *cut* line (repairCoreBelts) is the
     exception — it recovers a whole harvester's output and stays within the
     core-defence radius by construction. Widening this to leash-bounded
     ore-seeking is the noted next step."""
+    # Cheapest answer first — see the module-level comment above blockGunLine.
+    if blockGunLine(bot, ct):
+        return
+    if maintainGunLineBlock(bot, ct):
+        return
+
     # Threat response — shared with the eco path, function-level import to avoid
     # the guns -> respawn -> ecoBot import cycle (same reason ecoBot imports it
     # this way). defendCore answers hostile turrets and launchers only — never an
@@ -234,6 +501,12 @@ def _ladder(bot, ct: Controller) -> None:
     # The eco path keeps chase=True so a farming builder can leave its spot to defend.
     import guns
     if guns.defendCore(bot, ct, chase=False):
+        return
+
+    # Beyond the leash, but a sentinel could still reach it from the edge —
+    # see defSentinel's own docstring for why this can't just be folded into
+    # defendCore above.
+    if defSentinel(bot, ct):
         return
 
     # Quiet from here down. Pull back inside the leash before doing chores so a

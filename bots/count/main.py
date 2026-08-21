@@ -158,6 +158,12 @@ class Player:
         # stops stamping and is replaced instead of holding the role while doing
         # nothing (guardianBot.runGuardian). True initially so the first turn stamps.
         self._guardianTurnOk = True
+        # Guardian combat depth (guardianBot.blockGunLine/maintainGunLineBlock): the
+        # tile this guardian's own gun-line barrier stands on, or None if it hasn't
+        # placed one. Needs no explicit release on death/role-change — a claim that
+        # ages out just loses track of the tile, and the next guardian's own
+        # blockGunLine re-detects the same live gunner and picks the gap back up.
+        self._gunLineBlockTile: tuple[int, int] | None = None
 
         # Primary raider (roles/raidBot.py), mirroring the guardian's pattern above:
         # _raiderTurnOk gates ROLE_RAIDER's liveness heartbeat the same way, so a

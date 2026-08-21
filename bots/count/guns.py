@@ -491,7 +491,7 @@ def buildSiegeGunner(ct: Controller, pad: Position, enemyCore: Position) -> bool
     return True
 
 
-def _coveredByAllySentinel(ct: Controller, myTeam, target: Position) -> bool:
+def coveredByAllySentinel(ct: Controller, myTeam, target: Position) -> bool:
     """Is an ally sentinel already firing on `target` — don't stack a second.
 
     A sentinel's facing is permanent (no rotate), so unlike a gunner it isn't
@@ -517,7 +517,7 @@ def _alreadyAnswered(ct: Controller, myTeam, target: Position, ttype: EntityType
     turret *adequate for this threat*, so defendCore should place nothing more.
 
     The per-kind drop helpers only refuse to stack a *second of their own kind*
-    (`coveredByAllyGunner` / `_coveredByAllySentinel`), so without this an enemy
+    (`coveredByAllyGunner` / `coveredByAllySentinel`), so without this an enemy
     gunner answered by our gunner still draws a sentinel too, and vice versa. This
     closes that: a threat that already has an adequate answer gets no second turret.
 
@@ -531,14 +531,14 @@ def _alreadyAnswered(ct: Controller, myTeam, target: Position, ttype: EntityType
 
     Vision-scoped like its two helpers (nearby buildings only), so two builders far
     apart can still each answer the same threat — a separate gap, not this one."""
-    if _coveredByAllySentinel(ct, myTeam, target):
+    if coveredByAllySentinel(ct, myTeam, target):
         return True
     if ttype == EntityType.GUNNER and coveredByAllyGunner(ct, myTeam, target):
         return True
     return False
 
 
-def _dropSentinelOn(ct: Controller, target: Position) -> bool:
+def dropSentinelOn(ct: Controller, target: Position) -> bool:
     """Build a sentinel on the first orthogonal pad of the calling unit whose
     permanent facing bears on `target`, unless an ally sentinel already covers it.
     True iff it built one.
@@ -556,7 +556,7 @@ def _dropSentinelOn(ct: Controller, target: Position) -> bool:
     the whole point is to bear on that threat, and the pad that bears is often
     the one it already shoots."""
     myTeam = ct.get_team()
-    if _coveredByAllySentinel(ct, myTeam, target):
+    if coveredByAllySentinel(ct, myTeam, target):
         return False
     found = emplace.sentinelPadBearing(
         ct, ph.orthogonalTiles(ct.get_position()), (target,)
@@ -747,7 +747,7 @@ def _defenceAnswers(ttype):
     reached in normal play (enemy builders are no longer core threats — see
     _CORE_THREAT_TYPES)."""
     gunner = (lambda ct: ct.get_gunner_cost(), dropGunnerOn)
-    sentinel = (lambda ct: ct.get_sentinel_cost(), _dropSentinelOn)
+    sentinel = (lambda ct: ct.get_sentinel_cost(), dropSentinelOn)
     if ttype in (EntityType.SENTINEL, EntityType.LAUNCHER):
         return (sentinel, gunner)
     if ttype == EntityType.GUNNER:
