@@ -308,6 +308,19 @@ class Player:
         self._beltGrindLow: dict[tuple[int, int], tuple[int, int]] = {}
         self._beltGaveUp: dict[tuple[int, int], int] = {}
 
+        # Harvester-snipe divert latch (roles/raidBot._divertStart/_divertRun). When
+        # the siege has no productive ring work (ring sealed/barred, or only
+        # repairer-guarded belts left), the raider commits to one nearby core-feeding
+        # enemy harvester and walks to a pad beside it so placeGunner drops a gunner on
+        # it. A *latch*, not a per-turn pick, because pressCore actively closes back in
+        # on the core whenever the raider is outside _SIEGE_RADIUS — an unlatched divert
+        # steps out, gets dragged back, and oscillates forever. _divertStartRound is the
+        # round the latch was set; past _DIVERT_GIVEUP_ROUNDS the target is barred (in
+        # _siegeUnreachable, so the next pick skips it) and the raider returns to the
+        # ring. Both stay at their defaults on any unit that never sieges.
+        self._divertHarvester: Position | None = None
+        self._divertStartRound = 0
+
         # Count of dead searches this unit's walkTo has run (bumped in
         # movement.walkTo). Callers snapshot it before a walk and compare after, to
         # ask "did *that* walk fail" — the sticky holdReason can't answer it, and a

@@ -405,7 +405,7 @@ def _gunFacing(pad: Position, target: Position) -> Direction | None:
     return pad.direction_to(target)
 
 
-def _coveredByAllyGunner(ct: Controller, myTeam, target: Position) -> bool:
+def coveredByAllyGunner(ct: Controller, myTeam, target: Position) -> bool:
     """Is an ally gunner already in range of `target` — don't stack a second."""
     for bid in ct.get_nearby_buildings():
         if ct.get_team(bid) != myTeam:
@@ -417,7 +417,7 @@ def _coveredByAllyGunner(ct: Controller, myTeam, target: Position) -> bool:
     return False
 
 
-def _dropGunnerOn(ct: Controller, target: Position) -> bool:
+def dropGunnerOn(ct: Controller, target: Position) -> bool:
     """Build a gunner on the first orthogonal pad of the calling unit that bears on
     `target`, unless an ally gunner already covers it. True iff it built one.
 
@@ -430,7 +430,7 @@ def _dropGunnerOn(ct: Controller, target: Position) -> bool:
     lazily — most turns no pad bears at all, so the scan shouldn't be paid before
     it's needed."""
     myTeam = ct.get_team()
-    if _coveredByAllyGunner(ct, myTeam, target):
+    if coveredByAllyGunner(ct, myTeam, target):
         return False
     here = ct.get_position()
     turrets = None
@@ -465,7 +465,7 @@ def buildSiegeGunner(ct: Controller, pad: Position, enemyCore: Position) -> bool
     The raider plants these in place of a barrier when the core ring shows no belt
     to sever and no enemy builder to lock out (`raidBot._coreClear`): a gunner
     occupies the tile and seals the gap exactly as a wall would, and grinds the
-    core besides. Unlike `_dropGunnerOn` there is no ally-coverage de-dup — each
+    core besides. Unlike `dropGunnerOn` there is no ally-coverage de-dup — each
     ring gap gets its own gunner, so a sentinel already on the core mustn't veto
     the ring — and the pad is given, not scanned: the caller has the gap tile."""
     target = next((f for f in ph.coreFootprint(enemyCore)
@@ -517,7 +517,7 @@ def _alreadyAnswered(ct: Controller, myTeam, target: Position, ttype: EntityType
     turret *adequate for this threat*, so defendCore should place nothing more.
 
     The per-kind drop helpers only refuse to stack a *second of their own kind*
-    (`_coveredByAllyGunner` / `_coveredByAllySentinel`), so without this an enemy
+    (`coveredByAllyGunner` / `_coveredByAllySentinel`), so without this an enemy
     gunner answered by our gunner still draws a sentinel too, and vice versa. This
     closes that: a threat that already has an adequate answer gets no second turret.
 
@@ -533,7 +533,7 @@ def _alreadyAnswered(ct: Controller, myTeam, target: Position, ttype: EntityType
     apart can still each answer the same threat — a separate gap, not this one."""
     if _coveredByAllySentinel(ct, myTeam, target):
         return True
-    if ttype == EntityType.GUNNER and _coveredByAllyGunner(ct, myTeam, target):
+    if ttype == EntityType.GUNNER and coveredByAllyGunner(ct, myTeam, target):
         return True
     return False
 
@@ -543,7 +543,7 @@ def _dropSentinelOn(ct: Controller, target: Position) -> bool:
     permanent facing bears on `target`, unless an ally sentinel already covers it.
     True iff it built one.
 
-    The sentinel counterpart to _dropGunnerOn: a sentinel out-ranges and out-
+    The sentinel counterpart to dropGunnerOn: a sentinel out-ranges and out-
     trades an enemy sentinel where a gunner just feeds it a kill. The pad scan,
     the reach inversion and the enemy-turret veto are all
     `emplace.sentinelPadBearing` — the same call `raid.fallbackEmplacement`
@@ -583,7 +583,7 @@ def placeGunner(bot, ct: Controller, enemyCore: Position | None) -> bool:
     Cheap early-exits first (this runs every raider turn, and the raider is
     CPU-tight): must be able to build this turn, must be past the surplus gate,
     must afford it. Only then does it scan. Builds on the first adjacent pad from
-    which a gunner bears on an uncovered target — `_dropGunnerOn` skips a target an
+    which a gunner bears on an uncovered target — `dropGunnerOn` skips a target an
     ally gunner already covers (no stacking a second) and a pad an enemy turret
     already bears on (no free kill on the newborn), which together are the anti-spam.
     `gunnerLoop` aims and fires thereafter. Returns True iff it built one (consuming
@@ -629,7 +629,7 @@ def placeGunner(bot, ct: Controller, enemyCore: Position | None) -> bool:
     targets.sort(key=rank)
 
     for target, _etype in targets[:_GUN_TARGET_LIMIT]:
-        if _dropGunnerOn(ct, target):
+        if dropGunnerOn(ct, target):
             return True
     return False
 
@@ -746,7 +746,7 @@ def _defenceAnswers(ttype):
     bare `(gunner,)` tail is only a defensive default for an unexpected type, never
     reached in normal play (enemy builders are no longer core threats — see
     _CORE_THREAT_TYPES)."""
-    gunner = (lambda ct: ct.get_gunner_cost(), _dropGunnerOn)
+    gunner = (lambda ct: ct.get_gunner_cost(), dropGunnerOn)
     sentinel = (lambda ct: ct.get_sentinel_cost(), _dropSentinelOn)
     if ttype in (EntityType.SENTINEL, EntityType.LAUNCHER):
         return (sentinel, gunner)

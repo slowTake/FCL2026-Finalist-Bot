@@ -713,12 +713,29 @@ away. `_beltGrindLow` is left untouched on the skip so the ~22-Ti out-repair
 reset the stale count every unguarded turn and bleed ~1 Ti/turn forever). The old
 stallCheck path stays as the backstop for out-repair the vision test can't see.
 
-**Deferred follow-up (Fable finding, accepted):** `_siegeTileNeedsWork` /
-`_nextSiegeTile` are unchanged, so a guarded belt still reads as "needs work" and a
-builder *permanently* camping one keeps the raider parked adjacent to it — zero Ti,
-still pins the builder and walls local gaps, but it won't circle to cut a belt on
-the far side of the ring the way the old ~22-Ti-then-bar path did. Fix shape when it
-matters: deprioritize (not exclude) guarded belts in `_nextSiegeTile`, mirroring its
-existing `_beltGaveUp` tie-break, so a camped belt yields to real work elsewhere on
-the ring while still being retried once the camper leaves. Severity low: bounded in
-Ti (zero), unbounded only in time-parked, and only when other ring tiles need work.
+**Deferred follow-up — CLOSED (2026-08-21, user-requested, Fable-planned).**
+`_nextSiegeTile` now deprioritizes a repairer-guarded belt with a `(noSafe, guarded,
+dist)` sort key (the guarded belt sorts after real work, never excluded — the
+`noSafe`-style tie-break the finding proposed), and returns a `productive` flag that
+is False when the only pick left is a guarded belt. On a no-productive-work turn the
+raider no longer parks: `_siege` latches the nearest core-relevant enemy harvester
+(`_divertStart`, within `_HARVESTER_DIVERT_RADIUS = 8` of the core, uncovered) and
+walks to a pad beside it (`_divertRun`, driven from the top of `pressCore` so it
+overrides the close-in and can't oscillate), then drops a gunner on it directly via
+`guns.dropGunnerOn`. Dropping directly — not waiting on `placeGunner` — is deliberate:
+`placeGunner`'s 150-Ti `surplusReady` gate is almost never met mid-siege (a probe
+found 0/91 otherwise-eligible turns qualified), so the divert is gated instead on
+`_divertAffordable` (gunner cost + `_SIEGE_MIN_TI`, the siege gunner's own floor), and
+the direct drop also sidesteps `placeGunner`'s tier ranking (a harvester at core-dist
+6–8 sits below turrets in its 3-target probe cap). The divert refuses to walk/stand in
+an enemy gunner's live line (bars the target self-healingly and hands the turn to
+`_siege`'s step-off). The latch clears — returning to the ring — when the harvester is
+covered, dead, unaffordable, exposed, unreachable, or after `_DIVERT_GIVEUP_ROUNDS =
+15`. Parking beside a guarded belt stays the fallback only when no harvester qualifies.
+
+(Fable review of the first cut flagged three issues, all addressed here: walking into
+gunner fire → the exposed-bar guard above; the radius-vs-tier mismatch → the direct
+drop; and the 150-Ti surplus gate leaving it inert → `_divertAffordable`. One low,
+self-healing item is left open: while a published sentinel emplacement preempts the
+divert higher in `runRaidBot`, the wall-clock give-up clock keeps ticking, so a valid
+harvester can occasionally be barred without 15 turns of real driving.)
