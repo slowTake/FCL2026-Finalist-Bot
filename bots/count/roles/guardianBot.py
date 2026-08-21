@@ -222,9 +222,10 @@ def _ladder(bot, ct: Controller) -> None:
     ore-seeking is the noted next step."""
     # Threat response — shared with the eco path, function-level import to avoid
     # the guns -> respawn -> ecoBot import cycle (same reason ecoBot imports it
-    # this way). defendCore answers turrets, launchers, and enemy builders that are
-    # grinding our buildings (never a passing builder — see guns.py). It sits above
-    # the leash step on purpose: answering a live threat outranks coming home.
+    # this way). defendCore answers hostile turrets and launchers only — never an
+    # enemy builder (chasing a mobile body with a gun is a losing Ti trade — see
+    # guns.py). It sits above the leash step on purpose: answering a live threat
+    # outranks coming home.
     #
     # chase=False: the guardian only *builds* against a threat (out to the full
     # CORE_THREAT_RADIUS — a sentinel out-ranges it) and never walks the body out to

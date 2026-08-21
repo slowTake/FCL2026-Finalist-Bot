@@ -158,17 +158,16 @@ What it deliberately left for next increments, roughly ordered:
    gunner's line to the core — cheaper than fielding a turret, so it runs ahead
    of the turret responses) and `defSentinel` (answer an out-of-leash sentinel
    from inside the leash). The v1 ladder is defendCore + patrol only.
-2. ~~Point 2 — gunner spam on passing builders.~~ **Done (2026-08-17).**
-   `BUILDER_BOT` removed from `guns._CORE_THREAT_TYPES` and gated instead through
-   `_builderThreateningStructure` — a builder draws a gunner only when one of ours
-   is orthogonally adjacent (it is grinding it), never when merely passing. The
-   gate is universal (guardian *and* eco fallback), so an attacking builder is
-   answered even before the guardian is claimed. Note the sketch's
-   `get_action_cooldown(enemyId)` trigger was a dead end — that getter takes no
-   entity id and no enemy action/target getter exists, so adjacency (build/fire
-   are adjacent-only) is the usable proxy. A future refinement could add
-   cross-turn stationarity tracking for builders that threaten from a tile with no
-   ally building beside it yet, but adjacency covers the attacking case cleanly.
+2. ~~Point 2 — gunner spam on passing builders.~~ **Done (2026-08-17), then
+   superseded (2026-08-21): builders dropped as `defendCore` targets entirely.**
+   The 2026-08-17 cut kept a grinding builder as a target via
+   `_builderThreateningStructure` (adjacency proxy). Measured Ti told the fuller
+   story — a gunner spent on any builder, grinding or not, rarely earns back its
+   cost against a mobile body — so `_builderThreateningStructure` was removed and
+   `defendCore`/`_nearestCoreThreat` now answer only the turrets in
+   `_CORE_THREAT_TYPES`. A builder grinding a core belt is handled by
+   `repairCoreBelts`. Separately, `GUNNER_BUILDER_ROTATE_COOLDOWN` stops an existing
+   gunner re-aiming after a builder every turn it moves.
 3. **Leash-bounded ore-seeking for the quiet guardian.** v1 keeps it home doing
    belt repair + heal only; letting it build harvesters on ore *inside* the leash
    would make it more useful without pulling it into a long relay — but needs the
@@ -335,17 +334,14 @@ HEAD before acting on them; treat them as retracted pending that pass.
    dead search, the same way `pressCore` now does. Severity unchanged (medium,
    rare trigger). See 2026-08-18 §2 for the full re-check.
 
-4. **[RE-VERIFIED against `abcd54e`] Ring-walling siege invisible to the
-   builder gate — still open, untouched by the 10 new commits.**
-   `_builderThreateningStructure` (`guns.py:576-592`) still requires an
-   orthogonal ours-neighbour; a corner-ring tile's orthogonal neighbours are
-   never core footprint, so pure gap-walling from a corner still draws nothing.
-   The new defence work (launcher-draws-sentinel, the stuck-counter rework)
-   landed elsewhere in `guns.py` and didn't touch this gate. Our own siege now
-   *confirms* the attacker-side pattern — `_coreClear` (`raidBot.py:198-217`)
-   explicitly anticipates an enemy builder "on a diagonal corner too." The
-   2026-08-17 deferred-#1 fix (any enemy builder within 2-3 of the core is
-   unconditionally threatening) still reads right.
+4. ~~Ring-walling siege invisible to the builder gate.~~ **Moot (2026-08-21):**
+   `_builderThreateningStructure` and all builder-answering in `defendCore` were
+   removed — chasing any builder with a gun lost more Ti than it saved — so there is
+   no longer a builder gate for corner ring-walling to slip past. A builder walling
+   or grinding near the core is now countered by `repairCoreBelts` re-laying cut
+   lines, not by placing a gun on the builder. (Attacker-side, `raidBot._coreClear`
+   still anticipates an enemy builder "on a diagonal corner too" — that logic is
+   unaffected.)
 
 5. **[RE-VERIFIED against `abcd54e`, reframed] Surplus-gate flapping is real
    but was mis-described as "cross-map"; a bigger, now-fixed explanation for

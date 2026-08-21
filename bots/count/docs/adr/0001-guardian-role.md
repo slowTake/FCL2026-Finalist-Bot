@@ -78,3 +78,12 @@ A dedicated **guardian** role (`roles/guardianBot.py`), one per team for now.
   (the first hit lands before HP drops) against a ~15-turn grind, and would cut
   the residual false positives near belt corridors. Worth measuring as a
   refinement; the current gate ships without it.
+
+  **Superseded (2026-08-21):** the adjacency gate and `_builderThreateningStructure`
+  were removed. `defendCore` no longer answers enemy builders *at all* — even a
+  grinding one — for either the guardian or the eco path: in play the gunners spent
+  on mobile builders cost more Ti than the damage they prevented, and a builder
+  grinding a core belt is already handled by `repairCoreBelts` re-laying the line.
+  `_CORE_THREAT_TYPES` is now the whole story (turrets + launcher), and a separate
+  `GUNNER_BUILDER_ROTATE_COOLDOWN` keeps an *existing* gunner from churning Ti to
+  re-aim after a builder every turn it jinks.

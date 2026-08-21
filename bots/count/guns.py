@@ -624,13 +624,15 @@ def placeGunner(bot, ct: Controller, enemyCore: Position | None) -> bool:
 # in to defend within this radius.
 CORE_THREAT_RADIUS = 15
 
-# Enemy types that always threaten the core — turrets that shell it, and the
-# launcher that flings bodies at it. A harvester or the enemy core never comes to
-# kill ours, so neither counts. BUILDER_BOT is deliberately absent here and handled
-# separately: a builder is a threat only when it is actually grinding our
-# structures, not merely passing within radius (_builderThreateningStructure gates
-# it). Placing a gunner on a builder running by wasted the gun on 1-2 shots before
-# it left range — the case this split exists to stop.
+# Enemy types that threaten the core and are worth answering with a turret: the
+# hostile turrets that shell it, and the launcher that flings bodies at it. A
+# harvester or the enemy core never comes to kill ours, so neither counts. An enemy
+# BUILDER_BOT is deliberately absent too: a builder is mobile, so a gunner placed
+# (or a body walked) to answer it lands a shot or two and then watches it walk out
+# of range — 10-20 Ti spent for near-nothing, the sink this list exists to keep out.
+# A builder grinding one of our belts is answered by repairCoreBelts re-laying the
+# line, not by a gun; the core itself is defended against the turrets that can
+# actually destroy it from range.
 _CORE_THREAT_TYPES = (
     EntityType.GUNNER,
     EntityType.SENTINEL,
@@ -638,37 +640,17 @@ _CORE_THREAT_TYPES = (
 )
 
 
-def _builderThreateningStructure(bot, ct: Controller, epos: Position) -> bool:
-    """Is the enemy builder at `epos` in position to grind one of our buildings?
-
-    True iff one of ours sits orthogonally adjacent. Build and fire are
-    adjacent-only, so a builder attacking (or walling off, or repairing over) our
-    belt / harvester / core / turret must be standing next to it. That adjacency
-    is our stand-in for "is it occupied attacking vs just passing by": the engine
-    exposes no enemy action state — get_action_cooldown/get_move_cooldown take no
-    entity id, and there is no target/order getter — so we read position, not
-    intent. A builder merely crossing open ground near the core has nothing of
-    ours beside it and is correctly ignored; it would leave a freshly-placed
-    gunner's range in a shot or two, exactly the wasted investment this prevents."""
-    for n in ph.orthogonalTiles(epos):
-        t = ph.readTile(ct, bot.hivemind, n)
-        if t.etype is not None and not t.enemy:
-            return True
-    return False
-
-
 def _nearestCoreThreat(bot, ct: Controller):
-    """Nearest visible enemy attacker within CORE_THREAT_RADIUS of our core as
-    (Position, EntityType), or None. Distance is to the core — the thing we protect
-    — so the threat closest to home is engaged first. The type rides along so
-    defendCore can answer a sentinel with a sentinel and everything else with a
-    gunner.
+    """Nearest visible enemy turret (gunner/sentinel/launcher) within
+    CORE_THREAT_RADIUS of our core as (Position, EntityType), or None. Distance is
+    to the core — the thing we protect — so the threat closest to home is engaged
+    first. The type rides along so defendCore can answer a sentinel with a sentinel
+    and everything else with a gunner.
 
-    An enemy builder counts only when `_builderThreateningStructure` reads it as
-    grinding one of our buildings; a builder merely passing the core is never a
-    target (that gun got 1-2 shots and left). The gate is unconditional rather
-    than a caller's opt-in, so an attacking builder is answered by whoever can see
-    it — including before any guardian exists — and a passing one by nobody."""
+    Only the stationary shelling turrets in `_CORE_THREAT_TYPES` count — enemy
+    builders are never targets here (see that list's note): chasing a mobile builder
+    with a gun is a losing Ti trade, so neither the eco path nor the guardian spends
+    on one."""
     core = bot.corePos
     if core is None:
         return None
@@ -680,16 +662,11 @@ def _nearestCoreThreat(bot, ct: Controller):
         if ct.get_team(eid) == myTeam:
             continue
         etype = ct.get_entity_type(eid)
-        isTurret = etype in _CORE_THREAT_TYPES
-        isBuilder = etype == EntityType.BUILDER_BOT
-        if not (isTurret or isBuilder):
+        if etype not in _CORE_THREAT_TYPES:
             continue
         p = ct.get_position(eid)
         d = ph.manhattanToCore(p, core)
         if d > CORE_THREAT_RADIUS:
-            continue
-        # Adjacency scan only for an in-radius builder — cheaper checks first.
-        if isBuilder and not _builderThreateningStructure(bot, ct, p):
             continue
         if bestD is None or d < bestD:
             best, bestType, bestD = p, etype, d
@@ -735,9 +712,9 @@ def defendCore(bot, ct: Controller, chase: bool = True) -> bool:
     sentinel preferred against a sentinel, a gunner against a gunner, the other as a
     fallback when the preferred one has no bearing pad this turn. A launcher draws a
     sentinel (it is stationary — the long-range answer that stays out of reach of the
-    builder repairing it), gunner as fallback. An enemy builder grinding one of our
-    buildings draws a gunner — a builder merely passing the core does not (see
-    _nearestCoreThreat / _builderThreateningStructure).
+    builder repairing it), gunner as fallback. Enemy builders are not answered here
+    at all — chasing a mobile builder with a gun is a losing Ti trade, so
+    `_nearestCoreThreat` only ever returns a hostile turret.
 
     Gated on affordability only — defence deliberately bypasses the offensive surplus
     gate, because a core under attack is worth spending the bank down for. But if we
