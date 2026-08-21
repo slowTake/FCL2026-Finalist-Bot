@@ -253,7 +253,14 @@ def _ladder(bot, ct: Controller) -> None:
     # long as the building stays damaged — a 2-tile oscillation that also
     # replans A* each time as the walk goal alternates. repairCoreBelts needs no
     # such filter; its own target search is already bounded to the core radius.
-    if heal.healNearby(bot, ct, heal.ECO_HEAL_TYPES, accept=_inLeash(bot)):
+    #
+    # Includes TURRET_HEAL_TYPES: the home gunners/sentinels the guardian stands
+    # beside are exactly what take fire during a defence, and nothing else heals
+    # them (raidBot's own TURRET_HEAL_TYPES call only ever sees turrets the
+    # raider itself placed at the enemy core). One combined call, same as the
+    # eco path's single-type one — nearestDamagedAlly already picks whichever
+    # damaged ally of either kind is nearest.
+    if heal.healNearby(bot, ct, heal.ECO_HEAL_TYPES + heal.TURRET_HEAL_TYPES, accept=_inLeash(bot)):
         return
 
     _patrol(bot, ct)
