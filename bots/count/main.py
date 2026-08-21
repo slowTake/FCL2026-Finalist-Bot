@@ -55,6 +55,16 @@ class Player:
         # tile -> times this relay has re-laid it, so a destroy/rebuild war with
         # another builder is detectable (see relays.BELT_CONTEST_LIMIT)
         self.relayRebuilds: dict[tuple[int, int], int] = {}
+        # Lowest HP this relay's grind has driven an obstructing enemy barrier to,
+        # tile -> (low HP, consecutive stalled checks), fed to patience.stallCheck by
+        # relays.clearRelayObstruction. The re-plan-first obstruction branch re-selects
+        # a chokepoint barrier priced cheaper than its detour every turn, so without a
+        # progress check it grinds one an enemy repairs in lockstep forever (2 Ti/shot);
+        # per-tile HP-low tracking is the only counter immune to the shared holdTask
+        # reason-resets from lower ladder rungs. Its own int-dict, not holdTask — the
+        # documented per-unit exception, same as _oreGrindLow / _beltGrindLow. Per-relay,
+        # cleared by relays._teardownRelay (not self-healing like _oreGrindLow's oreSkip).
+        self._relayGrindLow: dict[tuple[int, int], tuple[int, int]] = {}
         # Reconnection relays (ecoBot.reconnectOrphan) set this so planRelay merges
         # only onto a *proven* network member, not a belt chain it merely can't see to
         # be cut — the orphan's own dead-ended partial line reads intact from afar and

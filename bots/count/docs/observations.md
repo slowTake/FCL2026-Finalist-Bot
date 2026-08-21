@@ -71,10 +71,16 @@ and would be expensive to relearn.
   take the detour if the new route drops the barrier tile; grind only when the
   route still runs through it (a true chokepoint). Re-plan, *not* `_replanAvoiding`
   — blacklisting makes the tile infinite-cost so any-length detour beats a 30-Ti
-  grind, contradicting the tuned weight. A genuine grind is sustainable because the
-  through-route stays in `relayPath` with no avoid-set mutation. Gap: no relay-side
-  stall detector, so an enemy repairing a sole-door barrier ≥2 HP/turn grinds
-  forever (the ore path has `ORE_BARRIER_STALL_TURNS`; the relay path does not).
+  grind, contradicting the tuned weight — *until* the grind is proven unwinnable.
+  Gap now closed: the grind is bounded by a per-tile out-repair check (`stallCheck`
+  on `bot._relayGrindLow`, `CLEAR_STALL_CHECKS = 11`, mirroring the ore path's
+  `ORE_BARRIER_STALL_TURNS`). A chokepoint the enemy repairs as fast as we cut it
+  hits the stall window, and *only then* is `_replanAvoiding`'s infinite-cost
+  blacklist correct — the tile's real cost is infinite — so it detours at any length
+  or aborts cleanly (`relayAbort` → orphan retry via `reconnectOrphan`). The
+  can't-even-fire hold also ends in `relayAbort` now, not a bare `False` that left
+  `inRelay`/`relayPath` live for the ladder to re-enter the same grind next turn (the
+  regression that shipped when the grind-first branch was replaced by re-plan-first).
 - **Hold, don't abandon.** A builder that can't act this turn usually can in two
   or three. `patience.holdTask` is the single place that judgement lives.
 - **The relay goal is a tile *beside* the network, not on it.** The anchor the
