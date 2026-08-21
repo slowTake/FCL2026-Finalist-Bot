@@ -932,14 +932,22 @@ def topUpAmmo(bot, ct: Controller) -> None:
     stops it converting Ti we'd rather keep for a build or a repair. Gated,
     not clamped: below AMMO_TI_RESERVE we convert nothing this turn, not a
     partial amount down to the floor.
+
+    Exception: a turret already exists. `store.BUILDERS` is a lifetime spawn
+    count that never decrements, so a match where the core stays too poor or
+    too boxed-in to ever reach MAX_BUILDERS would otherwise leave every turret
+    mute for the rest of the game — including ones defendCore placed under
+    threat well before this gate would open on its own. If we're already
+    committed to a turret, feeding it outranks saving toward a builder we may
+    never afford anyway.
     """
-    if ct.read_store(store.BUILDERS) < MAX_BUILDERS:
+    gunners, sentinels = _allyTurretCounts(ct, bot.hivemind)
+    if ct.read_store(store.BUILDERS) < MAX_BUILDERS and gunners == 0 and sentinels == 0:
         return
 
     if ct.get_global_resources() <= AMMO_TI_RESERVE:
         return  # broke, not blocked — same reserve-first spirit as respawn.BUILDER_RESERVE
 
-    gunners, sentinels = _allyTurretCounts(ct, bot.hivemind)
     target = AMMO_FLOOR + AMMO_PER_GUNNER * gunners + AMMO_PER_SENTINEL * sentinels
     need = target - ct.get_global_ammo()
     if need <= 0:
