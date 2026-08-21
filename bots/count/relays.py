@@ -31,16 +31,41 @@ from pathing import astarFromSeeds, bfsFromSeeds
 
 _RELAY_MAX_ITERS = 450
 
+# Turn-elapsed CPU (Controller.get_cpu_time_elapsed, microseconds) past which a
+# relay plan's searches abandon rather than finish. An iteration cap bounds work
+# in *expansions*, not time: on a 30x30 explored map one expansion costs real
+# microseconds (readTile per neighbour, mergeable probes), so 450 of them plus
+# the turn's preamble can exceed the 10ms budget outright — the midgard TLE,
+# where a first plan for a harvester ~14 tiles from the network was killed
+# mid-search every turn for the rest of the match. Equal to telemetry.WARN_US
+# (70% of budget) on purpose, not imported from it — telemetry is reporting-only
+# and off in submissions, and this must hold either way. The ~3ms left after a
+# trip covers the poll stride (~32 expansions) and the abort teardown — nothing
+# more runs, because a tripped plan (FAILED_BUDGET) consumes the rest of the
+# turn rather than falling through to the ladder. Doubles as the *entry* gate
+# in planRelay: a turn already past it defers the plan (DEFERRED) instead of
+# starting a search the first poll would kill. Tunable.
+_PLAN_DEADLINE_US = 7000
+
 
 class _Plan(Enum):
-    """The outcome of planRelay, three-way. A single bool conflated two of these —
+    """The outcome of planRelay. Originally a single bool, which conflated
     'already feeding the network' (a real delivery) with the failures — so a failed
     plan could be mistaken for a completed line and forge a delivery. Kept distinct
     so a delivery is credited only when the harvester genuinely reaches the network.
+
+    The two budget outcomes are separate from FAILED because they demand opposite
+    handling and neither is a verdict on the route: DEFERRED says nothing was even
+    attempted (the *turn* was already spent before the plan began — retry next turn,
+    tearing down would orphan a healthy relay), while FAILED_BUDGET says the plan
+    itself was measured too expensive mid-search (retrying verbatim is the wedge the
+    tombstone exists for — abort into the orphan-reconnect path instead).
     """
     ROUTED = auto()     # a path was produced into bot.relayPath; keep laying it
     CONNECTED = auto()  # harvester already feeds the network; delivered, nothing to lay
     FAILED = auto()     # no route this turn (no seed / no path / no anchor); NOT delivered
+    DEFERRED = auto()      # turn already over budget on entry; plan not attempted
+    FAILED_BUDGET = auto() # searches abandoned mid-flight by the CPU deadline
 
 # How many times this relay will re-lay one tile before conceding it. A belt we
 # place and someone else immediately replaces is contention, not progress —
@@ -77,6 +102,36 @@ def relayToHome(bot, ct: Controller) -> bool:
         plan = planRelay(bot, ct)
         if plan is _Plan.CONNECTED:
             return relayDone(bot, ct)   # harvester feeds the network — a real delivery
+        if plan is _Plan.DEFERRED:
+            # The turn was over budget before the plan even started — an unlucky
+            # heavy turn (hivemind tick + whatever ran above us), not a verdict
+            # on this relay: on a fresh turn the same plan is typically <1ms.
+            # Aborting here would orphan a healthy harvester into the 30-turn
+            # reconnect delay, so hold instead: keep inRelay/relayFrom intact,
+            # consume the turn, retry with a fresh budget next round. Bounded by
+            # the shared patience counter — a builder whose *every* turn arrives
+            # over budget has a problem this guard cannot fix by waiting, so
+            # after BLOCKED_WAIT_TURNS deferrals it concedes into the same
+            # abort-and-reconnect path as a failed plan. The expiry turn is by
+            # definition over budget too, so it consumes the turn rather than
+            # falling through to the ladder's own multi-ms work (seekOre).
+            if holdTask(bot, "planBudget", BLOCKED_WAIT_TURNS):
+                return True
+            relayAbort(bot, ct)
+            return True
+        if plan is _Plan.FAILED_BUDGET:
+            # The plan itself blew the deadline mid-search: it really is too
+            # expensive on this board, and re-running it verbatim next turn is
+            # the wedge the tombstone guards against. Abort (relayAbort arms the
+            # orphan-reconnect retry, which waits out RECONNECT_RETRY_TURNS —
+            # time for the board to change) — but unlike an ordinary FAILED,
+            # consume the turn instead of falling through: the deadline tripped
+            # at >7ms elapsed, and the ladder work below a fall-through (seekOre
+            # -> rankOre) is itself multi-ms, which would push a merely-slow
+            # turn into a TLE. All relay state is already torn down, so the
+            # worst case is one idle turn, never a wedge.
+            relayAbort(bot, ct)
+            return True
         if plan is _Plan.FAILED:
             # A plan that failed this turn, NOT a completed line. Marking it delivered
             # would orphan the harvester and forge guardian eligibility (see
@@ -160,6 +215,54 @@ def _chainVisiblyIntact(ctx, ct: Controller, hm, belt: Position) -> bool:
 
 
 def planRelay(bot, ct: Controller) -> _Plan:
+    """Tombstone guard around the actual planning (_planRelay below).
+
+    A turn that blows the CPU budget is interrupted mid-flight and never
+    resumes, and it raises nothing the bot can catch — so a plan expensive
+    enough to be killed leaves no trace of having run at all. Before this
+    guard that meant a wedge: the kill landed inside the search, relayPath
+    stayed None and inRelay stayed True, so the next turn re-entered the
+    *identical* doomed search from scratch, every turn, forever (two of five
+    builders on midgard, frozen from round ~54 to the end). The stamp below is
+    written before the expensive work and cleared only on a normal return;
+    heap writes made before the interrupt survive it, so a stamp from an
+    *earlier round* still standing on entry is proof the last plan never
+    finished. Give up on it cheaply instead of re-running it: FAILED routes
+    every caller to relayAbort, which records the harvester as an orphan for
+    ecoBot.reconnectOrphan's bounded retry (RECONNECT_RETRY_TURNS) — the same
+    self-heal shape as the guardian heartbeat TTL, which the relay path
+    lacked. Same-round re-stamps are fine (a turn may replan several times);
+    deliberately no try/finally — if the interrupt were ever delivered as an
+    unwinding exception, a finally would clear the stamp on the way out and
+    blind the guard.
+
+    The stale-stamp check runs before the budget gate on purpose: a stamp from
+    an earlier round is proof of a real kill, and that verdict stands however
+    busy *this* turn happens to be.
+    """
+    rnd = ct.get_current_round()
+    if bot._relayPlanRound is not None and bot._relayPlanRound != rnd:
+        bot._relayPlanRound = None
+        return _Plan.FAILED
+    # Budget gate, checked once before any search work. The in-search deadline
+    # (overBudget in _planRelay) reads *turn*-elapsed CPU, so entering on a turn
+    # that already burned past it — a heavy tick, a verify walk, an earlier
+    # replan — would trip the very first poll and abort a plan that was never
+    # measured at all, orphaning a healthy relay for someone else's cost.
+    # Already-over on entry indicts the turn, not the plan: defer (DEFERRED
+    # holds without tearing down, see relayToHome) and retry on a fresh budget.
+    # No stamp is written on this path — nothing expensive runs, so there is
+    # nothing for the tombstone to catch, and a standing stamp here would
+    # false-trip next round.
+    if ct.get_cpu_time_elapsed() > _PLAN_DEADLINE_US:
+        return _Plan.DEFERRED
+    bot._relayPlanRound = rnd
+    plan = _planRelay(bot, ct)
+    bot._relayPlanRound = None
+    return plan
+
+
+def _planRelay(bot, ct: Controller) -> _Plan:
     if bot.corePos is None:
         return _Plan.FAILED
 
@@ -214,26 +317,89 @@ def planRelay(bot, ct: Controller) -> _Plan:
 
     # Goal is a tile *beside* a merge target, not on it: you can't build on an
     # occupied belt, and the target is frequently the core, which no builder can
-    # stand on either.
+    # stand on either. `pops` counts expansions (isGoal runs exactly once per
+    # popped node in both searches) — one list-index increment per pop, read
+    # below to decide whether the BFS fallback is worth running.
+    pops = [0]
+
     def isGoal(p: Position) -> bool:
+        pops[0] += 1
         if mergeable(p):
             return False
         return any(mergeable(n) for n in ph.orthogonalTiles(p))
 
-    # No heuristic: the goal is a set, not a point, and manhattan-to-core can
-    # overestimate the distance to a nearer merge tile. Dijkstra is correct and
-    # stops the moment it reaches one, which is usually close.
+    # Aim the search at the network tile nearest the harvester. Heuristic-free
+    # Dijkstra was tried first ("the goal is a set, not a point") and is what
+    # TLE'd midgard: an undirected frontier grows ~2*D**2, so a harvester ~14
+    # tiles from the network cost ~350 expansions — over the whole 10ms budget
+    # on a 30x30 explored map, killed mid-search every turn (the same cost
+    # class observations.md records for the walk profile). Any network tile is
+    # a valid root under the tree invariant, so aiming at the nearest one only
+    # shapes *where* the line grafts, never whether it connects: mergeable and
+    # the anchor check are unchanged, and a nearer bare-belt merge on the
+    # corridor is still taken the moment a frontier tile touches it. The trade
+    # is the one makeHeuristic already documents for walks — a route may graft
+    # a few tiles downstream of the cost-optimal merge, and optimality was
+    # never a requirement against a hand-tuned cost table. ctx.network is
+    # never empty here: corePos is non-None (checked above), so it holds at
+    # least the core footprint, and it is ~a few dozen entries, so the min()
+    # is cheap next to a single expansion.
+    sx, sy = source.x, source.y
+    aim = min(ctx.network, key=lambda k: abs(k[0] - sx) + abs(k[1] - sy))
+    heuristic = ph.makeHeuristic(Position(aim[0], aim[1]))
+
+    # Hard time bound on top of the iteration caps: even a directed search can
+    # meet a pathological board (target walled off — A* *and* BFS then burn
+    # their full caps exploring everything reachable). Tripping abandons the
+    # plan as FAILED_BUDGET; relayToHome aborts the relay AND consumes the turn
+    # (the trip means >7ms elapsed — falling through to more ladder work risks
+    # the TLE this whole mechanism exists to prevent). The turn is lost but the
+    # builder is not (see planRelay's tombstone for the kill-mid-search case
+    # this backstops, and its entry gate for the turn-was-already-heavy case
+    # that must NOT land here). Polled every 32 expansions —
+    # pathing._STOP_POLL_MASK — so the poll itself stays off the budget.
+    tripped = [False]
+
+    def overBudget() -> bool:
+        if ct.get_cpu_time_elapsed() > _PLAN_DEADLINE_US:
+            tripped[0] = True
+            return True
+        return False
+
     path = astarFromSeeds(
         seeds,
         costFn=ph.makeCostFn(ctx),
         isGoal=isGoal,
+        heuristic=heuristic,
         maxIters=_RELAY_MAX_ITERS,
+        shouldStop=overBudget,
     )
 
-    if path is None:
+    if path is None and not tripped[0] and pops[0] < _RELAY_MAX_ITERS:
         # Same avoid set the seeds were filtered against and A* just used —
         # otherwise the fallback routes straight back through tiles this relay
-        # has already conceded.
+        # has already conceded. Skipped when A* ran out of *time*, and when it
+        # ran out of *iterations* (pops at the cap): a 450-hop undirected disc
+        # costs what the undirected Dijkstra this fix removed cost, so running
+        # it after a capped-out A* is the two-full-caps turn that can never
+        # fit the budget. In principle that forfeits a goal sitting opposite
+        # the aim direction that only BFS would have swept — but a plan given
+        # up here is an abort, not a loss: relayAbort hands the harvester to
+        # reconnectOrphan, which retries once the board (usually the reason
+        # the search ballooned) has changed. What keeps the fallback for the
+        # remaining case — A* exhausting a small enclosed frontier early — is
+        # NOT that BFS sees more of the board: beltPassable is *stricter* than
+        # the relay costFn (it rejects the enemy barriers/harvesters/turrets
+        # costFn merely prices), so BFS's graph is a subset and a frontier
+        # exhaustion is almost always final. Two things still justify the
+        # retry: it is near-free on a small region, and one genuine hole in
+        # the subset — costFn rejects every ore tile outright (the relay-ore
+        # guard in makeCostFn) while beltPassable accepts an *existing* belt
+        # regardless of the ore under it, so a corridor through an
+        # already-laid belt over ore is crossable only here. Stale heap
+        # re-pops mean a capped-out A* can read a few pops under the cap and
+        # let a redundant BFS through; the deadline above bounds that residue,
+        # so exactness isn't worth tracking.
         path = bfsFromSeeds(
             seeds,
             isPassable=lambda p: (
@@ -242,11 +408,17 @@ def planRelay(bot, ct: Controller) -> _Plan:
             ),
             isGoal=isGoal,
             maxIters=_RELAY_MAX_ITERS,
+            shouldStop=overBudget,
         )
 
     if not path:
         bot.relayPath = None
-        return _Plan.FAILED
+        # A tripped deadline is its own outcome: the searches were cut off, not
+        # exhausted, so "no route" was never actually established — and the
+        # caller must burn no further budget this turn. The anchor-None branch
+        # below stays plain FAILED even when tripped: a path was found, so the
+        # budget is not what failed there.
+        return _Plan.FAILED_BUDGET if tripped[0] else _Plan.FAILED
 
     anchor = next(
         (n for n in ph.orthogonalTiles(path[-1]) if mergeable(n)), None
@@ -271,6 +443,9 @@ def _replanAvoiding(bot, ct: Controller, tile: Position) -> bool:
         return False  # never blacklist the thing we are trying to reach
     bot.relayAvoid.add((tile.x, tile.y))
     bot.relayPath = None
+    # DEFERRED and FAILED_BUDGET deliberately fold into False here alongside
+    # FAILED: this helper's contract is only "did a reroute land"; budget
+    # escalation (hold vs abort-and-consume) belongs to relayToHome alone.
     if planRelay(bot, ct) is not _Plan.ROUTED:
         return False
     clearHold(bot)  # new route, fresh patience — otherwise the spent counter
@@ -488,7 +663,16 @@ def clearRelayObstruction(bot, ct: Controller, target: Position, *, hostile: boo
         }:
             clearHold(bot)  # detour found — fresh route, fresh patience
             return True
-        if plan is _Plan.FAILED:
+        if plan in (_Plan.FAILED, _Plan.DEFERRED, _Plan.FAILED_BUDGET):
+            # The budget outcomes take this branch too: neither produced a fresh
+            # route (DEFERRED never searched, FAILED_BUDGET was cut off), so the
+            # nulled relayPath must be restored the same way — the pre-barrier
+            # route is still the best-known route home, and the grind below is a
+            # single cheap fire(), not more search. A DEFERRED here simply means
+            # the re-pricing waits a turn; the hold/abort escalation for
+            # repeated deferrals lives in relayToHome, the one caller that owns
+            # the relay's lifecycle.
+            #
             # No route at all this turn. For a hostile obstruction the usual cause is
             # the barrier sitting on the harvester's *sole* open exit: planRelay seeds
             # only beltPassable neighbours, a barrier tile is not one, so seeds come up

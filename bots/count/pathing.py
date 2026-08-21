@@ -13,10 +13,23 @@ CostFn = Callable[[Position], int | None]
 GoalFn = Callable[[Position], bool]
 HeuristicFn = Callable[[Position], int]
 PassableFn = Callable[[Position], bool]
+StopFn = Callable[[], bool]
 
 CARDINAL_DELTAS = ((0, -1), (1, 0), (0, 1), (-1, 0))
 
 DEFAULT_MAX_ITERS = 900
+
+# How many loop iterations pass between shouldStop polls. An iteration cap alone
+# cannot bound a search in *time*: on a 30x30 explored map each expansion costs
+# real microseconds (readTile, goal probes), so a capped search can still eat the
+# whole 10ms turn — the midgard eco-builder TLE, where one relay plan for a
+# harvester ~14 tiles from the network blew the budget outright and the unit
+# re-ran it every turn for the rest of the match. Polling the clock is itself a
+# Controller call, so it must not run per iteration; every 32nd bounds the
+# overshoot past the caller's deadline to ~32 expansions (well under 1ms) while
+# keeping the poll cost at ~3% of the loop. Power of two so the check is a mask,
+# not a modulo.
+_STOP_POLL_MASK = 31
 
 
 def manhattan(a: Position | Point, b: Position | Point) -> int:
@@ -48,10 +61,15 @@ def astarFromSeeds(
     isGoal: GoalFn,
     heuristic: HeuristicFn | None = None,
     maxIters: int = DEFAULT_MAX_ITERS,
+    shouldStop: StopFn | None = None,
 ) -> list[Position] | None:
     """Multi-seed weighted A*. costFn returns None for impassable tiles.
 
     Returned path starts at whichever seed won and ends on the goal tile.
+
+    shouldStop, polled every `_STOP_POLL_MASK + 1` iterations, lets a caller
+    bound the search in CPU time as well as iterations (see _STOP_POLL_MASK).
+    A trip abandons the search and returns None, same as exhausting maxIters.
     """
     if heuristic is None:
         def heuristic(_p: Position) -> int:
@@ -75,6 +93,9 @@ def astarFromSeeds(
     iters = 0
     while openHeap and iters < maxIters:
         iters += 1
+        if (shouldStop is not None and not iters & _STOP_POLL_MASK
+                and shouldStop()):
+            return None
         _f, _c, current = heappop(openHeap)
         if current in closed:
             continue
@@ -110,6 +131,7 @@ def astar(
     isGoal: GoalFn | None = None,
     heuristic: HeuristicFn | None = None,
     maxIters: int = DEFAULT_MAX_ITERS,
+    shouldStop: StopFn | None = None,
 ) -> list[Position] | None:
     """Single-seed wrapper. astarFromSeeds owns the only search loop here."""
     if isGoal is None:
@@ -126,6 +148,7 @@ def astar(
         isGoal=isGoal,
         heuristic=heuristic,
         maxIters=maxIters,
+        shouldStop=shouldStop,
     )
 
 
@@ -135,11 +158,13 @@ def bfs(
     isPassable: PassableFn,
     isGoal: GoalFn,
     maxIters: int = DEFAULT_MAX_ITERS,
+    shouldStop: StopFn | None = None,
 ) -> list[Position] | None:
     """Unweighted nearest-match. Redundancy when A* returns None, and the
     primitive for 'nearest ore / nearest buildable tile' queries."""
     return bfsFromSeeds(
-        [start], isPassable=isPassable, isGoal=isGoal, maxIters=maxIters
+        [start], isPassable=isPassable, isGoal=isGoal, maxIters=maxIters,
+        shouldStop=shouldStop,
     )
 
 
@@ -149,6 +174,7 @@ def bfsFromSeeds(
     isPassable: PassableFn,
     isGoal: GoalFn,
     maxIters: int = DEFAULT_MAX_ITERS,
+    shouldStop: StopFn | None = None,
 ) -> list[Position] | None:
     cameFrom: dict[Point, Point | None] = {}
     queue: deque[Point] = deque()
@@ -163,6 +189,9 @@ def bfsFromSeeds(
     iters = 0
     while queue and iters < maxIters:
         iters += 1
+        if (shouldStop is not None and not iters & _STOP_POLL_MASK
+                and shouldStop()):
+            return None
         current = queue.popleft()
         if isGoal(Position(*current)):
             return _reconstruct(cameFrom, current)

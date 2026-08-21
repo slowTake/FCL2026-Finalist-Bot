@@ -71,6 +71,14 @@ class Player:
         # would otherwise be trusted, leaving the harvester unconnected. Off for normal
         # relays, which rely on that out-of-vision trust. Cleared by _teardownRelay.
         self._strictRelay = False
+        # Round a relay plan was entered and has not yet returned — the TLE
+        # tombstone (relays.planRelay). Stamped before the search, cleared on a
+        # normal return; a CPU-limit kill interrupts run() without ever resuming
+        # it, so a stamp from an earlier round still standing on entry means the
+        # last plan died mid-search and must not be re-run verbatim (the midgard
+        # wedge: the identical doomed search re-entered every turn to game end).
+        # Per-unit instance state, like every cache here — never module-level.
+        self._relayPlanRound: int | None = None
 
         # Walk state (movement.py)
         self.walkPath: list[Position] | None = None

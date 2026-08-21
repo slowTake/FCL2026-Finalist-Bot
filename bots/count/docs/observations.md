@@ -201,8 +201,23 @@ the enemy core:
   ~2*D**2 (Dijkstra-like) — the cost class behind *every* builder's search
   ballooning on an explored map, eco included. Scaling by `BASE` (weighted A*,
   deliberately inadmissible — path optimality is not required against a
-  hand-tuned cost table) makes the walk search directed. Relay planning runs
-  without a heuristic, so its optimality is untouched.
+  hand-tuned cost table) makes the walk search directed. Relay planning kept
+  Dijkstra for a while longer ("the goal is a set, not a point") until it
+  produced the same TLE class on its own — see the next entry.
+- **Relay planning was the last undirected search.** A real-ladder midgard
+  loss: the first `planRelay` for a harvester ~14 tiles from the network cost
+  ~350 expansions — over the whole budget on an explored 30x30 — and, because
+  a CPU kill lands mid-search and writes nothing, `inRelay` stayed set and the
+  identical plan re-ran every turn to game end (two of five builders frozen
+  from round ~54; replay `47eb5dd3…` game 1, `exec_time_us` pinned at the
+  ~10.5ms ceiling). Three-part fix: aim the search at the network tile nearest
+  the harvester (any network tile is a valid root under the tree invariant, so
+  aim shapes where the line grafts, never whether it connects); a tombstone
+  stamp so a plan killed mid-search is detected next turn and aborted into the
+  orphan-reconnect retry instead of re-run (`relays.planRelay`); and a CPU
+  deadline polled inside both search loops (`pathing.shouldStop`,
+  `relays._PLAN_DEADLINE_US`) so no single plan can eat the turn even on a
+  pathological board.
 
 ## Known asymmetry
 
