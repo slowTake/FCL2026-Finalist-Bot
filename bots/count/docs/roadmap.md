@@ -165,9 +165,11 @@ What it deliberately left for next increments, roughly ordered:
    story — a gunner spent on any builder, grinding or not, rarely earns back its
    cost against a mobile body — so `_builderThreateningStructure` was removed and
    `defendCore`/`_nearestCoreThreat` now answer only the turrets in
-   `_CORE_THREAT_TYPES`. A builder grinding a core belt is handled by
-   `repairCoreBelts`. Separately, `GUNNER_BUILDER_ROTATE_COOLDOWN` stops an existing
-   gunner re-aiming after a builder every turn it moves.
+   `_CORE_THREAT_TYPES`. Accepted cost: a builder grinding a core belt to a *gap*
+   (not a barrier) now draws no placed response — `repairCoreBelts` is barrier-only
+   and does not cover it (see open item on established-line gap recovery). Separately,
+   `GUNNER_BUILDER_ROTATE_COOLDOWN` stops an existing gunner re-aiming after a builder
+   every turn it moves.
 3. **Leash-bounded ore-seeking for the quiet guardian.** v1 keeps it home doing
    belt repair + heal only; letting it build harvesters on ore *inside* the leash
    would make it more useful without pulling it into a long relay — but needs the
@@ -334,14 +336,17 @@ HEAD before acting on them; treat them as retracted pending that pass.
    dead search, the same way `pressCore` now does. Severity unchanged (medium,
    rare trigger). See 2026-08-18 §2 for the full re-check.
 
-4. ~~Ring-walling siege invisible to the builder gate.~~ **Moot (2026-08-21):**
-   `_builderThreateningStructure` and all builder-answering in `defendCore` were
-   removed — chasing any builder with a gun lost more Ti than it saved — so there is
-   no longer a builder gate for corner ring-walling to slip past. A builder walling
-   or grinding near the core is now countered by `repairCoreBelts` re-laying cut
-   lines, not by placing a gun on the builder. (Attacker-side, `raidBot._coreClear`
-   still anticipates an enemy builder "on a diagonal corner too" — that logic is
-   unaffected.)
+4. ~~Ring-walling siege invisible to the builder gate.~~ **Moot as a gate bug
+   (2026-08-21), but reframed as a real open gap:** `_builderThreateningStructure` and
+   all builder-answering in `defendCore` were removed — chasing any builder with a gun
+   lost more Ti than it saved — so there is no longer a builder gate for corner
+   ring-walling to slip past. The flip side is now an accepted hole: a builder that
+   grinds an *established* core belt to a gap draws no response at all. A barrier over
+   a belt is still recovered by `repairCoreBelts`; a plain grind-to-gap on a mature
+   line is not (it reads like a relay under construction), and `verifyRelay`/
+   `reconnectOrphan` only cover freshly-laid or orphaned lines. Established-line gap
+   recovery is the real open item here — not a gun. (Attacker-side, `raidBot._coreClear`
+   still anticipates an enemy builder "on a diagonal corner too" — unaffected.)
 
 5. **[RE-VERIFIED against `abcd54e`, reframed] Surplus-gate flapping is real
    but was mis-described as "cross-map"; a bigger, now-fixed explanation for

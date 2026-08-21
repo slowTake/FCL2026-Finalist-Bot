@@ -82,8 +82,14 @@ A dedicated **guardian** role (`roles/guardianBot.py`), one per team for now.
   **Superseded (2026-08-21):** the adjacency gate and `_builderThreateningStructure`
   were removed. `defendCore` no longer answers enemy builders *at all* — even a
   grinding one — for either the guardian or the eco path: in play the gunners spent
-  on mobile builders cost more Ti than the damage they prevented, and a builder
-  grinding a core belt is already handled by `repairCoreBelts` re-laying the line.
-  `_CORE_THREAT_TYPES` is now the whole story (turrets + launcher), and a separate
+  on mobile builders cost more Ti than the damage they prevented. `_CORE_THREAT_TYPES`
+  is now the whole story (turrets + launcher), and a separate
   `GUNNER_BUILDER_ROTATE_COOLDOWN` keeps an *existing* gunner from churning Ti to
   re-aim after a builder every turn it jinks.
+
+  Accepted cost of the removal: a builder that grinds a core belt to a *gap* (not a
+  barrier) now draws no placed response. `repairCoreBelts` does **not** cover it — it
+  is barrier-only by design (a gap reads identically to a relay still being laid) —
+  so this grind case is genuinely undefended, judged worth it against the Ti a gun
+  bled chasing the mobile griefer. Closing it later means gap-recovery on an
+  *established* line (distinct from `verifyRelay`/`reconnectOrphan`), not a gun.
