@@ -474,6 +474,11 @@ def clearRelayObstruction(bot, ct: Controller, target: Position, *, hostile: boo
         # fresh route; if the route still runs through it the detour costs more than
         # the ~15-turn grind. Re-plan (priced), not _replanAvoiding (infinite cost) —
         # the tuned barrier weight, not an absolute preference, decides detour-vs-grind.
+        #
+        # Snapshot the live route before nulling it. Guaranteed non-None and to contain
+        # `target`: this function's only caller is layBelt, reached from relayToHome
+        # with `target` a tile of the path being laid. Restored below on FAILED.
+        prevPath, prevAnchor = bot.relayPath, bot.relayAnchor
         bot.relayPath = None
         plan = planRelay(bot, ct)
         if plan is _Plan.CONNECTED:
@@ -483,9 +488,31 @@ def clearRelayObstruction(bot, ct: Controller, target: Position, *, hostile: boo
         }:
             clearHold(bot)  # detour found — fresh route, fresh patience
             return True
-        # Fresh plan still routes through the barrier (or FAILED): grind it down. The
-        # through-route stays in relayPath, so next turn re-enters here and grinds on;
-        # no relayAvoid mutation, so a genuine chokepoint never spuriously aborts.
+        if plan is _Plan.FAILED:
+            # No route at all this turn. For a hostile obstruction the usual cause is
+            # the barrier sitting on the harvester's *sole* open exit: planRelay seeds
+            # only beltPassable neighbours, a barrier tile is not one, so seeds come up
+            # empty — there is nothing to detour onto, and the pre-barrier route (which
+            # runs through `target`) is still the right route home; grinding this
+            # barrier is precisely what reopens it. Restore the old path so relayToHome
+            # re-follows it next turn and re-enters this grind — the pre-bb6ad66
+            # grind-through for the no-detour case. Without the restore, the null
+            # relayPath survives the single fire below and relayToHome's next-turn
+            # replan (FAILED again) aborts the relay, stranding the harvester after one
+            # shot — reconnectOrphan's strict re-relay then fails the same seed check
+            # for as long as the barrier stands. This can neither resurrect the
+            # forever-grind nor defeat the concedes below: the stallCheck give-up runs
+            # _replanAvoiding (which re-nulls relayPath) or relayAbort (which tears it
+            # down), and the spent "clear" hold ends in that same ladder, so a restored
+            # path never survives an abort. planRelay leaves relayAnchor untouched on
+            # FAILED, but restore the pair together so path/anchor coherence is visible
+            # here rather than resting on that detail.
+            bot.relayPath, bot.relayAnchor = prevPath, prevAnchor
+        # Fresh plan still routes through the barrier (ROUTED with target on the path),
+        # or FAILED with the pre-barrier route restored above: grind it down. Either
+        # way relayPath holds a route through `target`, so next turn re-enters here and
+        # grinds on; no relayAvoid mutation, so a genuine chokepoint never spuriously
+        # aborts.
         key = (target.x, target.y)
         if ct.get_action_cooldown() == 0 and ct.can_fire(target):
             # But bound the grind by an out-repair check, mirrored from

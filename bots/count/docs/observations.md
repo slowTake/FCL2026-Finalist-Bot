@@ -81,6 +81,17 @@ and would be expensive to relearn.
   can't-even-fire hold also ends in `relayAbort` now, not a bare `False` that left
   `inRelay`/`relayPath` live for the ladder to re-enter the same grind next turn (the
   regression that shipped when the grind-first branch was replaced by re-plan-first).
+  One more gap closed: `planRelay` seeds only `beltPassable` neighbours of the
+  harvester, so a barrier on its *sole* open exit returns FAILED (no seeds), not
+  ROUTED-through — and the re-plan-first null of `relayPath` then survived into the
+  grind, so the next turn's replan-FAILED aborted the relay after a single shot,
+  stranding the harvester (strict reconnects fail the same seed check while the
+  barrier stands). Fix: snapshot the pre-barrier path before the replan and restore
+  it on FAILED, so the no-detour case grinds across turns exactly like the
+  ROUTED-through chokepoint, still bounded by the same per-tile `stallCheck`.
+  Trade-off accepted: a static multi-barrier wall on the sole route is ground
+  barrier-by-barrier (~15 turns / 30 Ti each, matching pre-bb6ad66), each bounded by
+  its own out-repair check.
 - **Hold, don't abandon.** A builder that can't act this turn usually can in two
   or three. `patience.holdTask` is the single place that judgement lives.
 - **The relay goal is a tile *beside* the network, not on it.** The anchor the

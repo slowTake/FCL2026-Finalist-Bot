@@ -101,3 +101,14 @@ barrier the enemy repaired in lockstep was ground forever. Two lessons: a give-u
 that returns `False` must also *clear* the state that would otherwise re-enter it
 (here `relayAbort`), and every grind needs a `stallCheck` bound, not just a
 `holdTask` one (the shared counter is reset by other ladder rungs anyway).
+
+## A "re-plan first" refactor must account for the replan failing outright
+
+bb6ad66's hostile-obstruction branch nulled `relayPath` before re-pricing the
+barrier. CONNECTED and ROUTED were handled, but FAILED fell through to the grind
+with the null still live — converting "no detour exists" into fire-one-shot-then-
+abort, stranding a harvester whose sole exit the barrier blocked (strict reconnects
+fail the same empty-seed check while it stands). When a refactor moves state-clearing
+ahead of a fallible call, trace *every* outcome of that call to the end of the turn
+AND into the next turn's re-entry path — not just the success ones. Fix: snapshot the
+route before nulling, restore on FAILED.
