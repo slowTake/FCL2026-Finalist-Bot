@@ -55,7 +55,7 @@ if not DB_PATH.exists():
 
 @st.cache_data(ttl=600)
 def load_teams():
-    # Cache bust 5
+    # Cache bust 6
     conn = sqlite3.connect(DB_PATH)
     df = pd.read_sql_query("""
         SELECT DISTINCT t.team_id, t.name, t.rank, t.rating
@@ -64,6 +64,19 @@ def load_teams():
         ORDER BY t.rank ASC
     """, conn)
     conn.close()
+    
+    # Enrich with ladder API
+    import subprocess, json
+    try:
+        res = subprocess.run(["fcode", "ladder", "--json"], capture_output=True, text=True, check=True)
+        ladder = json.loads(res.stdout)
+        team_meta = {t["teamName"]: {"region": t.get("region"), "studentStatus": t.get("studentStatus")} for t in ladder}
+        df["region"] = df["name"].map(lambda x: team_meta.get(x, {}).get("region", "unknown"))
+        df["studentStatus"] = df["name"].map(lambda x: team_meta.get(x, {}).get("studentStatus", "unknown"))
+    except Exception as e:
+        df["region"] = "unknown"
+        df["studentStatus"] = "unknown"
+        
     return df
 
 
@@ -144,8 +157,22 @@ mode = st.sidebar.radio(
 st.sidebar.markdown("---")
 min_sample = st.sidebar.number_input("Minimum Match Sample Size:", min_value=1, value=5, help="Hide teams/opponents with fewer matches than this to reduce noise.")
 
+only_student = st.sidebar.checkbox("Only Student Teams", value=False)
+only_nordic = st.sidebar.checkbox("Only Nordic Teams", value=False)
+
 teams_df = load_teams()
 summaries_df = load_game_summaries()
+
+if only_student:
+    valid_names = set(teams_df[teams_df["studentStatus"] == "student"]["name"])
+    teams_df = teams_df[(teams_df["studentStatus"] == "student") | (teams_df["name"] == "HTTP 418")]
+    summaries_df = summaries_df[summaries_df["opponent_name"].isin(valid_names)]
+
+if only_nordic:
+    valid_names = set(teams_df[teams_df["region"] == "nordic"]["name"])
+    teams_df = teams_df[(teams_df["region"] == "nordic") | (teams_df["name"] == "HTTP 418")]
+    summaries_df = summaries_df[summaries_df["opponent_name"].isin(valid_names)]
+
 unfiltered_summaries_df = summaries_df.copy()
 
 st.sidebar.markdown("---")
