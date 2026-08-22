@@ -424,15 +424,58 @@ elif mode == "🗺️ Map Analyzer":
         subject_team = st.selectbox("Select Subject Team:", team_list, index=default_index, key="ma_team")
     with col2:
         maps_available = summaries_df[summaries_df["team_name"] == subject_team]["map_name"].unique()
-        selected_map = st.selectbox("Select Map:", maps_available, key="ma_map")
+        selected_map = st.selectbox("Isolate Map (Optional Drilldown):", maps_available, key="ma_map")
+
+    if subject_team:
+        subject_data = summaries_df[summaries_df["team_name"] == subject_team]
+        map_table = []
+        for m in maps_available:
+            map_df = subject_data[subject_data["map_name"] == m]
+            games = len(map_df)
+            if games == 0: continue
+            
+            wr = map_df["won"].mean() * 100
+            tles = map_df["tles"].mean()
+            wins = map_df[map_df["won"] == True]
+            losses = map_df[map_df["won"] == False]
+            
+            avg_win_turns = float(wins['turns_played'].mean()) if len(wins) > 0 else None
+            avg_loss_turns = float(losses['turns_played'].mean()) if len(losses) > 0 else None
+            
+            map_table.append({
+                "Map": m,
+                "Matches": games,
+                "Winrate": float(wr),
+                "Avg Win Length": avg_win_turns,
+                "Avg Loss Length": avg_loss_turns,
+                "Avg TLEs": float(tles)
+            })
+            
+        st.subheader(f"Overall Map Performance for {subject_team}")
+        if len(map_table) > 0:
+            df_maps = pd.DataFrame(map_table).sort_values("Matches", ascending=False)
+            st.dataframe(
+                df_maps,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Winrate": st.column_config.NumberColumn("Winrate", format="%.1f%%"),
+                    "Avg Win Length": st.column_config.NumberColumn("Avg Win Length", format="%.0f"),
+                    "Avg Loss Length": st.column_config.NumberColumn("Avg Loss Length", format="%.0f"),
+                    "Avg TLEs": st.column_config.NumberColumn("Avg TLEs", format="%.1f")
+                }
+            )
+        else:
+            st.info("No map data available.")
+        st.divider()
 
     if subject_team and selected_map:
         opp_map_counts = summaries_df[(summaries_df["team_name"] == subject_team) & (summaries_df["map_name"] == selected_map)]["opponent_name"].value_counts()
-        opponents_on_map = opp_map_counts[opp_map_counts >= min_sample].index.tolist()
+        opponents_on_map = opp_map_counts.index.tolist()
         
         # Create a dictionary to map opponent names to their ratings for the UI
         opp_rating_dict = summaries_df[summaries_df["team_name"] == subject_team].set_index("opponent_name")["opp_rating"].to_dict()
-        format_opp = lambda opp: f"{opp} (Rating: {opp_rating_dict.get(opp, 0):.0f})"
+        format_opp = lambda opp: f"{opp} (Rating: {opp_rating_dict.get(opp, 0):.0f}) - {opp_map_counts.get(opp, 0)} matches"
         
         all_opponents = st.checkbox("Select All Opponents", value=True, key="ma_all_opps")
         if all_opponents:
@@ -441,82 +484,63 @@ elif mode == "🗺️ Map Analyzer":
             selected_opponents = st.multiselect("Select Opponents to Aggregate:", opponents_on_map, default=[], format_func=format_opp, key="ma_opps")
 
         if selected_opponents:
-            has_waste = 'pct_wasted' in summaries_df.columns
-            cols_to_mean = ["pct_builder", "pct_economy", "pct_defense", "pct_offense", "pct_own_core", "pct_opp_core", "won", "tles"]
-            if has_waste:
-                cols_to_mean.append("pct_wasted")
+            base_df = summaries_df[(summaries_df["team_name"] == subject_team) & (summaries_df["map_name"] == selected_map)]
+            matchup_df = summaries_df[(summaries_df["team_name"] == subject_team) & (summaries_df["map_name"] == selected_map) & (summaries_df["opponent_name"].isin(selected_opponents))]
 
-            # Subject Baseline (on this map against EVERYONE)
-            base = summaries_df[(summaries_df["team_name"] == subject_team) & (summaries_df["map_name"] == selected_map)][cols_to_mean].mean()
+            if not matchup_df.empty:
+                st.subheader(f"Performance on {selected_map}")
 
-            # Matchup Performance (on this map against SELECTED opponents)
-            matchup = summaries_df[(summaries_df["team_name"] == subject_team) & (summaries_df["map_name"] == selected_map) & (summaries_df["opponent_name"].isin(selected_opponents))][cols_to_mean].mean()
-
-            if not matchup.empty:
-                delta = matchup - base
-
-                st.subheader(f"Strategy Shift on {selected_map}")
-
-                metric_cols = st.columns(7 if has_waste else 6)
+                metric_cols = st.columns(4)
                 
-                # Multiply winrate by 100 for percentage
-                wr_base = base['won'] * 100
-                wr_matchup = matchup['won'] * 100
+                # Winrate
+                wr_base = base_df['won'].mean() * 100
+                wr_matchup = matchup_df['won'].mean() * 100
                 wr_delta = wr_matchup - wr_base
                 
-                tle_base = base['tles']
-                tle_matchup = matchup['tles']
+                # TLEs
+                tle_base = base_df['tles'].mean()
+                tle_matchup = matchup_df['tles'].mean()
                 tle_delta = tle_matchup - tle_base
+                
+                # Avg Length Wins
+                base_wins = base_df[base_df['won'] == True]
+                match_wins = matchup_df[matchup_df['won'] == True]
+                awin_base = base_wins['turns_played'].mean() if len(base_wins) > 0 else 0
+                awin_match = match_wins['turns_played'].mean() if len(match_wins) > 0 else 0
+                awin_delta = awin_match - awin_base
+
+                # Avg Length Losses
+                base_losses = base_df[base_df['won'] == False]
+                match_losses = matchup_df[matchup_df['won'] == False]
+                aloss_base = base_losses['turns_played'].mean() if len(base_losses) > 0 else 0
+                aloss_match = match_losses['turns_played'].mean() if len(match_losses) > 0 else 0
+                aloss_delta = aloss_match - aloss_base
                 
                 metric_cols[0].metric("Winrate", f"{wr_matchup:.1f}%", f"{wr_delta:+.1f}% vs base")
                 metric_cols[1].metric("Avg TLEs/Game", f"{tle_matchup:.1f}", f"{tle_delta:+.1f} vs base", delta_color="inverse")
-                metric_cols[2].metric("Defense Shift", f"{matchup['pct_defense']:.1f}%", f"{delta['pct_defense']:+.1f}% vs base")
-                metric_cols[3].metric("Offense Shift", f"{matchup['pct_offense']:.1f}%", f"{delta['pct_offense']:+.1f}% vs base")
-                metric_cols[4].metric("Harvester Shift", f"{matchup['pct_economy']:.1f}%", f"{delta['pct_economy']:+.1f}% vs base")
-                metric_cols[5].metric("Forward Aggression Shift", f"{matchup['pct_opp_core']:.1f}%", f"{delta['pct_opp_core']:+.1f}% vs base")
                 
-                if has_waste:
-                    metric_cols[6].metric("Waste Shift", f"{matchup['pct_wasted']:.1f}%", f"{delta['pct_wasted']:+.1f}% vs base", delta_color="inverse")
+                if len(match_wins) > 0:
+                    metric_cols[2].metric("Avg Length (Wins)", f"{awin_match:.0f} turns", f"{awin_delta:+.0f} vs base", delta_color="inverse")
+                else:
+                    metric_cols[2].metric("Avg Length (Wins)", "N/A", "N/A")
 
-                metrics_list = ["Builder", "Harvesters", "Defense", "Offense", "Own Core", "Opp Core"]
-                base_vals = [base["pct_builder"], base["pct_economy"], base["pct_defense"], base["pct_offense"], base["pct_own_core"], base["pct_opp_core"]]
-                match_vals = [matchup["pct_builder"], matchup["pct_economy"], matchup["pct_defense"], matchup["pct_offense"], matchup["pct_own_core"], matchup["pct_opp_core"]]
-                
-                if has_waste:
-                    metrics_list.append("Waste")
-                    base_vals.append(base["pct_wasted"])
-                    match_vals.append(matchup["pct_wasted"])
-
-                delta_df = pd.DataFrame({
-                    "Metric": metrics_list,
-                    f"Baseline on {selected_map} (%)": base_vals,
-                    "Vs Selected Opponents (%)": match_vals
-                })
-
-                fig_delta = px.bar(
-                    delta_df,
-                    x="Metric",
-                    y=[f"Baseline on {selected_map} (%)", "Vs Selected Opponents (%)"],
-                    barmode="group",
-                    title=f"Shift Breakdown on {selected_map}",
-                    color_discrete_map={
-                        f"Baseline on {selected_map} (%)": "gray",
-                        "Vs Selected Opponents (%)": "crimson"
-                    }
-                )
-                st.plotly_chart(fig_delta, use_container_width=True)
+                if len(match_losses) > 0:
+                    metric_cols[3].metric("Avg Length (Losses)", f"{aloss_match:.0f} turns", f"{aloss_delta:+.0f} vs base", delta_color="inverse")
+                else:
+                    metric_cols[3].metric("Avg Length (Losses)", "N/A", "N/A")
 
                 # Replay Launcher Module
                 st.divider()
                 st.subheader("🎬 Map Analyzer Replay Vault")
-                st.markdown("Launch the local `fcode watch` server to review specific games between these teams on this map.")
+                st.markdown("Launch the official web viewer to review specific games between these teams on this map.")
 
                 conn = sqlite3.connect(DB_PATH)
                 placeholders = ', '.join(['?'] * len(selected_opponents))
                 query = f"""
-                    SELECT g.game_id, g.map_name, s.pct_wasted, g.turns_played, g.replay_key,
+                    SELECT g.game_id, g.match_id, g.game_number, g.map_name, s.pct_wasted, g.turns_played, g.replay_key,
                            o.name as opp_name,
-                           CASE WHEN g.winner_team_id = s.team_id THEN 'WIN' ELSE 'LOSS' END as outcome
+                           CASE WHEN g.winner_team_id = s.team_id THEN 'WIN' ELSE 'LOSS' END as outcome,
+                           s.tles as tle_count, s.tle_turns
                     FROM games g
                     JOIN game_economic_summaries s ON g.game_id = s.game_id
                     JOIN teams t ON s.team_id = t.team_id
@@ -528,8 +552,24 @@ elif mode == "🗺️ Map Analyzer":
                 conn.close()
 
                 if not games_df.empty:
+                    sort_col, _ = st.columns([1, 1])
+                    with sort_col:
+                        sort_by = st.selectbox("Sort Replays By:", [
+                            "Default", 
+                            "Most TLEs First", 
+                            "Match Length (Longest First)", 
+                            "Match Length (Shortest First)"
+                        ], key="ma_sort")
+                    
+                    if sort_by == "Most TLEs First":
+                        games_df = games_df.sort_values(by="tle_count", ascending=False)
+                    elif sort_by == "Match Length (Longest First)":
+                        games_df = games_df.sort_values(by="turns_played", ascending=False)
+                    elif sort_by == "Match Length (Shortest First)":
+                        games_df = games_df.sort_values(by="turns_played", ascending=True)
+
                     games_df["display"] = games_df.apply(
-                        lambda row: f"Vs {row['opp_name']} | Result: {row['outcome']} | Waste: {row['pct_wasted']}% | Turns: {row['turns_played']} | ID: {row['game_id'][:8]}", axis=1
+                        lambda row: f"Vs {row['opp_name']} | Result: {row['outcome']} | Waste: {row['pct_wasted']}% | Turns: {row['turns_played']} | TLEs: {row['tle_count']} | ID: {row['game_id'][:8]}", axis=1
                     )
 
                     selected_game_display = st.selectbox("Select Game to Launch:", games_df["display"], key="ma_replay")
@@ -537,47 +577,16 @@ elif mode == "🗺️ Map Analyzer":
                     if selected_game_display:
                         selected_row = games_df[games_df["display"] == selected_game_display].iloc[0]
 
-                        col_btn1, col_btn2 = st.columns([1, 4])
-                        with col_btn1:
-                            if st.button("▶️ Launch Replay Viewer", key="ma_launch"):
-                                import subprocess
-                                from pathlib import Path
-
-                                if 'active_replay_proc' in st.session_state and st.session_state.active_replay_proc is not None:
-                                    try:
-                                        st.session_state.active_replay_proc.terminate()
-                                    except Exception:
-                                        pass
-                                
-                                fcode_bin = Path("/home/nraatika/projects/florent/.venv/bin/fcode")
-                                if not fcode_bin.exists():
-                                    fcode_bin = Path(__file__).resolve().parent.parent / ".venv" / "bin" / "fcode"
-                                    
-                                replay_path = DB_PATH.parent / "replays" / selected_row["replay_key"]
-                                
-                                if replay_path.exists():
-                                    proc = subprocess.Popen(
-                                        [str(fcode_bin), "watch", str(replay_path)],
-                                        stdout=subprocess.DEVNULL,
-                                        stderr=subprocess.DEVNULL,
-                                        start_new_session=True
-                                    )
-                                    st.session_state.active_replay_proc = proc
-                                    st.success(f"Launched viewer for {selected_row['game_id'][:8]}! (Running in background on port 8080)")
-                                else:
-                                    st.error(f"Replay file not found: {replay_path}")
-
-                        with col_btn2:
-                            if st.button("⏹️ Stop Viewer", key="ma_stop"):
-                                if 'active_replay_proc' in st.session_state and st.session_state.active_replay_proc is not None:
-                                    try:
-                                        st.session_state.active_replay_proc.terminate()
-                                        st.session_state.active_replay_proc = None
-                                        st.info("Replay server successfully shut down.")
-                                    except Exception as e:
-                                        st.error(f"Failed to shut down server: {e}")
-                                else:
-                                    st.info("No active replay server running.")
+                        match_id = selected_row['match_id']
+                        game_num = selected_row['game_number']
+                        viewer_url = f"https://game.code.florent.vc/visualiser?matchId={match_id}&game={game_num}"
+                        st.markdown(f"**[▶️ Launch in Official Web Viewer]({viewer_url})**")
+                        
+                        if selected_row['tle_count'] > 0:
+                            if pd.notnull(selected_row['tle_turns']) and selected_row['tle_turns']:
+                                st.info(f"**TLE Analysis**: Your bot stalled on Turn(s) {selected_row['tle_turns']}.")
+                            else:
+                                st.info("**TLE Analysis**: Your bot stalled during this match, but exact turns were not recorded (requires database rebuild).")
                 else:
                     st.info("No games found matching these filters.")
 
