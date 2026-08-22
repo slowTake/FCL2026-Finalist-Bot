@@ -1,0 +1,40 @@
+name: Build and Release Database
+
+on:
+  workflow_dispatch: # Allow manual triggers
+
+permissions:
+  contents: write
+
+jobs:
+  build-db:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install fcv fcv-gauntlet protobuf python-dateutil requests
+
+      - name: Build Recent DB
+        run: python scratch/build_recent_db.py
+        env:
+          FLORENT_TOKEN: ${{ secrets.FLORENT_TOKEN }}
+
+      - name: Export Release DB
+        run: python scripts/export_dashboard_db.py
+
+      - name: Release Database Asset
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: latest-db
+          name: Latest Dashboard Database
+          files: data/dashboard_release.db.gz
+          make_latest: true
