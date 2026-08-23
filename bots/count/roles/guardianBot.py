@@ -98,6 +98,10 @@ def claimIfOpen(bot, ct: Controller) -> None:
         or getattr(bot, "_verifyHarvester", None) is not None
     ):
         return
+    for ent in bot.hivemind.visible_entities:
+        if ent["team"] == bot.hivemind.my_team: continue
+        if ent["type"] != EntityType.BUILDER_BOT: continue
+        if ph.manhattanToCore(ent["pos"], bot.corePos) <= 2: return
     idx = bot.hivemind.my_index
     if idx <= 0:
         return

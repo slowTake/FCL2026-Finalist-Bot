@@ -414,10 +414,10 @@ def _grabbableHostiles(bot, ct: Controller) -> list[Position]:
     me = ct.get_team()
     launcherPos = ct.get_position()
     hostiles = [
-        ct.get_position(eid)
-        for eid in ct.get_nearby_entities()
-        if ct.get_team(eid) != me
-        and ct.get_entity_type(eid) == EntityType.BUILDER_BOT
+        ent["pos"]
+        for ent in bot.hivemind.visible_entities
+        if ent["team"] != me
+        and ent["type"] == EntityType.BUILDER_BOT
     ]
     hostiles.sort(key=lambda p: manhattan(launcherPos, p))
     return hostiles

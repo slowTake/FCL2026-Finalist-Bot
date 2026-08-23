@@ -79,10 +79,12 @@ class HiveMind:
         h = ct.get_map_height()
 
         entity_positions = {}
+        self.visible_entities = []
         for eid in ct.get_nearby_entities():
             epos = ct.get_position(eid)
             etype = ct.get_entity_type(eid)
             eteam = ct.get_team(eid)
+            self.visible_entities.append({"id": eid, "pos": epos, "type": etype, "team": eteam})
             # src="vision": personally observed, as opposed to a network-
             # ingested sighting (see _ingest_ledger) — _broadcast_ledger only
             # ever reports src="vision" entries, so a unit never re-broadcasts

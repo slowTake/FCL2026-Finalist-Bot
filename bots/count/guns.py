@@ -132,16 +132,16 @@ def visibleHostiles(ct: Controller, priority: dict[EntityType, int]) -> list[tup
     myTeam = ct.get_team()
     allyBuilderTiles: set[tuple[int, int]] = set()
     raw: list[tuple[Position, EntityType]] = []
-    for eid in ct.get_nearby_entities():
-        etype = ct.get_entity_type(eid)
-        if ct.get_team(eid) == myTeam:
+    for ent in bot.hivemind.visible_entities:
+        etype = ent["type"]
+        if ent["team"] == myTeam:
             if etype == EntityType.BUILDER_BOT:
-                pos = ct.get_position(eid)
+                pos = ent["pos"]
                 allyBuilderTiles.add((pos.x, pos.y))
             continue
         if etype not in priority:
             continue
-        raw.append((ct.get_position(eid), etype))
+        raw.append((ent["pos"], etype))
 
     out: list[tuple[Position, EntityType]] = []
     for epos, etype in raw:
@@ -606,13 +606,13 @@ def placeGunner(bot, ct: Controller, enemyCore: Position | None) -> bool:
     myTeam = ct.get_team()
     here = ct.get_position()
     targets: list[tuple[Position, EntityType]] = []
-    for eid in ct.get_nearby_entities():
-        if ct.get_team(eid) == myTeam:
+    for ent in bot.hivemind.visible_entities:
+        if ent["team"] == myTeam:
             continue
-        etype = ct.get_entity_type(eid)
+        etype = ent["type"]
         if etype not in _GUN_TARGET_TYPES:
             continue
-        targets.append((ct.get_position(eid), etype))
+        targets.append((ent["pos"], etype))
     if not targets:
         return False
 
@@ -705,13 +705,13 @@ def _nearestCoreThreat(bot, ct: Controller):
     best = None
     bestType = None
     bestD = None
-    for eid in ct.get_nearby_entities():
-        if ct.get_team(eid) == myTeam:
+    for ent in bot.hivemind.visible_entities:
+        if ent["team"] == myTeam:
             continue
-        etype = ct.get_entity_type(eid)
+        etype = ent["type"]
         if etype not in _CORE_THREAT_TYPES:
             continue
-        p = ct.get_position(eid)
+        p = ent["pos"]
         d = ph.manhattanToCore(p, core)
         if d > CORE_THREAT_RADIUS:
             continue

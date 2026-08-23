@@ -252,12 +252,12 @@ def _beltRepairGuardTiles(ct: Controller) -> set[tuple[int, int]]:
     candidate belt — the raider runs near the 10ms budget (module header)."""
     myTeam = ct.get_team()
     guarded: set[tuple[int, int]] = set()
-    for eid in ct.get_nearby_entities():
-        if ct.get_team(eid) == myTeam:
+    for ent in bot.hivemind.visible_entities:
+        if ent["team"] == myTeam:
             continue
-        if ct.get_entity_type(eid) != EntityType.BUILDER_BOT:
+        if ent["type"] != EntityType.BUILDER_BOT:
             continue
-        epos = ct.get_position(eid)
+        epos = ent["pos"]
         guarded.add((epos.x, epos.y))
         for n in ph.orthogonalTiles(epos):
             guarded.add((n.x, n.y))

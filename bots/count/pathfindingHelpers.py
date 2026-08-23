@@ -104,7 +104,14 @@ def readTile(ct: Controller, hm, pos: Position) -> Tile:
     if hit is not None:
         return hit
 
-    if ct.is_in_vision(pos):
+    # Fast bounds check to avoid FFI for A* expansions far away
+    my_pos = ct.get_position()
+    if max(abs(pos.x - my_pos.x), abs(pos.y - my_pos.y)) > 7:
+        in_vis = False
+    else:
+        in_vis = ct.is_in_vision(pos)
+
+    if in_vis:
         tile = _readVisible(ct, pos)
     else:
         tile = _readLedger(hm, pos, ct.get_team())
@@ -206,6 +213,9 @@ def canStandNow(ct: Controller, pos: Position) -> bool:
     it" is correctly "can't commit to standing there this turn."
     """
     if not inBounds(ct, pos):
+        return False
+    my_pos = ct.get_position()
+    if max(abs(pos.x - my_pos.x), abs(pos.y - my_pos.y)) > 7:
         return False
     if not ct.is_in_vision(pos):
         return False

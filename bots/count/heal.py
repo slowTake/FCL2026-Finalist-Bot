@@ -45,15 +45,17 @@ def nearestDamagedAlly(ct: Controller, types, accept=None) -> Position | None:
     best = None
     bestDist = None
 
-    for eid in ct.get_nearby_entities():
-        if ct.get_team(eid) != myTeam:
+    for ent in bot.hivemind.visible_entities:
+        if ent["team"] != myTeam:
             continue
-        etype = ct.get_entity_type(eid)
+        etype = ent["type"]
         if etype not in types:
             continue
+        eid = ent["id"]
         if ct.get_hp(eid) >= ct.get_max_hp(eid):
             continue
-        pos = ct.get_position(eid)
+
+        pos = ent["pos"]
         # The core is a 2x2 building but get_position reports only its min-x/min-y
         # anchor tile, so every builder that targets it converges on that one
         # corner's two stand tiles and piles up on a single side. Expand it to its
