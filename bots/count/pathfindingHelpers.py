@@ -98,6 +98,7 @@ def readTile(ct: Controller, hm, pos: Position) -> Tile:
     if cache is None or hm._tileCacheRound != rnd:
         cache = hm._tileCache = {}
         hm._tileCacheRound = rnd
+        hm._myPos = ct.get_position()
 
     key = (pos.x, pos.y)
     hit = cache.get(key)
@@ -105,8 +106,7 @@ def readTile(ct: Controller, hm, pos: Position) -> Tile:
         return hit
 
     # Fast bounds check to avoid FFI for A* expansions far away
-    my_pos = ct.get_position()
-    if max(abs(pos.x - my_pos.x), abs(pos.y - my_pos.y)) > 7:
+    if max(abs(pos.x - hm._myPos.x), abs(pos.y - hm._myPos.y)) > 7:
         in_vis = False
     else:
         in_vis = ct.is_in_vision(pos)
@@ -214,8 +214,7 @@ def canStandNow(ct: Controller, pos: Position) -> bool:
     """
     if not inBounds(ct, pos):
         return False
-    my_pos = ct.get_position()
-    if max(abs(pos.x - my_pos.x), abs(pos.y - my_pos.y)) > 7:
+    if max(abs(pos.x - hm._myPos.x), abs(pos.y - hm._myPos.y)) > 7:
         return False
     if not ct.is_in_vision(pos):
         return False
