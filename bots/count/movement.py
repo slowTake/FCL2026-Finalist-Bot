@@ -73,16 +73,28 @@ def walkTo(bot, ct: Controller, isGoal, heuristicGoal: Position | None, goal) ->
         # (main.Player._relayPlanRound, #115). A stamp left standing from an
         # earlier round is proof of a kill; arm the memo on the dead search's
         # behalf and hold, rather than re-entering it.
-        if bot._walkPlanRound is not None and bot._walkPlanRound != rnd:
-            bot._walkPlanRound = None
-            bot._noRouteGoal = goal
-            bot._noRoutePos = (pos.x, pos.y)
-            bot._noRouteRound = rnd
-            bot.noRouteSeq += 1
+        # Goal-stamped, not just round-stamped: the cooldown and arrival returns
+        # above leave a stamp standing, so a kill during goal A's plan would
+        # otherwise fire against whatever goal next reaches this branch and
+        # memoise a target that was never searched.
+        if bot._walkPlanStamp is not None and bot._walkPlanStamp != (rnd, goal):
+            killedGoal = bot._walkPlanStamp[1]
+            bot._walkPlanStamp = None
+            if killedGoal == goal:
+                bot._noRouteGoal = goal
+                bot._noRoutePos = (pos.x, pos.y)
+                bot._noRouteRound = rnd
+                bot.noRouteSeq += 1
+                if debug.ENABLED:
+                    debug.log("walkTo", f"idx={bot.hivemind.my_index} goal={goal} "
+                                         f"pos={pos} PLAN KILLED last round — memoised")
+                return holdTask(bot, "noRoute", BLOCKED_WAIT_TURNS)
+            # A different goal was in flight when the turn died. Clearing the
+            # stamp is the whole job — this goal was never searched, so there is
+            # nothing to conclude about it and it plans normally below.
             if debug.ENABLED:
                 debug.log("walkTo", f"idx={bot.hivemind.my_index} goal={goal} "
-                                     f"pos={pos} PLAN KILLED last round — memoised")
-            return holdTask(bot, "noRoute", BLOCKED_WAIT_TURNS)
+                                     f"pos={pos} stale stamp for {killedGoal} cleared")
         if (bot._noRouteGoal == goal
                 and bot._noRoutePos == (pos.x, pos.y)
                 and rnd - bot._noRouteRound < _NOROUTE_RECHECK_TURNS):
@@ -91,6 +103,19 @@ def walkTo(bot, ct: Controller, isGoal, heuristicGoal: Position | None, goal) ->
                                      f"pos={pos} NO PATH (memoised, skip replan)")
             bot.noRouteSeq += 1
             return holdTask(bot, "noRoute", BLOCKED_WAIT_TURNS)
+        # A plan the deadline stopped proves nothing about the goal, so it gets
+        # its own short memo rather than the no-route one: re-running a search
+        # that just ran out of time would only run out of time again, but
+        # calling the goal unreachable would have callers blacklist a target
+        # they can very likely still get to (raidBot._siegeUnreachable for 20
+        # turns, the 25-round pressCore backoff, ecoBot's 150-turn ore skip).
+        if (bot._walkBudgetGoal == goal
+                and bot._walkBudgetPos == (pos.x, pos.y)
+                and rnd - bot._walkBudgetRound < _NOROUTE_RECHECK_TURNS):
+            if debug.ENABLED:
+                debug.log("walkTo", f"idx={bot.hivemind.my_index} goal={goal} "
+                                     f"pos={pos} OVER BUDGET (memoised, skip replan)")
+            return holdTask(bot, "planBudget", BLOCKED_WAIT_TURNS)
         # Entry gate, checked once before any search work. overBudget reads
         # *turn*-elapsed CPU, so entering on a turn that has already burned past
         # the deadline would trip the first poll and abandon a plan that was
@@ -98,14 +123,25 @@ def walkTo(bot, ct: Controller, isGoal, heuristicGoal: Position | None, goal) ->
         # goal: hold and retry on a fresh budget, without arming the no-route
         # memo — nothing was searched, so there is nothing to conclude. No stamp
         # is written here either; nothing expensive runs for it to catch.
+        # A distinct hold reason, so a caller reading holdReason cannot mistake
+        # a busy turn for a goal it should give up on (relays uses "planBudget"
+        # for the identical case).
         if ct.get_cpu_time_elapsed() > _WALK_DEADLINE_US:
             if debug.ENABLED:
                 debug.log("walkTo", f"idx={bot.hivemind.my_index} goal={goal} "
                                      f"pos={pos} DEFERRED (turn already over budget)")
-            return holdTask(bot, "noRoute", BLOCKED_WAIT_TURNS)
-        bot._walkPlanRound = rnd
-        path = _plan(bot, ct, isGoal, heuristicGoal)
-        bot._walkPlanRound = None
+            return holdTask(bot, "planBudget", BLOCKED_WAIT_TURNS)
+        bot._walkPlanStamp = (rnd, goal)
+        path, tripped = _plan(bot, ct, isGoal, heuristicGoal)
+        bot._walkPlanStamp = None
+        if tripped:
+            bot._walkBudgetGoal = goal
+            bot._walkBudgetPos = (pos.x, pos.y)
+            bot._walkBudgetRound = rnd
+            if debug.ENABLED:
+                debug.log("walkTo", f"idx={bot.hivemind.my_index} goal={goal} "
+                                     f"pos={pos} PLAN ABANDONED on deadline")
+            return holdTask(bot, "planBudget", BLOCKED_WAIT_TURNS)
         if path is None:
             bot._noRouteGoal = goal
             bot._noRoutePos = (pos.x, pos.y)
@@ -238,15 +274,27 @@ def exploreStep(bot, ct: Controller) -> bool:
 
 
 def _plan(bot, ct: Controller, isGoal, heuristicGoal: Position | None):
+    """Plan a walk. Returns (path, tripped).
+
+    `tripped` says the deadline stopped a search before it finished, so a None
+    path means "not found in the time available", not "no route exists" — the
+    same distinction relays._planRelay draws between FAILED_BUDGET and FAILED,
+    and for the same reason: the two demand opposite responses from the caller.
+    """
     if bot.corePos is None:
-        return None
+        return None, False
 
     ctx = ph.costContext(bot, ct, "walk")
     ctx.avoid |= bot.walkAvoid
     pos = ct.get_position()
 
+    tripped = [False]
+
     def overBudget() -> bool:
-        return ct.get_cpu_time_elapsed() > _WALK_DEADLINE_US
+        if ct.get_cpu_time_elapsed() > _WALK_DEADLINE_US:
+            tripped[0] = True
+            return True
+        return False
 
     path = astar(
         pos,
@@ -256,7 +304,10 @@ def _plan(bot, ct: Controller, isGoal, heuristicGoal: Position | None):
         maxIters=_WALK_MAX_ITERS,
         shouldStop=overBudget,
     )
-    if path is None:
+    # `not tripped[0]`: a deadline that stopped A* stops the BFS on its first
+    # poll too, so entering it only burns another poll stride for a result that
+    # cannot arrive. Same guard relays puts on its own fallback.
+    if path is None and not tripped[0]:
         # Honour the same blacklist A* just used. A* only fails on cramped or
         # contested ground, which is exactly where walkAvoid has entries — so
         # without this the fallback confidently returns a route through the
@@ -274,7 +325,7 @@ def _plan(bot, ct: Controller, isGoal, heuristicGoal: Position | None):
         )
 
     bot.walkPath = path
-    return path
+    return path, tripped[0]
 
 
 def _indexOf(path, pos: Position) -> int | None:

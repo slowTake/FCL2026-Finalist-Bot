@@ -81,12 +81,22 @@ class Player:
         self._relayPlanRound: int | None = None
 
         # Walk state (movement.py)
-        # Round a walk plan was entered and has not yet returned — the same TLE
-        # tombstone as _relayPlanRound above, for movement._plan. A failed walk
-        # runs A* to exhaustion plus a full BFS (~9ms); killed mid-search, it
-        # never reaches the no-route memo that exists to stop it re-running, so
-        # the identical doomed search is re-entered every turn to game end.
-        self._walkPlanRound: int | None = None
+        # (round, goal) a walk plan was entered for and has not yet returned —
+        # the same TLE tombstone as _relayPlanRound above, for movement._plan. A
+        # failed walk runs A* to exhaustion plus a full BFS (~9ms); killed
+        # mid-search, it never reaches the no-route memo that exists to stop it
+        # re-running, so the identical doomed search is re-entered every turn to
+        # game end. The goal rides along because walkTo's cooldown and arrival
+        # returns leave a stamp standing, so the round alone would let a kill
+        # during one goal's plan fire against a different goal entirely.
+        self._walkPlanStamp: tuple[int, object] | None = None
+        # Goal/tile/round a walk plan was abandoned on the CPU deadline. Kept
+        # apart from the no-route memo below because the two mean different
+        # things: this one says "ran out of time", which is not evidence the
+        # goal is unreachable and must not make callers give up on it.
+        self._walkBudgetGoal = None
+        self._walkBudgetPos: tuple[int, int] | None = None
+        self._walkBudgetRound: int = -999
         self.walkPath: list[Position] | None = None
         # What walkPath was planned toward. The cache is only reused while this
         # matches, so a retarget replans instead of finishing the old journey.
