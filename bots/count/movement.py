@@ -17,6 +17,18 @@ _WALK_MAX_ITERS = 450
 # stops paying a full A*+BFS every single turn — see the no-route memo in walkTo.
 _NOROUTE_RECHECK_TURNS = 4
 
+# Turn-elapsed CPU (microseconds) past which _plan's searches abandon rather
+# than finish, and past which a fresh plan is not started at all. Same value and
+# same reasoning as relays._PLAN_DEADLINE_US, kept separate for the same reason
+# that one is not imported from telemetry: these are independent budgets that
+# must each hold on their own.
+#
+# _WALK_MAX_ITERS bounds the search in *expansions*, not time. A failed walk runs
+# A* to exhaustion and then a full BFS behind it — ~9ms together (raidBot's
+# pressCore backoff is sized off exactly that measurement) — which with the tick
+# preamble on top exceeds the 10ms turn outright.
+_WALK_DEADLINE_US = 7000
+
 
 def walkTo(bot, ct: Controller, isGoal, heuristicGoal: Position | None, goal) -> bool:
     """Advance one step toward any tile matching isGoal. True if the turn was used.
@@ -53,6 +65,24 @@ def walkTo(bot, ct: Controller, isGoal, heuristicGoal: Position | None, goal) ->
         # that will only exhaust again. This is what stops a unit wedged at an
         # unreachable goal from burning ~900 search iterations a turn (the TLE).
         rnd = ct.get_current_round()
+        # TLE tombstone. The no-route memo below is written only *after* _plan
+        # returns, so a plan the CPU limit kills mid-search never arms it: the
+        # next turn finds no memo, re-runs the identical doomed search, and is
+        # killed again — a builder wedged for the rest of the match, doing
+        # nothing, which is what this pattern already fixes for relay plans
+        # (main.Player._relayPlanRound, #115). A stamp left standing from an
+        # earlier round is proof of a kill; arm the memo on the dead search's
+        # behalf and hold, rather than re-entering it.
+        if bot._walkPlanRound is not None and bot._walkPlanRound != rnd:
+            bot._walkPlanRound = None
+            bot._noRouteGoal = goal
+            bot._noRoutePos = (pos.x, pos.y)
+            bot._noRouteRound = rnd
+            bot.noRouteSeq += 1
+            if debug.ENABLED:
+                debug.log("walkTo", f"idx={bot.hivemind.my_index} goal={goal} "
+                                     f"pos={pos} PLAN KILLED last round — memoised")
+            return holdTask(bot, "noRoute", BLOCKED_WAIT_TURNS)
         if (bot._noRouteGoal == goal
                 and bot._noRoutePos == (pos.x, pos.y)
                 and rnd - bot._noRouteRound < _NOROUTE_RECHECK_TURNS):
@@ -61,7 +91,21 @@ def walkTo(bot, ct: Controller, isGoal, heuristicGoal: Position | None, goal) ->
                                      f"pos={pos} NO PATH (memoised, skip replan)")
             bot.noRouteSeq += 1
             return holdTask(bot, "noRoute", BLOCKED_WAIT_TURNS)
+        # Entry gate, checked once before any search work. overBudget reads
+        # *turn*-elapsed CPU, so entering on a turn that has already burned past
+        # the deadline would trip the first poll and abandon a plan that was
+        # never really measured. Already-over on entry indicts the turn, not the
+        # goal: hold and retry on a fresh budget, without arming the no-route
+        # memo — nothing was searched, so there is nothing to conclude. No stamp
+        # is written here either; nothing expensive runs for it to catch.
+        if ct.get_cpu_time_elapsed() > _WALK_DEADLINE_US:
+            if debug.ENABLED:
+                debug.log("walkTo", f"idx={bot.hivemind.my_index} goal={goal} "
+                                     f"pos={pos} DEFERRED (turn already over budget)")
+            return holdTask(bot, "noRoute", BLOCKED_WAIT_TURNS)
+        bot._walkPlanRound = rnd
         path = _plan(bot, ct, isGoal, heuristicGoal)
+        bot._walkPlanRound = None
         if path is None:
             bot._noRouteGoal = goal
             bot._noRoutePos = (pos.x, pos.y)
@@ -201,12 +245,16 @@ def _plan(bot, ct: Controller, isGoal, heuristicGoal: Position | None):
     ctx.avoid |= bot.walkAvoid
     pos = ct.get_position()
 
+    def overBudget() -> bool:
+        return ct.get_cpu_time_elapsed() > _WALK_DEADLINE_US
+
     path = astar(
         pos,
         costFn=ph.makeCostFn(ctx),
         isGoal=isGoal,
         heuristic=ph.makeHeuristic(heuristicGoal),
         maxIters=_WALK_MAX_ITERS,
+        shouldStop=overBudget,
     )
     if path is None:
         # Honour the same blacklist A* just used. A* only fails on cramped or
@@ -222,6 +270,7 @@ def _plan(bot, ct: Controller, isGoal, heuristicGoal: Position | None):
             ),
             isGoal=isGoal,
             maxIters=_WALK_MAX_ITERS,
+            shouldStop=overBudget,
         )
 
     bot.walkPath = path

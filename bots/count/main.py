@@ -81,6 +81,12 @@ class Player:
         self._relayPlanRound: int | None = None
 
         # Walk state (movement.py)
+        # Round a walk plan was entered and has not yet returned — the same TLE
+        # tombstone as _relayPlanRound above, for movement._plan. A failed walk
+        # runs A* to exhaustion plus a full BFS (~9ms); killed mid-search, it
+        # never reaches the no-route memo that exists to stop it re-running, so
+        # the identical doomed search is re-entered every turn to game end.
+        self._walkPlanRound: int | None = None
         self.walkPath: list[Position] | None = None
         # What walkPath was planned toward. The cache is only reused while this
         # matches, so a retarget replans instead of finishing the old journey.
