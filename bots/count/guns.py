@@ -795,6 +795,10 @@ def defendCore(bot, ct: Controller, chase: bool = True) -> bool:
     # second sentinel (or a redundant gunner) on a threat that's covered. Falls
     # through to the caller's other work rather than idling beside it.
     if _alreadyAnswered(ct, ct.get_team(), threat, ttype):
+        if debug.ENABLED:
+            debug.log("gun", f"defendCore bail=already-answered threat={threat} "
+                             f"ttype={ttype} chase={chase} "
+                             f"rnd={ct.get_current_round()}")
         return False
 
     answers = _defenceAnswers(ttype)
@@ -804,9 +808,15 @@ def defendCore(bot, ct: Controller, chase: bool = True) -> bool:
     # we can't shoot. The cap check now covers both turret kinds — the gunner path
     # used to lean on can_build failing at the cap while the sentinel path bailed.
     if ct.get_unit_count() >= GameConstants.MAX_TEAM_UNITS:
+        if debug.ENABLED:
+            debug.log("gun", f"defendCore bail=unit-cap threat={threat} "
+                             f"chase={chase} rnd={ct.get_current_round()}")
         return False
     bank = ct.get_global_resources()
     if all(bank < cost_of(ct) for cost_of, _ in answers):
+        if debug.ENABLED:
+            debug.log("gun", f"defendCore bail=broke bank={bank} threat={threat} "
+                             f"chase={chase} rnd={ct.get_current_round()}")
         return False
 
     if ct.get_action_cooldown() == 0:
@@ -820,6 +830,10 @@ def defendCore(bot, ct: Controller, chase: bool = True) -> bool:
     # caller's own leash/patrol, which repositions us within the leash for a bearing
     # next turn.
     if not chase:
+        if debug.ENABLED:
+            debug.log("gun", f"defendCore bail=no-bearing-pad(build-only) "
+                             f"threat={threat} ttype={ttype} "
+                             f"rnd={ct.get_current_round()}")
         return False
 
     # Affordable, under the cap, but nothing bore this turn (cooldown, or no pad

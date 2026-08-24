@@ -22,7 +22,7 @@ sentinel). The v1 ladder below is shippable without them.
 
 from __future__ import annotations
 
-from fcode import Controller, Position
+from fcode import Controller, EntityType, Position
 
 import debug
 import store
@@ -44,6 +44,14 @@ GUARDIAN_LEASH = 8
 # the longest run of turns a live guardian could miss (a handful, if it faults).
 # Small on purpose — a large TTL just delays defence recovery after a death.
 GUARDIAN_ALIVE_TTL = 15
+
+# Core HP fraction below which healing the core preempts belt-repair in the ladder.
+# A core bleeding past this is an emergency worth interrupting barrier-grinding for;
+# a lightly-scratched core stays below belt-repair (a cut line loses a whole
+# harvester's output, worth more than a few core HP). 0.8 == 400/500 at the current
+# core max — the "below 400" mark. Above it, the normal step-4 heal tops the core up
+# once nothing else pends; only the emergency jumps the queue.
+CORE_HEAL_PREEMPT_FRAC = 0.8
 
 
 def eligible(bot) -> bool:
@@ -245,6 +253,21 @@ def _ladder(bot, ct: Controller) -> None:
     # Restore a supply line the enemy severed near the core, then top up HP.
     from ecoBot import repairCoreBelts
     import heal
+
+    # Core emergency outranks belt-repair. A core bleeding past
+    # CORE_HEAL_PREEMPT_FRAC is worth interrupting barrier-grinding for: without
+    # this, a cut line keeps repairCoreBelts (below) claiming every turn, so the
+    # guardian grinds barriers while a shelled core drops and never reaches the
+    # step-4 heal. Core-only (heal.CORE_HEAL_TYPES) so a scratched harvester still
+    # doesn't jump the queue, and leash-bounded — the core is the leash centre, so
+    # it always qualifies; a healthy core skips this and belt-repair keeps its
+    # usual priority. Heal is a 4-HP trickle, not a rescue: this stops the guardian
+    # *abandoning* the core, but stopping the shot still needs defendCore above.
+    if _coreHurt(bot, ct) and heal.healNearby(
+        bot, ct, heal.CORE_HEAL_TYPES, accept=_inLeash(bot)
+    ):
+        return
+
     if repairCoreBelts(bot, ct):
         return
     # Leash-bounded, unlike the eco path's copy: heal's own "nearby" is measured
@@ -267,3 +290,24 @@ def _inLeash(bot):
         return ph.manhattanToCore(p, core) <= GUARDIAN_LEASH
 
     return test
+
+
+def _coreHurt(bot, ct: Controller) -> bool:
+    """Is our core in vision and damaged past CORE_HEAL_PREEMPT_FRAC of its max.
+
+    Reads the core entity's live HP directly, the same get_hp/get_max_hp path
+    heal.nearestDamagedAlly uses — no store round-trip. False when the core isn't
+    in vision (nothing to act on from here) or is above the threshold. Our team's
+    only CORE is our own, so matching team + type is enough; the enemy core is
+    filtered out by team."""
+    myTeam = ct.get_team()
+    for eid in ct.get_nearby_entities():
+        if ct.get_team(eid) != myTeam:
+            continue
+        if ct.get_entity_type(eid) != EntityType.CORE:
+            continue
+        maxHp = ct.get_max_hp(eid)
+        if maxHp <= 0:
+            return False
+        return ct.get_hp(eid) < maxHp * CORE_HEAL_PREEMPT_FRAC
+    return False

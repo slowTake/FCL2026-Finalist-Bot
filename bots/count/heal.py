@@ -22,6 +22,12 @@ from pathing import manhattan
 # assets. `ph.BELT_TYPES` is (CONVEYOR, SPLITTER).
 ECO_HEAL_TYPES = (EntityType.CORE, EntityType.HARVESTER) + ph.BELT_TYPES
 
+# The core alone — for a caller that wants to top up the core specifically,
+# without being pulled onto a lightly-scratched harvester or belt. The guardian's
+# core-emergency rung uses this so a bleeding core outranks belt-repair while a
+# damaged harvester still does not.
+CORE_HEAL_TYPES = (EntityType.CORE,)
+
 # What the raider watches for — the turrets it exists to place, not itself.
 TURRET_HEAL_TYPES = (EntityType.GUNNER, EntityType.SENTINEL)
 
