@@ -1,8 +1,57 @@
-# teaPot — Florent Code League
+# teaPot: Team HTTP 418's Florent Code League bots
 
-Teamlink -> [Florent Code League](https://game.code.florent.vc/team/12fdece5-48c9-4913-9533-6d95b73e22ab).
+Python bots for [Florent's Code League](https://game.code.florent.vc/tutorials/), a Battlecode-style arena where two teams' bots fight over a grid map. Each side starts with a core and a few builders. Builders harvest titanium, lay conveyor belts to bring it home, and spend it on turrets and more units. The first side to destroy the other's core wins. If both survive to round 1000, titanium delivered decides it.
 
-Tutorials -> https://game.code.florent.vc/tutorials/
+Team HTTP 418 finished in the top 10 of the combined Nordic and international ladder, peaked at rank 4, and was invited to the Stockholm finals. ([Team page](https://game.code.florent.vc/team/12fdece5-48c9-4913-9533-6d95b73e22ab))
+
+<p align="center">
+  <img src="docs/media/combat.gif" width="640" alt="Combat replay: our builders and turrets defending a belt network near the core while enemy builders push in">
+</p>
+
+<table>
+  <tr>
+    <td><img src="docs/media/turret-line.webp" alt="Turrets placed on the flanks of the core, forming a kill box toward the enemy"></td>
+    <td><img src="docs/media/belt-network.webp" alt="Conveyor belt network carrying titanium back to the core past stone walls"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Turrets on the flank facing the enemy core: the kill box that ended rushes</sub></td>
+    <td align="center"><sub>Belts carrying harvested titanium home through a walled map</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/media/opening-push.webp" alt="Early game: builders fanning out from the core toward titanium nodes"></td>
+    <td><img src="docs/media/ladder-dashboard.webp" alt="League dashboard for team HTTP 418 showing rank, peak rating and the top teams rating chart"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Opening: builders fan out from the core to claim titanium</sub></td>
+    <td align="center"><sub>Ladder dashboard over the season</sub></td>
+  </tr>
+</table>
+
+## How the bot plays
+
+Every unit runs its own `Player.run()` each turn with a 10 ms CPU budget and only sees a small radius around itself. The main ideas:
+
+- **HiveMind.** Each team has a small shared store all of its units can read and write. Builders record what they discover (ore, walls, hostiles) there, so every unit works from the same map.
+- **Map fingerprinting and A\*.** Every map in the live pool has unique dimensions, so the bot identifies the map on turn one and loads pre-parsed terrain. A\* pathing then runs without any exploration.
+- **Roles.** The core spawns builders and gives each a role. Eco builders harvest and lay relay belts, a guardian holds home defence, and raiders siege the enemy core: they cut its belts, wall its ring and drop turrets beside enemy harvesters.
+- **Anti-rush defence.** A rush always comes from the direction of the enemy core, so turrets go on the flanks facing it ahead of time. That builds a kill box every hostile builder has to walk through.
+- **Hard CPU discipline.** Any search that could run long is capped by time, not by iteration count, so one slow path never costs a unit its turn.
+
+`bots/count/` is the most recent bot. [`bots/count/AGENTS.md`](bots/count/AGENTS.md) has its module map, and `bots/count/docs/` holds design records and engine notes.
+
+## Repository layout
+
+| Path | What's there |
+| --- | --- |
+| [`bots/count/`](bots/count/) | The current bot: role-based builders, HiveMind store, A\* pathing, turret logic |
+| [`bots/baron/`](bots/baron/), [`bots/bandit/`](bots/bandit/) | Earlier ladder bots that count grew out of |
+| [`bots/starter/`](bots/starter/) | The official starter bot, used as the local baseline opponent |
+| [`components/`](components/) | HiveMind and map-feature modules shared between bots |
+| [`scripts/`](scripts/) | Local gauntlets, a replay debugger, ladder stats, and submission packaging |
+| [`fcv_gauntlet/`](fcv_gauntlet/) | Replay analysis engine: behaviour detectors, causal chains, reports |
+| [`graveyard/`](graveyard/) | Retired experiments, kept for reference |
+| [`maps/`](maps/) | Map files for local play |
+| [`STRATEGY.md`](STRATEGY.md) | Game rules and strategy notes |
 
 ## Setup
 
