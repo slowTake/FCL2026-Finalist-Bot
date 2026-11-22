@@ -28,3 +28,6 @@ ladder_replay_cache/
 # still write into these paths if run directly.
 bots/tmp_*_trial_*/
 test_results/
+
+# Per-machine Claude Code permissions
+.claude/settings.local.json

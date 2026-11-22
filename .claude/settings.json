@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -f /tmp/baron-gauntlet-dirty ]; then rm -f /tmp/baron-gauntlet-dirty; cd /home/peter/projects/teaPot && timeout 480 .venv/bin/python scripts/mirror_gauntlet.py --bot baron > /tmp/baron-gauntlet-last.log 2>&1; ec=$?; if [ $ec -ne 0 ]; then tail -30 /tmp/baron-gauntlet-last.log; exit 2; fi; fi",
+            "command": "if [ -f /tmp/baron-gauntlet-dirty ]; then rm -f /tmp/baron-gauntlet-dirty; cd \"$CLAUDE_PROJECT_DIR\" && timeout 480 .venv/bin/python scripts/mirror_gauntlet.py --bot baron > /tmp/baron-gauntlet-last.log 2>&1; ec=$?; if [ $ec -ne 0 ]; then tail -30 /tmp/baron-gauntlet-last.log; exit 2; fi; fi",
             "statusMessage": "Running baron gauntlet regression...",
             "timeout": 500,
             "async": true,
